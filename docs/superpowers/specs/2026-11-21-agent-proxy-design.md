@@ -101,6 +101,8 @@ sequenceDiagram
     Note over U,X: 真实地址与真实 header 从不落 Agent 侧
 ```
 
+**回显**：用户再次打开配置页查看/编辑时，页面用存储的代理地址调 `GET /api/v1/mappings/resolve`（见 6.4）取回真实地址与真实 header 显示；编辑保存走 PUT。
+
 **示例（MCP）**
 
 ```
@@ -181,7 +183,8 @@ CREATE TABLE proxy_mapping (
 |---|---|---|
 | POST | `/api/v1/mappings` | 注册映射，返回代理地址 + 占位符 header |
 | GET | `/api/v1/mappings` | 当前用户的映射列表（分页） |
-| GET | `/api/v1/mappings/{mapping_id}` | 映射详情，**真实值仅注册者可见** |
+| GET | `/api/v1/mappings/{mapping_id}` | 映射详情，**真实值仅注册者可见**（响应体同 6.4） |
+| GET | `/api/v1/mappings/resolve` | **回显接口**：按代理地址查询参数回查真实地址与真实 header，见 6.4；静态路由须先于 `{mapping_id}` 动态路由注册 |
 | PUT | `/api/v1/mappings/{mapping_id}` | 更新 upstream_url / headers / status，成功后删缓存 |
 | DELETE | `/api/v1/mappings/{mapping_id}` | 删除映射，成功后删缓存 |
 
@@ -215,6 +218,36 @@ proxy_url = {EXTERNAL_BASE}/p/{mapping_id} [ + upstream_path ]    # mcp 类型�
 - 生成：注册响应中，对每个真实 header 的 value 生成同名占位符（**同 key 不同值**）；
 - 还原：转发时**按 key 从存储直接取真实值**重建出站 header，占位符内容不参与任何解析；
 - Agent 即使把占位 header 原样发回，代理也一律丢弃（见 8.1），不构成泄露或伪造通道。
+
+### 6.4 回显接口（查看/编辑已保存配置）
+
+**场景**：Agent 页面保存的是代理地址 + 占位符 header；用户之后重新打开配置页查看或编辑时，页面需要按手里的代理地址取回**真实地址与真实 header** 用于显示。
+
+```
+GET /api/v1/mappings/resolve?proxy_url=https%3A%2F%2Fagent-prox.com%2Fp%2FaB3xK9mQ2wR4%2Fsse
+（Authorization: Bearer <注册者JWT>）
+
+HTTP 200
+{
+  "mapping_id": "aB3xK9mQ2wR4",
+  "type": "mcp",
+  "upstream_url": "https://mcp.ex.com/sse",          ← 真实地址
+  "headers": { "Authorization": "Bearer sk-abc123",  ← 真实 header
+               "X-User-Id": "u888" },
+  "proxy_url": "https://agent-prox.com/p/aB3xK9mQ2wR4/sse",
+  "status": "active",
+  "created_at": "2026-11-21T10:00:00",
+  "updated_at": "2026-11-21T10:00:00"
+}
+```
+
+规则：
+
+1. **鉴权**：必须系统 JWT，且 uid = owner_uid；非注册者一律 404（隐藏存在性），与其他管理接口一致；
+2. **参数解析**：`proxy_url` 为 URL 编码后的代理地址，服务端解析 `/p/{mapping_id}` 段定位映射；也接受直接传 12 位 mapping_id；无法解析为本服务代理地址 → 400 `INVALID_PARAM`；
+3. **加载**：与详情/转发共用 cache-aside 加载逻辑（Redis → MySQL 回填）；
+4. **审计**：本接口返回真实凭据，是管理域中唯一对外输出真实 header 的接口，每次调用记审计日志（`action=view_credentials`）；
+5. 用户编辑后保存走 PUT 更新接口，更新成功后删缓存。
 
 ---
 
@@ -340,7 +373,7 @@ sequenceDiagram
 | # | 措施 | 说明 |
 |---|---|---|
 | 1 | JWT 鉴权 | 管理与代理端点全覆盖；仅注册者可调用（403） |
-| 2 | 防凭据泄露 | `/p/*` 响应永不回显真实 header；出站 header 从存储重建；详情接口真实值仅注册者可见 |
+| 2 | 防凭据泄露 | `/p/*` 响应永不回显真实 header；出站 header 从存储重建；真实值仅注册者经管理域可见（详情 / resolve 回显，见 6.4，访问入审计日志） |
 | 3 | SSRF 防护 | 注册时校验 scheme（仅 http/https）；解析域名并拒绝私网 / 环回 / 链路本地地址段（`10/8`、`172.16/12`、`192.168/16`、`127/8`、`169.254/16`、`::1` 等）；可用 `SSRF_ALLOW_PRIVATE=true` 放开（内联调环境） |
 | 4 | 参数加固 | header 键名合法性校验、数量与长度上限、请求体大小上限 |
 | 5 | 审计日志 | 记录 uid、mapping_id、method、path、status、耗时、上下行字节数、client_ip；**不含任何 header 值** |
@@ -446,7 +479,7 @@ agent-proxy/
 | 层级 | 内容 |
 |---|---|
 | 单元 | 占位符化/还原、URL 拼接与规范化、路径分发、endpoint 事件改写、JWT 校验、SSRF 校验、header 重建与过滤 |
-| 集成 | pytest + mock 上游（普通 HTTP echo / SSE / Streamable）走全链路：注册 → 占位符校验 → 调用 → 用 echo 验证转发 URL 与出站 header 与存储一致；权限用例（无 token 401、他人 403、禁用 404）|
+| 集成 | pytest + mock 上游（普通 HTTP echo / SSE / Streamable）走全链路：注册 → 占位符校验 → 调用 → 用 echo 验证转发 URL 与出站 header 与存储一致；权限用例（无 token 401、他人 403、禁用 404）；resolve 回显用例（注册者取回真实值、他人 404、非法 proxy_url 400、直接传 mapping_id）|
 | 真实客户端 | MCP Inspector（`npx @modelcontextprotocol/inspector`）分别以 SSE 与 Streamable 连接代理，完成 tools/list 与 tools/call |
 | 缓存 | 命中 / 未命中回源 / 写后失效 / Redis 停机降级 |
 
@@ -480,3 +513,4 @@ agent-proxy/
 | 存储 | MySQL 持久化 + Redis 缓存（cache-aside，TTL 300s，写时删缓存） |
 | 技术栈 | Python 3.12 + FastAPI + httpx + uvicorn |
 | 注册接口鉴权 | 系统 JWT |
+| 配置回显 | 提供 `GET /api/v1/mappings/resolve`：按代理地址（或 mapping_id）回查真实地址与真实 header，仅注册者可查，访问记审计日志 |
