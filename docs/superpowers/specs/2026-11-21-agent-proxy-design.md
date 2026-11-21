@@ -24,7 +24,7 @@ Agent 平台的用户需要接入外部 MCP 服务与 HTTP API。如果让 Agent
 
 1. **HTTP 代理**：前缀映射，任意子路径 / query / body / method 流式透传；
 2. **MCP 代理**：支持 **SSE** 与 **Streamable HTTP** 两种远程传输，含 endpoint 事件改写；
-3. **注册机制**：用户在 Agent 页面保存前，先调代理注册接口保存真实地址 + 真实 header；代理返回代理地址 + 占位符 header，Agent 侧只保存后者；
+3. **注册机制**：用户在 Agent 页面保存前，先调代理注册接口保存真实地址 + 真实 header；代理返回代理地址 + 占位符 header，Agent 侧只保存后者；提供 test 接口在保存前验证配置有效性（见 6.6）；
 4. **鉴权**：全部接口使用系统 JWT；私有映射**仅注册者本人可调用**；
 5. **内置（公共）MCP + OAuth 凭证托管**（M6）：管理员创建固定地址的公共映射，用户经 OAuth2 / OAuth2.1 授权后个人凭证托管在代理侧，调用时按用户注入（见第 14 章）。
 
@@ -227,6 +227,7 @@ CREATE TABLE proxy_oauth_credential (
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | POST | `/api/v1/mappings` | 注册映射，返回代理地址 + 占位符 header |
+| POST | `/api/v1/mappings/{mapping_id}/test` | 测试个人映射有效性（见 6.6） |
 | GET | `/api/v1/mappings` | 当前用户的映射列表（分页） |
 | GET | `/api/v1/mappings/{mapping_id}` | 映射详情，**真实值仅注册者可见**（响应体同 6.4） |
 | GET | `/api/v1/mappings/resolve` | **回显接口**：按代理地址查询参数回查真实地址与真实 header，见 6.4；静态路由须先于 `{mapping_id}` 动态路由注册 |
@@ -241,6 +242,7 @@ CREATE TABLE proxy_oauth_credential (
 | `name` | 可选，显示名（公共映射建议填写） |
 | `visibility` | 可选，`private`（默认）或 `public`；**public 仅管理员（`Identity.role` == `ADMIN_ROLE`，默认 `admin`）可设置** |
 | `upstream_url` | 必填；scheme 仅 http/https；host 必填；mcp 类型建议为完整端点（如 `.../sse`、`.../mcp`） |
+| `test_request` | 可选（仅 http 类型）；`{method, path, expect_status}`，供 test 接口做严格验证（见 6.6） |
 | `headers` | 可选 object；键名须为合法 header 名（RFC 7230 token）；值必须为字符串；数量 ≤ 32，单值长度 ≤ 4KB |
 
 **响应码**：201 成功；400 参数非法；401 JWT 无效。非注册者操作他人映射 → 404（不暴露存在性）。
@@ -313,6 +315,25 @@ HTTP 200
 | GET | `/oauth/callback` | 无（state 关联用户） | OAuth 回调：code 换 token、加密落库、302 回跳平台页面 |
 | GET | `/api/v1/builtin-mappings/{mapping_id}/binding` | JWT | 查询我的绑定状态（页面轮询） |
 | DELETE | `/api/v1/builtin-mappings/{mapping_id}/binding` | JWT | 解绑：删除本地凭证（提供方支持时同时调用 revoke 吊销） |
+| POST | `/api/v1/builtin-mappings/{mapping_id}/test` | admin 或已绑定用户 | 测试公共映射：admin 测静态配置；已绑定用户测本人 OAuth 凭证真实有效（见 6.6） |
+
+### 6.6 配置有效性测试（test 接口，随 M2–M4 交付）
+
+**目的**：配置保存到 Agent 前验证「地址可达 + 凭据有效」；个人映射与公共映射（内置 MCP）都需要，形成配置闭环。
+
+**验证逻辑**——复用第 8 章转发管线（出站 header 重建、URL 还原与真实调用完全一致），测的即真实路径：
+
+| 类型 | 验证方式 | 通过标准 |
+|---|---|---|
+| mcp + Streamable | 向端点发标准 `initialize` JSON-RPC | 拿到含 `serverInfo` 的响应（硬性判定） |
+| mcp + SSE | GET 注册端点读流 | 收到 `text/event-stream` + 首个 `endpoint` 事件后立即断开 |
+| http（默认） | `GET upstream_url` | 能拿到任意 HTTP 响应即「可达」，状态码作为参考信息（base 前缀 URL 可能天然 404，不硬判失败） |
+| http（严格，可选） | 注册参数 `test_request`（method / path / expect_status） | 实际状态码 == expect_status |
+| OAuth 绑定用户 | 以本人凭证执行对应 mcp 验证 | 同 mcp 规则；凭证失效提示重新授权 |
+
+**返回**：`{ok, status_code, latency_ms, detail}`；测试专用短超时 5s；上游失败反映为 `ok=false` + `detail` 说明，不产生代理自身的 502/504 错误响应。
+
+**安全边界**：仅能对**已注册映射**发起（不接受任意 URL，防探测滥用）；无凭证用户对 OAuth 型公共映射发起 → `OAUTH_BINDING_REQUIRED`；审计记 `action=test_mapping`，不含 header 值。
 
 ---
 
@@ -612,6 +633,7 @@ agent-proxy/
 | 真实客户端 | MCP Inspector（`npx @modelcontextprotocol/inspector`）分别以 SSE 与 Streamable 连接代理，完成 tools/list 与 tools/call |
 | 缓存 | 命中 / 未命中回源 / 写后失效 / Redis 停机降级 |
 | OAuth（M6） | mock AS 全流程：DCR 注册、授权码+PKCE 换 token、state 过期 / 伪造 400、回调落库加密校验、过期自动刷新与并发刷新锁、未绑定调用 401 `OAUTH_BINDING_REQUIRED`、非 admin 创建 public 映射 403、回跳域白名单外拒绝 |
+| test 接口 | http 连通 / test_request 严格验证；SSE 首个 endpoint 事件；Streamable initialize 语义验证；OAuth 凭证失效提示重新授权；未注册 URL 拒绝探测 |
 
 ---
 
@@ -702,9 +724,9 @@ SSE 长连接建连时注入一次；连接存续期间 token 过期不影响已
 | 阶段 | 内容 | 验收 |
 |---|---|---|
 | M1 | 骨架 + 配置/日志 + TokenVerifier 抽象与 stub + 管理接口 + MySQL/Redis（建表含 visibility / name 预留） | 注册返回代理地址与占位符；缓存读写与失效正确；stub 解码 user_id/user_name/role 生效 |
-| M2 | HTTP 前缀流式转发 | echo 上游全链路验证；大文件流式不驻留内存 |
-| M3 | MCP SSE + endpoint 改写 | Inspector 以 SSE 传输完成 tools/call |
-| M4 | MCP Streamable | Inspector 以 Streamable 完成 tools/call |
+| M2 | HTTP 前缀流式转发（含 test：连通 / test_request 严格验证） | echo 上游全链路验证；大文件流式不驻留内存；http test 可用 |
+| M3 | MCP SSE + endpoint 改写（含 SSE test） | Inspector 以 SSE 传输完成 tools/call；SSE test 可用 |
+| M4 | MCP Streamable（含 initialize test） | Inspector 以 Streamable 完成 tools/call；initialize test 可用 |
 | M5 | 集成测试补全 + README + 联调 | 全部测试通过 |
 | M6 | 公共映射（内置 MCP）+ OAuth 凭证托管 | mock AS 全流程：DCR/手动客户端 → 授权绑定 → 回调落库加密 → 按用户注入调用；未绑定 401、过期自动刷新、非 admin 越权 403 |
 
@@ -735,3 +757,4 @@ SSE 长连接建连时注入一次；连接存续期间 token 过期不影响已
 | 管理员标识 | `Identity.role` == `ADMIN_ROLE`（默认 `admin`）即为管理员；身份由第三方校验接口解码提供（user_id / user_name / role） |
 | OAuth 凭证托管 | 每用户一份凭证 (mapping_id, uid) 唯一，强制加密落库；调用时注入 Authorization: Bearer（「仅还原注册者 header」的唯一例外）；过期自动刷新（Redis 锁防并发） |
 | 里程碑归属 | 公共映射 + OAuth 凭证托管为一期 M6（M1 建表预留字段） |
+| 配置测试接口 | 个人映射与公共映射均提供 test（6.6）：复用转发管线实测真实路径；MCP 用 initialize / SSE 握手硬判定，HTTP 默认连通判定 + 可选 test_request 严格判定；仅限已注册映射，随 M2–M4 交付 |
