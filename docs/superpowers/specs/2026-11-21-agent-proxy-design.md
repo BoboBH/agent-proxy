@@ -366,6 +366,28 @@ sequenceDiagram
 
 `Mcp-Session-Id` 经白名单透传，会话状态由上游自持。
 
+### 8.5 两类代理的统一与差异
+
+**统一的部分（一套机制）**：
+
+| 维度 | 说明 |
+|---|---|
+| 入口 | 同一路由 `ANY /p/{mapping_id}/{path}` |
+| 注册 | 同一接口 `POST /api/v1/mappings`，仅 `type` 字段区分 `http` / `mcp` |
+| 存储 / 缓存 | 同一 `proxy_mapping` 表 + Redis cache-aside |
+| 鉴权 | 同一 JWT 校验 + 仅注册者可调 |
+| header 策略 | 同一出站 header 重建（存储还原、调用方 header 不透传） |
+| 转发骨架 | 同一「还原 URL → 流式转发 → 过滤回传」管线，均**不解析业务载荷** |
+
+**差异的部分（仅传输适配层）**：
+
+| | http | mcp |
+|---|---|---|
+| URL 还原 | 纯前缀拼接：`upstream_url + /子路径 + query`，任意深度 | 注册端点路径直达（初始连接）；其余路径按上游 **origin 根**还原（messages 等） |
+| 解析流内容 | 否 | 仅 SSE 需拦截改写 `endpoint` 事件；SSE 其余事件与 Streamable 全部字节级原样透传 |
+
+**MCP 载荷透明性**：代理不解析、不校验、不改动任何 JSON-RPC 载荷。`initialize`、`tools/list`、`tools/call`、`resources/*`、`prompts/*`、`notifications/*`、`ping` 等全部协议操作，以及响应流（SSE `message` 事件、Streamable 的 JSON / SSE 响应）均原样透传——MCP 功能完整性不受代理影响。代理唯一的介入点是 SSE 握手的 `endpoint` 事件地址改写（见 8.3），目的是让后续消息回到代理。
+
 ---
 
 ## 9. 安全设计
