@@ -663,6 +663,7 @@ sequenceDiagram
 | JWT | PyJWT |
 | 落库加密 | cryptography（Fernet，可选） |
 | 指标 | prometheus-client（`/metrics`） |
+| 部署 | Docker Compose（自包含栈：app + 可选 MySQL/Redis；外部已有实例通过 MYSQL_DSN / REDIS_URL 指向即可） |
 | 管理页面 | FastAPI + Jinja2 模板 + 原生 JS（fetch），无前端构建链 |
 | 测试 | pytest + pytest-asyncio |
 
@@ -736,6 +737,15 @@ agent-proxy/
 | `LOG_DIR` / `LOG_LEVEL` | 日志目录 / 级别 | `logs` / `INFO` |
 | `TRACE_MODE` | 追踪日志粒度：`off` / `metadata`（默认）/ `body` | `metadata` |
 | `TRACE_BODY_MAX_SIZE` | body 记录截断上限 | `64KB` |
+
+### 12.1 部署形态（Docker Compose）
+
+**标准交付物**：`Dockerfile` + `docker-compose.yml`（`app` + 可选 `mysql:8.4` / `redis:7` 自包含栈）。
+
+- **开发 / 演示（Windows 本机 Docker Desktop）**：`docker compose up -d`；`EXTERNAL_BASE=http://<本机局域网IP>:8800`；注意 Windows 防火墙放行端口、主机睡眠即服务下线——仅适合开发联调，不适合长期驻留；
+- **生产（Linux 服务器 / vm01）**：同一份 compose 直接迁移；vm01 无外网时在本机构建镜像后 `docker save` → 拷贝 → `docker load`（或走内网镜像源）；
+- **复用已有实例**：compose 中不启 mysql/redis 服务块，`MYSQL_DSN` / `REDIS_URL` 指向外部地址即可；
+- **依赖声明**：`depends_on` + 应用启动时自检 MySQL / Redis 连通（配合 `/readyz`）。
 
 ---
 
