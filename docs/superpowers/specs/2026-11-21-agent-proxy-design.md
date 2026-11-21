@@ -198,10 +198,18 @@ CREATE TABLE proxy_mapping (
 
 **响应码**：201 成功；400 参数非法；401 JWT 无效。非注册者操作他人映射 → 404（不暴露存在性）。
 
+**响应体约定**
+
+- **POST / PUT**：均返回 `{mapping_id, proxy_url, headers占位符}`——PUT 更新 `upstream_url` 时 proxy_url 的路径部分可能变化（如 `/sse`→`/mcp`），页面必须以响应中的新代理配置**重新保存到 Agent**；
+- **GET 列表**：`[{mapping_id, type, upstream_url, proxy_url, status, created_at, updated_at}]`，**不含真实 headers**（真实值仅详情 / resolve 返回）；
+- **DELETE**：删除后 Agent 侧残留的代理地址立即 404，页面应同步清理已保存的代理配置；
+- 同一用户重复注册相同 `upstream_url` 允许并存（不同 header 场景），不做 upsert。
+
 ### 6.2 代理端点
 
 ```
 ANY /p/{mapping_id}/{path}          # path 可为空；query 透传
+GET /healthz                        # 健康检查（无鉴权，不记审计）
 ```
 
 **代理地址（proxy_url）拼装规则**
@@ -246,7 +254,7 @@ HTTP 200
 1. **鉴权**：必须系统 JWT，且 uid = owner_uid；非注册者一律 404（隐藏存在性），与其他管理接口一致；
 2. **参数解析**：`proxy_url` 为 URL 编码后的代理地址，服务端解析 `/p/{mapping_id}` 段定位映射；也接受直接传 12 位 mapping_id；无法解析为本服务代理地址 → 400 `INVALID_PARAM`；
 3. **加载**：与详情/转发共用 cache-aside 加载逻辑（Redis → MySQL 回填）；
-4. **审计**：本接口返回真实凭据，是管理域中唯一对外输出真实 header 的接口，每次调用记审计日志（`action=view_credentials`）；
+4. **审计**：详情（`GET /{mapping_id}`）与 resolve 两个接口都会输出真实 header，是管理域中仅有的两个；每次调用均记审计日志（`action=view_credentials`）；
 5. 用户编辑后保存走 PUT 更新接口，更新成功后删缓存。
 
 ---
@@ -270,9 +278,9 @@ HTTP 200
 
 ### 8.1 通用规则
 
-1. **出站 header 重建**（安全核心）：出站请求 header = **存储的 upstream_headers 全量** + 协议必要 header（`Accept`、`Content-Type`、`Content-Length`，MCP 的 `Mcp-Session-Id` / `Last-Event-ID` / `MCP-Protocol-Version` 白名单透传）。调用方请求中的其余 header（含其 JWT、占位 header）**一律不透传**；hop-by-hop header（`Connection`、`Keep-Alive`、`Transfer-Encoding`、`TE`、`Trailer`、`Proxy-*`、`Upgrade`）排除。
-2. **流式**：请求 body 与响应 body 均以异步流转发（httpx stream），不落盘、不整体驻留内存；响应不限大小，请求体默认上限 10MB（可配）。
-3. **响应 header 过滤**：剥离 hop-by-hop 后原样回传（`Content-Type` 等），绝不含存储的真实 header。
+1. **出站 header 重建**（安全核心）：出站请求 header = **存储的 upstream_headers 全量** + 协议必要 header（`Accept`、`Content-Type`、`Content-Length`、`Content-Encoding`（gzip 等请求体透传必需），MCP 的 `Mcp-Session-Id` / `Last-Event-ID` / `MCP-Protocol-Version` 白名单透传）。调用方请求中的其余 header（含其 JWT、占位 header）**一律不透传**；hop-by-hop header（`Connection`、`Keep-Alive`、`Transfer-Encoding`、`TE`、`Trailer`、`Proxy-*`、`Upgrade`）排除。
+2. **流式**：请求 body 与响应 body 均以异步流转发（httpx stream），不落盘、不整体驻留内存；响应不限大小，请求体默认上限 10MB（可配），流式读取按字节计数、超限立即断开并返回 413。**响应体不解析、不改写**（已知限制见 9.10）。
+3. **响应 header 过滤**：剥离 hop-by-hop 后原样回传（`Content-Type` 等），绝不含存储的真实 header；`Location` 头处理见第 7 条。
 4. **客户端断开**：立即取消上游流并释放连接。
 5. **超时**（可配）：
 
@@ -283,6 +291,10 @@ HTTP 200
 | Streamable 流式响应 | 10s | 不设 |
 
 6. **重试**：一期不自动重试（避免非幂等请求重复触发）。
+7. **重定向**（防真实地址泄露）：**同源**（注册上游 origin 内）重定向由代理**内部跟随**（默认 ≤3 跳，`UPSTREAM_MAX_REDIRECTS`），存储 header 每跳重放，方法语义按 HTTP 规范（303→GET，307/308 保方法）；**跨源**重定向不跟随，响应原样透传（`Location` 指向第三方属上游自身行为）。同源 `Location` 永不回传给 Agent。
+8. **路径安全**：`/p/{id}` 子路径拒绝 `.` / `..` 段及 URL 编码变体（`%2e` 等）→ 400，防止拼接后逃逸注册前缀；其余子路径按原文拼接，不做规范化。
+9. **缓冲与网关**：SSE / 流式响应使用 `StreamingResponse` 并发送 `X-Accel-Buffering: no`；前置 nginx 等网关需 `proxy_buffering off`，且网关读超时必须大于上游心跳间隔，否则长连接会被网关切断。
+10. **上游 TLS**：证书默认强校验，不提供跳过校验的开关。
 
 ### 8.2 HTTP 前缀映射
 
@@ -342,6 +354,8 @@ sequenceDiagram
 
 限制说明：仅支持根相对路径形式的 endpoint 事件（官方 Python / TypeScript SDK 均为此形式）；客户端断开即取消上游连接。代理不保存会话状态，session_id 由上游通过 URL 自持。
 
+**SSE 改写实现要点**：以增量**行解析器**实现——按行读取上游流（保留原始行尾 `\r\n` / `\n`），跟踪当前 `event:` 名；当事件名为 `endpoint` 时改写其 `data:` 行，其余行（含 `message` 事件、`retry:` 行、`:` 心跳注释行）字节级原样透传，每行读取后立即 flush，不做整体缓冲。
+
 ### 8.4 MCP — Streamable HTTP
 
 单一端点，无需改写：
@@ -397,11 +411,13 @@ sequenceDiagram
 | 1 | JWT 鉴权 | 管理与代理端点全覆盖；仅注册者可调用（403） |
 | 2 | 防凭据泄露 | `/p/*` 响应永不回显真实 header；出站 header 从存储重建；真实值仅注册者经管理域可见（详情 / resolve 回显，见 6.4，访问入审计日志） |
 | 3 | SSRF 防护 | 注册时校验 scheme（仅 http/https）；解析域名并拒绝私网 / 环回 / 链路本地地址段（`10/8`、`172.16/12`、`192.168/16`、`127/8`、`169.254/16`、`::1` 等）；可用 `SSRF_ALLOW_PRIVATE=true` 放开（内联调环境） |
-| 4 | 参数加固 | header 键名合法性校验、数量与长度上限、请求体大小上限 |
+| 4 | 参数加固 | header 键名合法性校验、数量与长度上限、请求体大小上限（流式按字节计数，超限断开返回 413）；代理子路径拒绝 `.` / `..` 段（含 URL 编码变体），防止逃逸注册前缀（见 8.1 第 8 条） |
 | 5 | 审计日志 | 记录 uid、mapping_id、method、path、status、耗时、上下行字节数、client_ip；**不含任何 header 值** |
-| 6 | 落库加密 | `ENCRYPT_AT_REST=on` 时 upstream_headers 以 AES-GCM 加密存储（`MASTER_KEY` 环境变量） |
-| 7 | TLS | 由网关 / 负载均衡终结，代理服务部署在内网 |
-| 8 | 已知残留风险 | DNS rebinding（注册时校验、请求时重新解析）一期不做强防护，列入二期 |
+| 6 | 落库加密 | `ENCRYPT_AT_REST=on` 时 upstream_headers 以 AES-GCM 加密存储（`MASTER_KEY` 环境变量；开启时列以 TEXT 存密文） |
+| 7 | TLS | 由网关 / 负载均衡终结，代理服务部署在内网；上游侧 TLS 证书强校验（8.1 第 10 条） |
+| 8 | CORS | 管理接口供浏览器配置页直连时需跨域：`CORS_ALLOWED_ORIGINS` 配置平台页面域名白名单（仅管理域开启）；`/p/*` 默认不开 CORS（Agent 运行时为服务端直连，如需浏览器直连再单独开启） |
+| 9 | 重定向 | 同源重定向内部跟随、`Location` 永不回传；跨源原样透传（见 8.1 第 7 条） |
+| 10 | 已知限制（一期接受） | ① HTTP 响应体不解析不改写：上游响应体中若含真实地址绝对链接（如分页 `next`）会原样到达 Agent——**凭据（header）不受影响**，建议上游返回相对路径；MCP JSON-RPC 载荷不含 URL，不受影响。② DNS rebinding（注册时校验、请求时重新解析）一期不做强防护。③ SSE 半开连接（客户端异常消失）依赖 TCP keepalive 检测，一期不设最长连接时长 |
 
 ---
 
@@ -415,12 +431,15 @@ sequenceDiagram
 | 非注册者调用 / 操作 | 403（代理端点）/ 404（管理接口，隐藏存在性） | `FORBIDDEN` / `MAPPING_NOT_FOUND` |
 | 映射不存在或已禁用 | 404 | `MAPPING_NOT_FOUND` |
 | 注册 / 更新参数非法 | 400 | `INVALID_PARAM` |
+| 代理子路径含 `..` 等非法段 | 400 | `INVALID_PARAM` |
 | 上游连接失败 | 502 | `UPSTREAM_ERROR` |
 | 上游超时 | 504 | `UPSTREAM_TIMEOUT` |
 | 请求体超限 | 413 | `BODY_TOO_LARGE` |
 | 上游 4xx / 5xx | 原样透传状态码与响应体 | — |
 
 上游错误响应**原样透传**给 Agent（保留状态码），代理仅在自身故障时产生 502/504。
+
+**流式传输中的错误**：一旦响应流开始（如 SSE 已下发首字节），上游中途断开时代理只能终止流（客户端表现为连接提前关闭）并记录日志，无法再回传结构化错误体；流开始**前**的错误（连接失败、超时、鉴权失败）仍返回标准错误体。
 
 ---
 
@@ -490,6 +509,8 @@ agent-proxy/
 | `CACHE_TTL` | 映射缓存 TTL（秒） | `300` |
 | `UPSTREAM_CONNECT_TIMEOUT` / `UPSTREAM_READ_TIMEOUT` | 上游超时（秒） | `10` / `60` |
 | `MAX_BODY_SIZE` | 请求体上限 | `10MB` |
+| `UPSTREAM_MAX_REDIRECTS` | 同源重定向内部跟随跳数 | `3` |
+| `CORS_ALLOWED_ORIGINS` | 管理域跨域白名单（逗号分隔，空=不开） | 空 |
 | `SSRF_ALLOW_PRIVATE` | 允许内网上游（联调用） | `false` |
 | `ENCRYPT_AT_REST` / `MASTER_KEY` | 落库加密 | `false` / 必填(当开启) |
 | `LOG_DIR` / `LOG_LEVEL` | 日志目录 / 级别 | `logs` / `INFO` |
@@ -501,7 +522,7 @@ agent-proxy/
 | 层级 | 内容 |
 |---|---|
 | 单元 | 占位符化/还原、URL 拼接与规范化、路径分发、endpoint 事件改写、JWT 校验、SSRF 校验、header 重建与过滤 |
-| 集成 | pytest + mock 上游（普通 HTTP echo / SSE / Streamable）走全链路：注册 → 占位符校验 → 调用 → 用 echo 验证转发 URL 与出站 header 与存储一致；权限用例（无 token 401、他人 403、禁用 404）；resolve 回显用例（注册者取回真实值、他人 404、非法 proxy_url 400、直接传 mapping_id）|
+| 集成 | pytest + mock 上游（普通 HTTP echo / SSE / Streamable）走全链路：注册 → 占位符校验 → 调用 → 用 echo 验证转发 URL 与出站 header 与存储一致；权限用例（无 token 401、他人 403、禁用 404）；resolve 回显用例（注册者取回真实值、他人 404、非法 proxy_url 400、直接传 mapping_id）；**安全用例**：子路径 `..` / `%2e%2e` 拒绝 400、同源重定向内部跟随且 `Location` 不回传（307 POST 保方法）、跨源重定向透传、gzip 请求体透传、413 截断、流中断终止、CORS 预检 OPTIONS |
 | 真实客户端 | MCP Inspector（`npx @modelcontextprotocol/inspector`）分别以 SSE 与 Streamable 连接代理，完成 tools/list 与 tools/call |
 | 缓存 | 命中 / 未命中回源 / 写后失效 / Redis 停机降级 |
 
@@ -536,3 +557,6 @@ agent-proxy/
 | 技术栈 | Python 3.12 + FastAPI + httpx + uvicorn |
 | 注册接口鉴权 | 系统 JWT |
 | 配置回显 | 提供 `GET /api/v1/mappings/resolve`：按代理地址（或 mapping_id）回查真实地址与真实 header，仅注册者可查，访问记审计日志 |
+| 重定向策略 | 同源重定向代理内部跟随（≤3 跳），`Location` 不回传 Agent；跨源重定向原样透传 |
+| 重复注册 | 同一用户可对相同 upstream_url 注册多条映射（不同 header 场景），不做 upsert |
+| 已知限制 | HTTP 响应体不解析不改写（上游 body 内绝对链接会到达 Agent，凭据不受影响）；DNS rebinding 一期不防护；SSE 半开连接依赖 TCP keepalive |
