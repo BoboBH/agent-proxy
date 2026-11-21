@@ -144,7 +144,7 @@ HTTP 201
 CREATE TABLE proxy_mapping (
   id               BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   mapping_id       VARCHAR(16)  NOT NULL COMMENT '对外路由标识，随机 base62',
-  owner_uid        VARCHAR(64)  NOT NULL COMMENT '注册者 uid，来自 JWT',
+  owner_uid        VARCHAR(64)  NOT NULL COMMENT '注册者 uid，来自第三方解码的 Identity.user_id',
   name             VARCHAR(128) NULL COMMENT '显示名（公共映射由管理员填写）',
   type             ENUM('http','mcp') NOT NULL,
   visibility       ENUM('private','public') NOT NULL DEFAULT 'private' COMMENT 'private 仅注册者可调；public 内置映射，任意有效用户可调（见第14章）',
@@ -239,7 +239,7 @@ CREATE TABLE proxy_oauth_credential (
 |---|---|
 | `type` | 必填，`http` 或 `mcp` |
 | `name` | 可选，显示名（公共映射建议填写） |
-| `visibility` | 可选，`private`（默认）或 `public`；**public 仅 JWT `role` 含 `admin` 的用户可设置** |
+| `visibility` | 可选，`private`（默认）或 `public`；**public 仅管理员（`Identity.role` == `ADMIN_ROLE`，默认 `admin`）可设置** |
 | `upstream_url` | 必填；scheme 仅 http/https；host 必填；mcp 类型建议为完整端点（如 `.../sse`、`.../mcp`） |
 | `headers` | 可选 object；键名须为合法 header 名（RFC 7230 token）；值必须为字符串；数量 ≤ 32，单值长度 ≤ 4KB |
 
@@ -316,18 +316,37 @@ HTTP 200
 
 ---
 
-## 7. 鉴权设计（系统 JWT）
+## 7. 鉴权设计（系统 JWT，第三方校验 + 抽象对接）
+
+**原则**：JWT 的**校验与解码由第三方接口提供**，代理本地不做验签与密钥管理；代理通过 `TokenVerifier` 抽象接口对接，具体实现后续接入。业务代码（管理接口、代理端点）只依赖 `Identity`，不感知校验细节。
+
+### 7.1 身份模型与抽象接口
+
+```python
+@dataclass(frozen=True)
+class Identity:
+    user_id: str            # 必须，全局唯一；即映射归属 owner_uid 的来源（下文 uid ≡ user_id）
+    user_name: str | None   # 显示名，仅用于审计
+    role: str | None        # 角色；== ADMIN_ROLE（默认 "admin"）时为管理员（见 14.2）
+
+class TokenVerifier(Protocol):
+    async def verify(self, token: str) -> Identity:
+        """校验并解码 token；明确无效（无效/过期/格式错）抛 TokenInvalidError → 401；
+        依赖的第三方服务不可用（超时/连接失败）抛 TokenServiceError → 503"""
+```
+
+- `auth.get_current_identity`：FastAPI 依赖，仅依赖 `TokenVerifier`；
+- 实现一 `stub`（默认，开发/测试）：本地解码不验签，便于联调与集成测试；**仅限开发/测试，`ENV=prod` 时拒绝以 stub 启动**；
+- 实现二 `third_party`（后续实现）：对接第三方校验接口（接口协议、地址等参数在实现时确定，注册为独立 verifier 类，不影响任何业务代码）。
 
 | 项 | 设计 |
 |---|---|
 | 携带方式 | `Authorization: Bearer <token>` |
-| 算法 | HS256 + 共享密钥（环境变量 `JWT_SECRET`，与 Agent 平台同源）；预留 RS256 / JWKS 演进 |
-| claims | `uid`（必须）、`exp`（必须）、`iat`、`tenant_id` / `name`（可选，仅用于审计）、`role`（可选，含 `admin` 时可创建/管理公共映射，见 14.2） |
-| 校验 | 验签 + exp（leeway 60 秒）；代理不刷新、不下发 token |
-| 代理侧用途 | ① 管理接口：uid 归属校验；② 代理端点：uid = `owner_uid` 才放行 |
-| **不透传** | **调用者的 JWT 绝不转发给上游**（见 8.1） |
+| 代理侧用途 | ① 管理接口：user_id 归属校验；② 代理端点：user_id = `owner_uid` 才放行（public 映射任意有效身份可调） |
+| token 生命周期 | 校验、刷新、下发均在第三方侧，代理不参与 |
+| **不透传** | **调用者的 token 绝不转发给上游**（见 8.1） |
 
-错误：JWT 缺失 / 无效 / 过期 → `401`；uid ≠ owner_uid → `403`。
+错误：token 缺失 / 无效 / 过期 → `401`；user_id ≠ owner_uid → `403`；第三方校验服务不可用 → `503 AUTH_SERVICE_UNAVAILABLE`。
 
 ---
 
@@ -491,6 +510,7 @@ sequenceDiagram
 | 注册 / 更新参数非法 | 400 | `INVALID_PARAM` |
 | 代理子路径含 `..` 等非法段 | 400 | `INVALID_PARAM` |
 | 用户未完成 OAuth 绑定 / 凭证失效 | 401 | `OAUTH_BINDING_REQUIRED`（body 附授权引导信息） |
+| 第三方 token 校验服务不可用 | 503 | `AUTH_SERVICE_UNAVAILABLE` |
 | 上游连接失败 | 502 | `UPSTREAM_ERROR` |
 | 上游超时 | 504 | `UPSTREAM_TIMEOUT` |
 | 请求体超限 | 413 | `BODY_TOO_LARGE` |
@@ -531,7 +551,7 @@ agent-proxy/
 ├── src/agent_proxy/
 │   ├── main.py                      # FastAPI 组装、生命周期
 │   ├── config.py                    # 环境配置
-│   ├── auth.py                      # JWT 校验依赖
+│   ├── auth.py                      # Identity / TokenVerifier 抽象 + stub 实现（第三方实现后续接入）
 │   ├── db.py                        # MySQL engine / session
 │   ├── cache.py                     # Redis cache-aside
 │   ├── models.py                    # ORM: ProxyMapping
@@ -566,7 +586,8 @@ agent-proxy/
 |---|---|---|
 | `AGENT_PROXY_LISTEN` | 监听地址 | `0.0.0.0:8800` |
 | `EXTERNAL_BASE` | 对外域名，用于拼 proxy_url | 必填 |
-| `JWT_SECRET` | HS256 共享密钥 | 必填 |
+| `TOKEN_VERIFY_IMPL` | token 校验实现：`stub`（开发/测试，本地解码不验签）/ `third_party`（第三方接口，参数实现时定） | `stub` |
+| `ENV` | 运行环境；`prod` 下禁止 stub 校验实现启动 | `dev` |
 | `MYSQL_DSN` | MySQL 连接串 | 必填 |
 | `REDIS_URL` | Redis 连接串 | 必填 |
 | `CACHE_TTL` | 映射缓存 TTL（秒） | `300` |
@@ -576,7 +597,7 @@ agent-proxy/
 | `CORS_ALLOWED_ORIGINS` | 管理域跨域白名单（逗号分隔，空=不开） | 空 |
 | `SSRF_ALLOW_PRIVATE` | 允许内网上游（联调用） | `false` |
 | `OAUTH_STATE_TTL` | 授权 state 有效期（秒） | `600` |
-| `ADMIN_CLAIM` / `ADMIN_CLAIM_VALUE` | 管理员标识 claim 名 / 值（与平台约定） | `role` / `admin` |
+| `ADMIN_ROLE` | 管理员角色值（`Identity.role` 与之相等即为管理员） | `admin` |
 | `ENCRYPT_AT_REST` / `MASTER_KEY` | 落库加密 | `false` / 必填(当开启) |
 | `LOG_DIR` / `LOG_LEVEL` | 日志目录 / 级别 | `logs` / `INFO` |
 
@@ -586,7 +607,7 @@ agent-proxy/
 
 | 层级 | 内容 |
 |---|---|
-| 单元 | 占位符化/还原、URL 拼接与规范化、路径分发、endpoint 事件改写、JWT 校验、SSRF 校验、header 重建与过滤 |
+| 单元 | 占位符化/还原、URL 拼接与规范化、路径分发、endpoint 事件改写、TokenVerifier 抽象与 stub 解码（含无效 token 401、stub 生产环境拒绝启动）、SSRF 校验、header 重建与过滤 |
 | 集成 | pytest + mock 上游（普通 HTTP echo / SSE / Streamable）走全链路：注册 → 占位符校验 → 调用 → 用 echo 验证转发 URL 与出站 header 与存储一致；权限用例（无 token 401、他人 403、禁用 404）；resolve 回显用例（注册者取回真实值、他人 404、非法 proxy_url 400、直接传 mapping_id）；**安全用例**：子路径 `..` / `%2e%2e` 拒绝 400、同源重定向内部跟随且 `Location` 不回传（307 POST 保方法）、跨源重定向透传、gzip 请求体透传、413 截断、流中断终止、CORS 预检 OPTIONS |
 | 真实客户端 | MCP Inspector（`npx @modelcontextprotocol/inspector`）分别以 SSE 与 Streamable 连接代理，完成 tools/list 与 tools/call |
 | 缓存 | 命中 / 未命中回源 / 写后失效 / Redis 停机降级 |
@@ -612,7 +633,7 @@ Agent 内置若干外部 MCP：地址固定、不因人而变；但 MCP 提供�
 
 | | private（现有默认） | public（内置 MCP） |
 |---|---|---|
-| 创建 / 改 / 删 | 注册者本人 | 仅 JWT `role` 含 `admin` |
+| 创建 / 改 / 删 | 注册者本人 | 仅管理员（`Identity.role` == `ADMIN_ROLE`，默认 `admin`） |
 | 调用（`/p/{id}/...`） | 仅注册者（uid=owner） | 任意有效 JWT 用户 |
 | upstream_url | 用户填写，因人而异 | 固定地址 |
 | resolve / 详情回显 | 注册者 | 仅 admin（普通用户信息由列表接口提供） |
@@ -680,7 +701,7 @@ SSE 长连接建连时注入一次；连接存续期间 token 过期不影响已
 
 | 阶段 | 内容 | 验收 |
 |---|---|---|
-| M1 | 骨架 + 配置/日志/JWT + 管理接口 + MySQL/Redis（建表含 visibility / name 预留） | 注册返回代理地址与占位符；缓存读写与失效正确 |
+| M1 | 骨架 + 配置/日志 + TokenVerifier 抽象与 stub + 管理接口 + MySQL/Redis（建表含 visibility / name 预留） | 注册返回代理地址与占位符；缓存读写与失效正确；stub 解码 user_id/user_name/role 生效 |
 | M2 | HTTP 前缀流式转发 | echo 上游全链路验证；大文件流式不驻留内存 |
 | M3 | MCP SSE + endpoint 改写 | Inspector 以 SSE 传输完成 tools/call |
 | M4 | MCP Streamable | Inspector 以 Streamable 完成 tools/call |
@@ -698,7 +719,7 @@ SSE 长连接建连时注入一次；连接存续期间 token 过期不影响已
 | 路由方案 | 路径携带映射 ID：`/p/{mapping_id}/...`（单域名，无泛 DNS 要求） |
 | 占位符语义 | 用户填写 header 的**所有 value** 都替换占位符，纯脱敏；调用时全部从存储还原 |
 | 转发 header 构成 | 仅还原存储的原始 header；调用者 JWT 只做代理侧鉴权，不透传上游 |
-| 系统令牌 | JWT 自包含（HS256），uid 取自 claims |
+| 系统令牌 | JWT 校验与解码由**第三方接口**提供，代理通过 `TokenVerifier` 抽象对接（Identity：user_id / user_name / role）；本地不验签，一期提供 stub 实现（仅开发/测试），第三方实现后续接入 |
 | HTTP 映射粒度 | 前缀映射（注册一次覆盖同前缀全部接口） |
 | MCP 传输 | SSE + Streamable HTTP |
 | 调用权限 | 仅注册者本人 |
@@ -711,6 +732,6 @@ SSE 长连接建连时注入一次；连接存续期间 token 过期不影响已
 | 已知限制 | HTTP 响应体不解析不改写（上游 body 内绝对链接会到达 Agent，凭据不受影响）；DNS rebinding 一期不防护；SSE 半开连接依赖 TCP keepalive |
 | 公共映射（内置 MCP） | proxy_mapping 增加 visibility（private/public）与 name；public 由管理员创建、任意有效用户可调；复用同一转发管线 |
 | OAuth 客户端模式 | DCR（RFC 7591）优先，自动 discovery AS 元数据；不支持 DCR 的提供方由管理员手动配置 client；redirect_uri 回调到代理 |
-| 管理员标识 | JWT `role` claim 含 `admin`（claim 名/值可配：ADMIN_CLAIM / ADMIN_CLAIM_VALUE，与平台约定） |
+| 管理员标识 | `Identity.role` == `ADMIN_ROLE`（默认 `admin`）即为管理员；身份由第三方校验接口解码提供（user_id / user_name / role） |
 | OAuth 凭证托管 | 每用户一份凭证 (mapping_id, uid) 唯一，强制加密落库；调用时注入 Authorization: Bearer（「仅还原注册者 header」的唯一例外）；过期自动刷新（Redis 锁防并发） |
 | 里程碑归属 | 公共映射 + OAuth 凭证托管为一期 M6（M1 建表预留字段） |
