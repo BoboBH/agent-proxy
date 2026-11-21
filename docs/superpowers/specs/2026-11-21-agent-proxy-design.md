@@ -567,14 +567,47 @@ sequenceDiagram
 
 ---
 
-## 11. 日志规范
+## 11. 日志设计（运行 / 审计 / 追踪三层）
 
-遵循全局规范（按天滚动 + 单文件 50MB 立即滚动 + 保留 7 天 + 同一文件全局仅一个滚动 handler，后缀精确到秒防同日覆盖）：
+遵循全局滚动规范（按天 + 单文件 50MB 立即滚动 + 保留 7 天 + 同一文件全局仅一个滚动 handler，后缀精确到秒防同日覆盖）：
 
-- `logs/agent-proxy.log`：运行日志（DEBUG/INFO）；
-- `logs/audit.log`：审计日志（JSON 行，见 9.5 字段）；
-- **request_id**：每个请求生成 UUID，贯穿运行日志、审计日志，并随错误体与 `X-Request-ID` 响应头返回——全链路排障的关联键；
-- 敏感信息（真实 header、token、上游响应体）一律不打日志。
+| 文件 | 用途 | 内容 |
+|---|---|---|
+| `logs/agent-proxy.log` | 运行日志 | 启动 / 配置 / 缓存 / 连接池 / 异常等系统事件 |
+| `logs/audit.log` | 审计日志 | JSON 行，每次调用的元数据（9.5 字段），**不含 header 值与 body** |
+| `logs/trace.log` | **追踪日志**（排障核心） | 请求 / 响应明细，粒度由 `TRACE_MODE` 控制 |
+| （关联键） | `request_id` | 每请求 UUID，贯穿三层日志，并随错误体与 `X-Request-ID` 响应头返回 |
+
+### 11.1 追踪日志（trace.log）——请求与响应的可回放记录
+
+**粒度模式（`TRACE_MODE`）**：
+
+| 模式 | 内容 | 适用 |
+|---|---|---|
+| `off` | 不记录 | 高流量生产稳态 |
+| `metadata`（默认） | 请求行、还原后上游 URL、header 名 + **值指纹**、body 字节数、响应状态、耗时 | 常态运行 |
+| `body` | metadata + 请求 / 响应 body 全文（截断） | 排障期临时开启（改环境变量重启生效） |
+
+**格式（JSON 行，同 request_id 可完整回放一次调用）**：
+
+```json
+{"ts":"2026-11-21T10:00:00.123+08:00","request_id":"9f8e7d","uid":"u999","mapping_id":"aB3xK9mQ2wR4","phase":"request","method":"POST","url":"https://bobo.com/api/v1/orders","headers":{"X-API-Key":"sk-a****-key(len=13)","Content-Type":"application/json"},"body_bytes":212}
+{"ts":"...","request_id":"9f8e7d","phase":"response","status":200,"duration_ms":123,"body":"{\"orders\":[...]}","body_truncated":false}
+{"ts":"...","request_id":"...","phase":"sse_event","event":"message","data":"{\"jsonrpc\":\"2.0\",...}","data_truncated":false}
+```
+
+**脱敏规则（安全底线，任何模式都生效）**：
+
+- 真实凭据（存储 header 值、调用方 token、OAuth token / client_secret）：**值以指纹呈现** `前4****后4(len=N)`——足以比对「发出的凭据与配置是否一致」（典型如 401 排障），不泄露完整密钥；
+- 占位 header 显示为 `${PX:<名>}`（本就无敏感内容）；上游响应的 `Authorization` 等敏感头同样打码。
+
+**body / SSE 处理**：
+
+- 截断上限 `TRACE_BODY_MAX_SIZE`（默认 64KB），超长标记 `"truncated": true`；流式响应只截前 N 字节（大文件不落盘）；
+- SSE（body 模式）：记录连接建立、`endpoint` 事件（**改写前 + 改写后**）、每个 `message` 事件（截断）、关闭原因；心跳注释行与 `retry:` 不记录；
+- 二进制 body（非文本 Content-Type）只记字节数，不记内容。
+
+**性能与数据敏感性**：trace 写入经 `QueueHandler` + 后台线程异步落盘，不阻塞事件循环；body 模式磁盘消耗高，排障结束切回 `metadata`；body 含用户业务数据，需与公司日志系统访问权限策略对齐，7 天后随滚动自动清理。
 
 ---
 
@@ -612,6 +645,7 @@ agent-proxy/
 │   ├── ssrf.py                      # 上游地址校验
 │   ├── headers.py                   # 出站 header 重建 / hop-by-hop 过滤
 │   ├── logging_setup.py             # 滚动日志（全局规范）
+│   ├── trace.py                     # 追踪日志：三档粒度、header 指纹脱敏、body 截断、SSE 事件记录
 │   ├── metrics.py                   # Prometheus 指标定义与中间件埋点
 │   ├── api/
 │   │   ├── mgmt.py                  # /api/v1/mappings 管理接口
@@ -660,6 +694,8 @@ agent-proxy/
 | `ADMIN_ROLE` | 管理员角色值（`Identity.role` 与之相等即为管理员） | `admin` |
 | `ENCRYPT_AT_REST` / `MASTER_KEY` | 落库加密 | `false` / 必填(当开启) |
 | `LOG_DIR` / `LOG_LEVEL` | 日志目录 / 级别 | `logs` / `INFO` |
+| `TRACE_MODE` | 追踪日志粒度：`off` / `metadata`（默认）/ `body` | `metadata` |
+| `TRACE_BODY_MAX_SIZE` | body 记录截断上限 | `64KB` |
 
 ---
 
@@ -675,6 +711,7 @@ agent-proxy/
 | test 接口 | http 连通 / test_request 严格验证；SSE 首个 endpoint 事件；Streamable initialize 语义验证；OAuth 凭证失效提示重新授权；未注册 URL 拒绝探测 |
 | 管理页面 / SSO（M7） | stub 登录 → 回调 → 会话 → 页面操作全流程；Cookie 与 Bearer 双通道身份；admin 视图权限隔离；登出清除会话；未登录访问 /admin 302 到 login_url |
 | 指标 | /metrics 文本格式合法；计数与直方图随请求增长；SSE 活跃连接 Gauge 增减正确；标签基数受控（无 user_id / mapping_id） |
+| 追踪日志 | 三种模式行为正确；真实凭据 / token 在日志中以指纹呈现（完整值不出现）；body 截断标记 truncated；SSE 记录 endpoint 前后与 message 事件、心跳不记；二进制只记字节数；同 request_id 可回放一次调用 |
 
 ---
 
@@ -836,7 +873,7 @@ sequenceDiagram
 
 | 阶段 | 内容 | 验收 |
 |---|---|---|
-| M1 | 骨架 + 配置/日志 + TokenVerifier 抽象与 stub + Prometheus 基础埋点（/metrics）+ 管理接口 + MySQL/Redis（建表含 visibility / name / auth_mode / test_request 字段） | 注册返回代理地址与占位符；缓存读写与失效正确；stub 解码 user_id/user_name/role 生效；/metrics 可抓取 |
+| M1 | 骨架 + 配置/日志（含追踪日志框架）+ TokenVerifier 抽象与 stub + Prometheus 基础埋点（/metrics）+ 管理接口 + MySQL/Redis（建表含 visibility / name / auth_mode / test_request 字段） | 注册返回代理地址与占位符；缓存读写与失效正确；stub 解码 user_id/user_name/role 生效；/metrics 可抓取；trace 三模式与指纹打码生效 |
 | M2 | HTTP 前缀流式转发（含 test：连通 / test_request 严格验证） | echo 上游全链路验证；大文件流式不驻留内存；http test 可用 |
 | M3 | MCP SSE + endpoint 改写（含 SSE test） | Inspector 以 SSE 传输完成 tools/call；SSE test 可用 |
 | M4 | MCP Streamable（含 initialize test） | Inspector 以 Streamable 完成 tools/call；initialize test 可用 |
@@ -874,3 +911,4 @@ sequenceDiagram
 | 配置测试接口 | 个人映射与公共映射均提供 test（6.6）：复用转发管线实测真实路径；MCP 用 initialize / SSE 握手硬判定，HTTP 默认连通判定 + 可选 test_request 严格判定；仅限已注册映射，随 M2–M4 交付 |
 | 管理页面 | 本服务托管（Jinja2 + 原生 JS，无前端构建链），**无注册 / 登录页面**；认证复用公司统一登录（`LoginProvider` 抽象 + stub 先行，协议实现时对接）；服务端会话（Redis + HttpOnly Cookie）；`get_current_identity` 双通道：Bearer 优先、Cookie 回退，既有 API 零破坏 |
 | 可观测性 | Prometheus `/metrics` 一期接入（M1 基础埋点、M7 完善）；标签仅低基数维度（**不含 user_id / mapping_id**），按映射 / 用户维度排查走审计日志 + request_id 关联 |
+| 追踪日志 | trace.log 独立于审计日志：`TRACE_MODE` = off / metadata（默认）/ body；header 一律指纹打码（前4****后4 + 长度），body 截断 64KB；SSE 记事件级（含 endpoint 改写前后）；异步落盘不阻塞事件循环 |
