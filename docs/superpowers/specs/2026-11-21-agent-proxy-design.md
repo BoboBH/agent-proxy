@@ -4,7 +4,7 @@
 |---|---|
 | 日期 | 2026-11-21 |
 | 状态 | 已评审（设计决策见附录 A） |
-| 范围 | 一期：HTTP 前缀代理 + MCP（SSE / Streamable HTTP）代理 |
+| 范围 | 一期：HTTP 前缀代理 + MCP（SSE / Streamable HTTP）代理 + 内置公共映射与 OAuth 凭证托管（M6） |
 
 ---
 
@@ -25,13 +25,14 @@ Agent 平台的用户需要接入外部 MCP 服务与 HTTP API。如果让 Agent
 1. **HTTP 代理**：前缀映射，任意子路径 / query / body / method 流式透传；
 2. **MCP 代理**：支持 **SSE** 与 **Streamable HTTP** 两种远程传输，含 endpoint 事件改写；
 3. **注册机制**：用户在 Agent 页面保存前，先调代理注册接口保存真实地址 + 真实 header；代理返回代理地址 + 占位符 header，Agent 侧只保存后者；
-4. **鉴权**：全部接口使用系统 JWT；映射**仅注册者本人可调用**。
+4. **鉴权**：全部接口使用系统 JWT；私有映射**仅注册者本人可调用**；
+5. **内置（公共）MCP + OAuth 凭证托管**（M6）：管理员创建固定地址的公共映射，用户经 OAuth2 / OAuth2.1 授权后个人凭证托管在代理侧，调用时按用户注入（见第 14 章）。
 
 ### 1.3 非目标（一期不做）
 
 - MCP stdio 传输（本服务只做远程传输代理）；
 - 限流、配额；
-- 「按调用者动态替换 header 值」「可配置用户信息注入 header」（当前确认：仅还原注册者存储的 header）；
+- 可配置的任意「用户信息 → header」注入映射（一期仅还原注册者存储的 header；第 14 章 OAuth 场景按用户注入 `Authorization` 是唯一例外）；
 - Web 管理界面；
 - 上游 OAuth 鉴权；
 - 多实例缓存失效广播（Redis pub/sub）；
@@ -144,7 +145,9 @@ CREATE TABLE proxy_mapping (
   id               BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   mapping_id       VARCHAR(16)  NOT NULL COMMENT '对外路由标识，随机 base62',
   owner_uid        VARCHAR(64)  NOT NULL COMMENT '注册者 uid，来自 JWT',
+  name             VARCHAR(128) NULL COMMENT '显示名（公共映射由管理员填写）',
   type             ENUM('http','mcp') NOT NULL,
+  visibility       ENUM('private','public') NOT NULL DEFAULT 'private' COMMENT 'private 仅注册者可调；public 内置映射，任意有效用户可调（见第14章）',
   upstream_url     VARCHAR(2048) NOT NULL COMMENT 'http: 前缀URL；mcp: 端点URL',
   upstream_headers JSON         NOT NULL COMMENT '真实 header，可选应用层加密',
   status           ENUM('active','disabled') NOT NULL DEFAULT 'active',
@@ -173,6 +176,48 @@ CREATE TABLE proxy_mapping (
 
 **一致性**：写时删缓存 + TTL 兜底。多实例部署时，其他实例最多在 TTL 周期内读到旧值；二期可加 Redis pub/sub 失效广播。
 
+### 5.3 OAuth（M6，内置映射专用）
+
+```sql
+CREATE TABLE proxy_oauth_client (
+  id             BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  mapping_id     VARCHAR(16)  NOT NULL COMMENT '关联的公共映射',
+  client_id      VARCHAR(256) NOT NULL,
+  client_secret  TEXT         NULL COMMENT '加密存储；公共客户端可空',
+  token_auth     ENUM('client_secret_basic','client_secret_post','none') NOT NULL DEFAULT 'client_secret_post',
+  authorize_url  VARCHAR(2048) NULL COMMENT '手动模式填写；DCR 模式留空',
+  token_url      VARCHAR(2048) NULL COMMENT '手动模式填写；DCR 模式留空',
+  scopes         VARCHAR(512) NULL,
+  source         ENUM('dcr','manual') NOT NULL,
+  created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_mapping (mapping_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='公共映射的 OAuth 客户端注册信息';
+
+CREATE TABLE proxy_oauth_credential (
+  id            BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  mapping_id    VARCHAR(16) NOT NULL,
+  uid           VARCHAR(64) NOT NULL,
+  access_token  TEXT NOT NULL COMMENT '强制加密存储（MASTER_KEY）',
+  refresh_token TEXT NULL COMMENT '加密存储',
+  expires_at    DATETIME NULL,
+  scope         VARCHAR(512) NULL,
+  status        ENUM('active','invalid') NOT NULL DEFAULT 'active',
+  created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_mapping_uid (mapping_id, uid),
+  KEY idx_uid (uid)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户对公共映射的 OAuth 凭证（每用户一份）';
+```
+
+**Redis 扩展（M6）**
+
+| key | 用途 | TTL |
+|---|---|---|
+| `ap:oauth:state:{state}` | 授权流程 state（uid、mapping_id、code_verifier、front_redirect），一次性 | 600s |
+| `ap:lock:refresh:{mapping_id}:{uid}` | 凭证刷新互斥锁 | 30s |
+| `ap:cred:{mapping_id}:{uid}` | 凭证缓存（绑定 / 解绑 / 刷新时失效） | 60s |
+
 ---
 
 ## 6. API 设计
@@ -193,6 +238,8 @@ CREATE TABLE proxy_mapping (
 | 字段 | 规则 |
 |---|---|
 | `type` | 必填，`http` 或 `mcp` |
+| `name` | 可选，显示名（公共映射建议填写） |
+| `visibility` | 可选，`private`（默认）或 `public`；**public 仅 JWT `role` 含 `admin` 的用户可设置** |
 | `upstream_url` | 必填；scheme 仅 http/https；host 必填；mcp 类型建议为完整端点（如 `.../sse`、`.../mcp`） |
 | `headers` | 可选 object；键名须为合法 header 名（RFC 7230 token）；值必须为字符串；数量 ≤ 32，单值长度 ≤ 4KB |
 
@@ -257,6 +304,16 @@ HTTP 200
 4. **审计**：详情（`GET /{mapping_id}`）与 resolve 两个接口都会输出真实 header，是管理域中仅有的两个；每次调用均记审计日志（`action=view_credentials`）；
 5. 用户编辑后保存走 PUT 更新接口，更新成功后删缓存。
 
+### 6.5 内置 MCP（公共映射）与 OAuth 接口（M6，详见第 14 章）
+
+| 方法 | 路径 | 鉴权 | 说明 |
+|---|---|---|---|
+| GET | `/api/v1/builtin-mappings` | JWT | 内置映射列表：name、type、proxy_url、我的绑定状态 |
+| POST | `/api/v1/builtin-mappings/{mapping_id}/authorize` | JWT | 发起授权：入参 `front_redirect`（回跳页面，域白名单校验），返回 `{authorization_url}` |
+| GET | `/oauth/callback` | 无（state 关联用户） | OAuth 回调：code 换 token、加密落库、302 回跳平台页面 |
+| GET | `/api/v1/builtin-mappings/{mapping_id}/binding` | JWT | 查询我的绑定状态（页面轮询） |
+| DELETE | `/api/v1/builtin-mappings/{mapping_id}/binding` | JWT | 解绑：删除本地凭证（提供方支持时同时调用 revoke 吊销） |
+
 ---
 
 ## 7. 鉴权设计（系统 JWT）
@@ -265,7 +322,7 @@ HTTP 200
 |---|---|
 | 携带方式 | `Authorization: Bearer <token>` |
 | 算法 | HS256 + 共享密钥（环境变量 `JWT_SECRET`，与 Agent 平台同源）；预留 RS256 / JWKS 演进 |
-| claims | `uid`（必须）、`exp`（必须）、`iat`、`tenant_id` / `name`（可选，仅用于审计） |
+| claims | `uid`（必须）、`exp`（必须）、`iat`、`tenant_id` / `name`（可选，仅用于审计）、`role`（可选，含 `admin` 时可创建/管理公共映射，见 14.2） |
 | 校验 | 验签 + exp（leeway 60 秒）；代理不刷新、不下发 token |
 | 代理侧用途 | ① 管理接口：uid 归属校验；② 代理端点：uid = `owner_uid` 才放行 |
 | **不透传** | **调用者的 JWT 绝不转发给上游**（见 8.1） |
@@ -418,6 +475,7 @@ sequenceDiagram
 | 8 | CORS | 管理接口供浏览器配置页直连时需跨域：`CORS_ALLOWED_ORIGINS` 配置平台页面域名白名单（仅管理域开启）；`/p/*` 默认不开 CORS（Agent 运行时为服务端直连，如需浏览器直连再单独开启） |
 | 9 | 重定向 | 同源重定向内部跟随、`Location` 永不回传；跨源原样透传（见 8.1 第 7 条） |
 | 10 | 已知限制（一期接受） | ① HTTP 响应体不解析不改写：上游响应体中若含真实地址绝对链接（如分页 `next`）会原样到达 Agent——**凭据（header）不受影响**，建议上游返回相对路径；MCP JSON-RPC 载荷不含 URL，不受影响。② DNS rebinding（注册时校验、请求时重新解析）一期不做强防护。③ SSE 半开连接（客户端异常消失）依赖 TCP keepalive 检测，一期不设最长连接时长 |
+| 11 | OAuth 凭证（M6） | PKCE(S256) 必须；state 一次性 + 600s TTL + 绑定 uid；redirect_uri 精确等于 `{EXTERNAL_BASE}/oauth/callback/{mapping_id}`；access/refresh token 强制加密落库；回跳页仅允许 `CORS_ALLOWED_ORIGINS` 域（防开放重定向）；token 与 client_secret 不入任何日志，绑定/解绑/刷新入审计日志 |
 
 ---
 
@@ -428,10 +486,11 @@ sequenceDiagram
 | 场景 | HTTP | code |
 |---|---|---|
 | JWT 缺失 / 无效 / 过期 | 401 | `INVALID_TOKEN` |
-| 非注册者调用 / 操作 | 403（代理端点）/ 404（管理接口，隐藏存在性） | `FORBIDDEN` / `MAPPING_NOT_FOUND` |
+| 非注册者调用 / 操作；非管理员创建/改删公共映射 | 403（代理端点与越权）/ 404（管理接口，隐藏存在性） | `FORBIDDEN` / `MAPPING_NOT_FOUND` |
 | 映射不存在或已禁用 | 404 | `MAPPING_NOT_FOUND` |
 | 注册 / 更新参数非法 | 400 | `INVALID_PARAM` |
 | 代理子路径含 `..` 等非法段 | 400 | `INVALID_PARAM` |
+| 用户未完成 OAuth 绑定 / 凭证失效 | 401 | `OAUTH_BINDING_REQUIRED`（body 附授权引导信息） |
 | 上游连接失败 | 502 | `UPSTREAM_ERROR` |
 | 上游超时 | 504 | `UPSTREAM_TIMEOUT` |
 | 请求体超限 | 413 | `BODY_TOO_LARGE` |
@@ -484,7 +543,11 @@ agent-proxy/
 │   ├── logging_setup.py             # 滚动日志（全局规范）
 │   ├── api/
 │   │   ├── mgmt.py                  # /api/v1/mappings 管理接口
+│   │   ├── builtin.py               # 内置 MCP（公共映射）接口 + OAuth 回调（M6）
 │   │   └── proxy.py                 # /p/{mapping_id}/{path} 转发入口
+│   ├── oauth/
+│   │   ├── client.py                # DCR / 手动客户端注册（M6）
+│   │   └── credential.py            # 凭证存取、刷新锁、注入（M6）
 │   └── forward/
 │       ├── http_forward.py          # HTTP 前缀流式转发
 │       ├── mcp_sse.py               # SSE 长连接 + endpoint 改写
@@ -512,6 +575,8 @@ agent-proxy/
 | `UPSTREAM_MAX_REDIRECTS` | 同源重定向内部跟随跳数 | `3` |
 | `CORS_ALLOWED_ORIGINS` | 管理域跨域白名单（逗号分隔，空=不开） | 空 |
 | `SSRF_ALLOW_PRIVATE` | 允许内网上游（联调用） | `false` |
+| `OAUTH_STATE_TTL` | 授权 state 有效期（秒） | `600` |
+| `ADMIN_CLAIM` / `ADMIN_CLAIM_VALUE` | 管理员标识 claim 名 / 值（与平台约定） | `role` / `admin` |
 | `ENCRYPT_AT_REST` / `MASTER_KEY` | 落库加密 | `false` / 必填(当开启) |
 | `LOG_DIR` / `LOG_LEVEL` | 日志目录 / 级别 | `logs` / `INFO` |
 
@@ -525,20 +590,104 @@ agent-proxy/
 | 集成 | pytest + mock 上游（普通 HTTP echo / SSE / Streamable）走全链路：注册 → 占位符校验 → 调用 → 用 echo 验证转发 URL 与出站 header 与存储一致；权限用例（无 token 401、他人 403、禁用 404）；resolve 回显用例（注册者取回真实值、他人 404、非法 proxy_url 400、直接传 mapping_id）；**安全用例**：子路径 `..` / `%2e%2e` 拒绝 400、同源重定向内部跟随且 `Location` 不回传（307 POST 保方法）、跨源重定向透传、gzip 请求体透传、413 截断、流中断终止、CORS 预检 OPTIONS |
 | 真实客户端 | MCP Inspector（`npx @modelcontextprotocol/inspector`）分别以 SSE 与 Streamable 连接代理，完成 tools/list 与 tools/call |
 | 缓存 | 命中 / 未命中回源 / 写后失效 / Redis 停机降级 |
+| OAuth（M6） | mock AS 全流程：DCR 注册、授权码+PKCE 换 token、state 过期 / 伪造 400、回调落库加密校验、过期自动刷新与并发刷新锁、未绑定调用 401 `OAUTH_BINDING_REQUIRED`、非 admin 创建 public 映射 403、回跳域白名单外拒绝 |
 
 ---
 
-## 14. 里程碑
+## 14. 内置（公共）MCP 与 OAuth 凭证托管（M6）
+
+### 14.1 场景
+
+Agent 内置若干外部 MCP：地址固定、不因人而变；但 MCP 提供方要求用户登录（OAuth2 / OAuth2.1），个人授权凭证需托管在代理侧——Agent 侧不持有任何上游 token。
+
+三个角色变化：
+
+- **公共映射**：平台管理员（agent 配置管理后台）一次性创建，地址固定，任意有效用户可调用；
+- **用户绑定**：用户对某公共映射完成一次 OAuth 授权后，凭证（access/refresh token）存于代理，`(mapping_id, uid)` 唯一；
+- **按用户注入**：调用时代理注入**该调用者**的 `Authorization: Bearer <token>`——这是「仅还原注册者 header」原则（8.1）的唯一例外。
+
+### 14.2 公共映射与鉴权矩阵
+
+复用 `proxy_mapping`（新增 `visibility`、`name` 字段，见 5.1）：
+
+| | private（现有默认） | public（内置 MCP） |
+|---|---|---|
+| 创建 / 改 / 删 | 注册者本人 | 仅 JWT `role` 含 `admin` |
+| 调用（`/p/{id}/...`） | 仅注册者（uid=owner） | 任意有效 JWT 用户 |
+| upstream_url | 用户填写，因人而异 | 固定地址 |
+| resolve / 详情回显 | 注册者 | 仅 admin（普通用户信息由列表接口提供） |
+| OAuth | 不涉及 | 用户绑定后按用户注入；未绑定调用 → 401 `OAUTH_BINDING_REQUIRED` |
+
+公共映射同样支持 `type=http`（内置 HTTP API 通用化，注入逻辑相同）。约定：OAuth 型公共映射的 `upstream_headers` 不配置 `Authorization`，调用时以用户 token 覆盖同名 header。
+
+### 14.3 OAuth 客户端注册（DCR 优先 + 手动兼容）
+
+- **DCR（默认）**：首次对公共映射发起授权时，代理按 MCP 授权规范做 discovery（upstream origin 下 `/.well-known/oauth-protected-resource` → `/.well-known/oauth-authorization-server`）取得 AS 元数据与 `registration_endpoint`，动态注册客户端：redirect_uris = `{EXTERNAL_BASE}/oauth/callback/{mapping_id}`、grant_types = authorization_code + refresh_token、PKCE(S256)；结果存 `proxy_oauth_client`（`source=dcr`）；
+- **手动（降级）**：提供方不支持 DCR 时，管理员创建公共映射时直接填 client_id / client_secret / authorize_url / token_url / scopes（`source=manual`）；
+- discovery 或 DCR 失败 → 授权接口返回明确错误，提示管理员改用手动配置。
+
+### 14.4 授权绑定流程
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as 用户浏览器
+    participant P as Agent配置页
+    participant X as agent-proxy
+    participant A as MCP提供方 AS加RS
+    U->>P: 点击连接内置 MCP
+    P->>X: POST /builtin-mappings/{id}/authorize（JWT, front_redirect）
+    X->>X: 取/创建 OAuth client（DCR 或手动）
+    X->>X: 生成 state + PKCE verifier 入 Redis（600s，含 uid、mapping_id、front_redirect）
+    X-->>P: authorization_url
+    P->>U: 浏览器跳转提供方授权页
+    U->>A: 登录并同意授权
+    A->>X: GET /oauth/callback?code&state
+    X->>X: 校验 state（一次性）→ 取 uid 与 verifier
+    X->>A: POST token 端点（code + code_verifier + client 凭证）
+    A-->>X: access_token / refresh_token / expires_in
+    X->>X: 加密落库 proxy_oauth_credential(mapping_id, uid)
+    X-->>U: 302 → front_redirect?binding=success（域白名单校验）
+    P->>X: GET .../binding 轮询 → bound
+    P->>U: 页面把内置 MCP 的公共 proxy_url 存入 Agent
+```
+
+绑定状态机：`unbound → authorizing（state 存续期间）→ bound(active) → invalid（refresh 失败 / 提供方吊销）`；invalid 后调用一律 401，页面引导重新授权；用户可主动 DELETE 解绑（支持时同时调用上游 revoke）。
+
+### 14.5 调用时的凭证注入
+
+```
+公共映射调用（/p/{id}/...）:
+  鉴权 JWT → 任意有效用户放行（visibility=public）
+  查凭证 (mapping_id, uid): 无 / invalid → 401 OAUTH_BINDING_REQUIRED
+  expires_at - 60s < now → refresh_token 刷新（Redis 锁防并发；失败 → status=invalid → 401）
+  出站 header = 公共静态 headers + Authorization: Bearer <该用户 access_token>
+```
+
+SSE 长连接建连时注入一次；连接存续期间 token 过期不影响已建立的连接（上游在后续 POST 时校验，届时代理已刷新）。
+
+### 14.6 安全要点
+
+- PKCE(S256) 必须；state 一次性、600s TTL、绑定 uid（防 CSRF / 顶号）；
+- redirect_uri 精确等于 `{EXTERNAL_BASE}/oauth/callback/{mapping_id}`；
+- access / refresh token **强制**加密落库（复用 `MASTER_KEY`，不受 `ENCRYPT_AT_REST` 开关影响）；
+- 回跳 front_redirect 仅允许 `CORS_ALLOWED_ORIGINS` 白名单域，防开放重定向；
+- token、client_secret 不入任何日志；绑定 / 解绑 / 刷新事件入审计日志。
+
+---
+
+## 15. 里程碑
 
 | 阶段 | 内容 | 验收 |
 |---|---|---|
-| M1 | 骨架 + 配置/日志/JWT + 管理接口 + MySQL/Redis | 注册返回代理地址与占位符；缓存读写与失效正确 |
+| M1 | 骨架 + 配置/日志/JWT + 管理接口 + MySQL/Redis（建表含 visibility / name 预留） | 注册返回代理地址与占位符；缓存读写与失效正确 |
 | M2 | HTTP 前缀流式转发 | echo 上游全链路验证；大文件流式不驻留内存 |
 | M3 | MCP SSE + endpoint 改写 | Inspector 以 SSE 传输完成 tools/call |
 | M4 | MCP Streamable | Inspector 以 Streamable 完成 tools/call |
 | M5 | 集成测试补全 + README + 联调 | 全部测试通过 |
+| M6 | 公共映射（内置 MCP）+ OAuth 凭证托管 | mock AS 全流程：DCR/手动客户端 → 授权绑定 → 回调落库加密 → 按用户注入调用；未绑定 401、过期自动刷新、非 admin 越权 403 |
 
-**二期演进**：限流与配额（Redis 计数）、多实例缓存失效广播、可配置的用户信息注入 header、Web 管理界面、上游 OAuth、指标监控、DNS rebinding 强防护。
+**二期演进**：限流与配额（Redis 计数）、多实例缓存失效广播、可配置的用户信息注入 header、Web 管理界面、指标监控、DNS rebinding 强防护。（「上游 OAuth」已由 M6 以代理托管凭证的方式实现，二期刊 remaining：MCP 客户端自带 OAuth 直连代理的透传模式。）
 
 ---
 
@@ -560,3 +709,8 @@ agent-proxy/
 | 重定向策略 | 同源重定向代理内部跟随（≤3 跳），`Location` 不回传 Agent；跨源重定向原样透传 |
 | 重复注册 | 同一用户可对相同 upstream_url 注册多条映射（不同 header 场景），不做 upsert |
 | 已知限制 | HTTP 响应体不解析不改写（上游 body 内绝对链接会到达 Agent，凭据不受影响）；DNS rebinding 一期不防护；SSE 半开连接依赖 TCP keepalive |
+| 公共映射（内置 MCP） | proxy_mapping 增加 visibility（private/public）与 name；public 由管理员创建、任意有效用户可调；复用同一转发管线 |
+| OAuth 客户端模式 | DCR（RFC 7591）优先，自动 discovery AS 元数据；不支持 DCR 的提供方由管理员手动配置 client；redirect_uri 回调到代理 |
+| 管理员标识 | JWT `role` claim 含 `admin`（claim 名/值可配：ADMIN_CLAIM / ADMIN_CLAIM_VALUE，与平台约定） |
+| OAuth 凭证托管 | 每用户一份凭证 (mapping_id, uid) 唯一，强制加密落库；调用时注入 Authorization: Bearer（「仅还原注册者 header」的唯一例外）；过期自动刷新（Redis 锁防并发） |
+| 里程碑归属 | 公共映射 + OAuth 凭证托管为一期 M6（M1 建表预留字段） |
