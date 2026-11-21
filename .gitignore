@@ -1,0 +1,15 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# 环境与密钥
+.env
+
+# 日志
+logs/
+
+# IDE
+.idea/
+.vscode/
