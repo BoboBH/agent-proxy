@@ -8,7 +8,10 @@ __pycache__/
 .env
 
 # 日志
-logs/
+logs*/
+
+# 本地资料（不入库）
+cms-dingtalk/
 
 # IDE
 .idea/
