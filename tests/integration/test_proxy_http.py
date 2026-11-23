@@ -7,7 +7,6 @@ import re
 from contextlib import asynccontextmanager
 
 import httpx
-import pytest
 
 from tests.utils import make_token
 
@@ -199,24 +198,36 @@ class _RecordingResponse(httpx.Response):
 
 
 class _FakeStreamClient:
-    """替身 http_client：记录 send(stream=...) 调用形态（Critical 假流式检测器）。"""
+    """替身 http_client：记录 send(stream=...) 调用形态（Critical 假流式检测器）。
 
-    def __init__(self):
-        self.sent_stream = None
+    responses 可选逐跳脚本 [(status, headers), ...]：默认单跳 200（首跳用例）；
+    重定向链用例传两跳脚本（302 同源 → 200），验证跟随跳仍真流式（评审 Critical）。
+    """
+
+    def __init__(self, responses=None):
+        self.sent_streams = []   # 每跳 send(stream=...) 实参（按跳记录）
+        self.sent_stream = None  # 兼容既有首跳断言（最后一跳值）
+        self.sent_urls = []      # 每跳请求 URL（按跳记录）
         self.response = None
+        self._responses = list(responses) if responses else [
+            (200, {"content-type": "text/plain"})]
+        self._calls = 0
 
     def build_request(self, method, url, headers=None, content=None):
         return httpx.Request(method, url, headers=headers, content=content)
 
     async def send(self, request, stream=False):
+        self.sent_streams.append(stream)
         self.sent_stream = stream
+        self.sent_urls.append(str(request.url))
 
         async def _body():
             yield b"hello-stream"
 
+        status, headers = self._responses[min(self._calls, len(self._responses) - 1)]
+        self._calls += 1
         # content 必须是 async 迭代器：httpx 禁止对 sync stream 做 async aclose
-        self.response = _RecordingResponse(
-            200, headers={"content-type": "text/plain"}, content=_body())
+        self.response = _RecordingResponse(status, headers=headers, content=_body())
         return self.response
 
     async def aclose(self):
@@ -240,6 +251,29 @@ async def test_forward_uses_true_streaming_send(client, app):
     assert fake.sent_stream is True              # 真流式：send(stream=True)
     assert fake.response.aread_called is False   # 响应体未整体读进内存
     assert b"hello-stream" in resp.content       # body 经 StreamingResponse 完整回传
+
+
+async def test_forward_redirect_chain_keeps_true_streaming(client, app):
+    """Critical 回归（评审修复）：同源重定向跟随跳也必须 build_request+send(stream=True)——
+    跳间用 client.request 会在 _response_stream 前 aread() 整体缓冲，正是 Task 5 修掉的
+    假流式在跟随路径复活。断言两跳均 stream=True、aread 未调用、body 完整回传。"""
+    created = await _register(client)
+    mid = created["mapping_id"]
+    fake = _FakeStreamClient([
+        (302, {"location": "/api/v1/final?via=redirect"}),  # 同源首跳（重定向）
+        (200, {"content-type": "text/plain"}),              # 跟随跳
+    ])
+    real = app.state.http_client
+    app.state.http_client = fake
+    try:
+        resp = await _call(client, mid, "GET", "/orders")
+    finally:
+        app.state.http_client = real
+    assert resp.status_code == 200
+    assert fake.sent_streams == [True, True]    # 两跳均真流式（含跟随跳）
+    assert fake.sent_urls[-1].endswith("/api/v1/final?via=redirect")  # 同源跟随发生
+    assert fake.response.aread_called is False  # 末跳响应体未被整体读进内存
+    assert b"hello-stream" in resp.content      # body 经 StreamingResponse 完整回传
 
 
 async def test_stream_broken_is_observable(client, app):
@@ -310,6 +344,24 @@ async def test_same_origin_307_post_keeps_method(client):
     assert echo["method"] == "POST" and echo["path"] == "/final"
 
 
+async def test_same_origin_303_post_downgrades_to_get(client):
+    """303 → GET（载荷类方法降级，设计 §8.1 第 7 条；307 保方法对照见上一用例）。"""
+    created = await _register(client)
+    resp = await _call(client, created["mapping_id"], "POST", "/redirect/303",
+                       headers={"Content-Type": "application/json"}, content=b'{"a":1}')
+    assert resp.status_code == 200
+    echo = resp.json()
+    assert echo["method"] == "GET" and echo["path"] == "/final"
+
+
+async def test_malformed_redirect_location_maps_502(client):
+    """畸形 Location（"port" 非法端口 → httpx InvalidURL）：解析兜底——先关流再映射
+    502 UPSTREAM_ERROR（评审 Important 3 资源卫生；此前该异常逃逸为 500）。"""
+    created = await _register(client)
+    resp = await _call(client, created["mapping_id"], "GET", "/redirect/bad-location")
+    assert resp.status_code == 502 and resp.json()["code"] == "UPSTREAM_ERROR"
+
+
 async def test_cross_origin_redirect_passthrough(client):
     """跨源 302（→9902 不存在端口）：不跟随原样透传；若被跟随会得到 502 而非 302。"""
     created = await _register(client)
@@ -319,10 +371,14 @@ async def test_cross_origin_redirect_passthrough(client):
 
 
 async def test_redirect_loop_stops_at_limit(client):
-    """超过 UPSTREAM_MAX_REDIRECTS(默认 3) 后最后一跳原样透传。"""
+    """超过 UPSTREAM_MAX_REDIRECTS(默认 3) 仍是同源重定向 → 502 TOO_MANY_REDIRECTS
+    中止（评审 Important 2：§8.1 第 7 条「同源 Location 永不回传」——透传会把绝对
+    Location 暴露的注册上游 origin 泄给 Agent）；跨源重定向不在此列，保持透传。"""
     created = await _register(client)
     resp = await _call(client, created["mapping_id"], "GET", "/redirect/loop")
-    assert resp.status_code == 302
+    assert resp.status_code == 502 and resp.json()["code"] == "TOO_MANY_REDIRECTS"
+    assert "location" not in {k.lower() for k in resp.headers.keys()}  # 同源 Location 不回传
+    assert "127.0.0.1:9901" not in resp.text                           # 注册上游 origin 不泄露
 
 
 async def test_redirect_hop_dot_segment_400(client):

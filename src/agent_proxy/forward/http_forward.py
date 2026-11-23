@@ -148,30 +148,45 @@ async def stream_http_forward(app_state, mapping_data: dict, request: Request) -
 
     # 同源重定向内部跟随（设计 §8.1 第 7 条）：同源判定与「注册 upstream_url 的
     # origin」比较（非逐跳 target）；存储 header 每跳重放；跨源不跟随原样透传
-    # （Location 指向第三方属上游自身行为）；超过 UPSTREAM_MAX_REDIRECTS 后
-    # 最后一跳同样透传。
+    # （Location 指向第三方属上游自身行为）；跟随跳沿用真流式 send（评审 Critical：
+    # client.request 内部 send(stream=False) 会 aread() 整体缓冲——假流式会在
+    # 跟随路径复活）；超过 UPSTREAM_MAX_REDIRECTS 见循环后超限兜底。
     upstream_origin = _origin(httpx.URL(mapping_data["upstream_url"]))
     redirects = 0
     while upstream_resp.is_redirect and redirects < settings.upstream_max_redirects:
         location = upstream_resp.headers.get("location")
         if not location:
             break
-        next_url = httpx.URL(target).join(location)
+        # Location 解析兜底（评审 Important 3）：畸形 Location 抛 InvalidURL 时
+        # 先关流防泄漏，再按上游错误映射 502（httpx 在 follow_redirects=False 下
+        # 预解析 next_request 时也会抛 RemoteProtocolError，那层由 HTTPError 映射
+        # 覆盖；此处兜住 join 自身解析路径）
+        try:
+            next_url = httpx.URL(target).join(location)
+        except httpx.InvalidURL as exc:
+            await upstream_resp.aclose()
+            raise AppError(502, "UPSTREAM_ERROR",
+                           f"上游返回非法 Location: {location!r}") from exc
         if _origin(next_url) != upstream_origin:
-            break  # 跨源：透传
+            break  # 跨源：透传（响应流保持打开，交 _response_stream 原样回传）
+        # 资源卫生（评审 Important 3）：已确定不再使用本跳响应体（跟随或中止二选一），
+        # 先关流——assert_safe_sub_path 抛 400 前流已释放，不漏关
+        await upstream_resp.aclose()
         # 跳路径与基本路径同有 dot-segment/编码斜杠逃逸暴露（Task 3 评审携带项）：
         # Location 派生的跳路径必须重过安全检查，否则跟随跳可逃逸注册前缀。
         # 用 .path（httpx 已解一层码、不含 query）而非 raw_path（含 query）；
         # assert_safe_sub_path 自带两层 unquote 深度，解码层次覆盖不变。
         assert_safe_sub_path(next_url.path)
-        await upstream_resp.aclose()
         target = str(next_url)
         method = _redirect_method(upstream_resp.status_code, request.method)
         # 已知限制（M2 接受）：首跳 body 已流式消耗，跳间不重放 body（303 已降为 GET）；
         # content-length 随之失效，跟随跳不再携带
         hop_headers = {k: v for k, v in outbound.items() if k.lower() != "content-length"}
         try:
-            upstream_resp = await client.request(method, target, headers=hop_headers)
+            # 真流式（评审 Critical）：跟随跳必须 build_request + send(stream=True)，
+            # client.request 内部 send(stream=False) 会 aread() 把响应体整体读进内存
+            hop_req = client.build_request(method, target, headers=hop_headers)
+            upstream_resp = await client.send(hop_req, stream=True)
         except httpx.PoolTimeout as exc:  # 池上限（必须先于 TimeoutException 捕获）
             metrics.upstream_errors_total.labels(type="http", code="pool_exhausted").inc()
             raise AppError(503, "PROXY_BUSY", "上游连接池已满，请稍后重试") from exc
@@ -182,6 +197,22 @@ async def stream_http_forward(app_state, mapping_data: dict, request: Request) -
             metrics.upstream_errors_total.labels(type="http", code="connect").inc()
             raise AppError(502, "UPSTREAM_ERROR", f"上游连接失败: {exc}") from exc
         redirects += 1
+
+    # 超限兜底（评审 Important 2，§8.1 第 7 条「同源 Location 永不回传」）：跟随
+    # 次数用尽仍是重定向时——同源 Location（可能为绝对 URL，会暴露注册上游 origin）
+    # 必须中止回 502 而非透传；跨源重定向属上游自身行为，保持透传不变。
+    if redirects >= settings.upstream_max_redirects and upstream_resp.is_redirect:
+        location = upstream_resp.headers.get("location") or ""
+        try:
+            still_same_origin = bool(location) and _origin(
+                httpx.URL(target).join(location)) == upstream_origin
+        except httpx.InvalidURL:
+            still_same_origin = False  # 畸形 Location 无 origin 可判，按透传交下游自行处理
+        if still_same_origin:
+            await upstream_resp.aclose()
+            raise AppError(502, "TOO_MANY_REDIRECTS",
+                           f"上游重定向次数超过上限 {settings.upstream_max_redirects}，"
+                           "已中止转发（同源 Location 不回传）")
 
     # duration_ms 语义：time-to-headers——上游响应头到达耗时，不含 body 流式传输时长
     # （有重定向时含各跳耗时）

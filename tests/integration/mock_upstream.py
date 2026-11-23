@@ -63,6 +63,16 @@ def build_echo_app() -> FastAPI:
     async def redirect_307():
         return RedirectResponse("/api/v1/final", status_code=307)
 
+    @app.post("/api/v1/redirect/303")
+    async def redirect_303():
+        return RedirectResponse("/api/v1/final", status_code=303)
+
+    @app.get("/api/v1/redirect/bad-location")
+    async def redirect_bad_location():
+        # 评审修复（Important 3）：畸形 Location（"port" 非法端口 → httpx InvalidURL）——
+        # 代理解析必须先关流再映射 502，不得逃逸成 500/漏关流
+        return RedirectResponse("http://127.0.0.1:port/nowhere", status_code=302)
+
     @app.api_route("/api/v1", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
     @app.api_route("/api/v1/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
     async def echo(request: Request, path: str = ""):

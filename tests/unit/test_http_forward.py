@@ -1,9 +1,10 @@
 """forward 纯函数单测：前缀拼接（§8.2）、子路径分发、dot-segment 拒绝（§8.1 第 8 条）。"""
+import httpx
 import pytest
 
 from agent_proxy.errors import AppError
 from agent_proxy.forward.http_forward import (assert_safe_sub_path, build_forward_target,
-                                              split_sub_path)
+                                              _origin, _redirect_method, split_sub_path)
 
 
 def test_build_target_prefix_join():
@@ -59,3 +60,28 @@ def test_split_sub_path_prefix_mismatch_400():
     with pytest.raises(AppError) as ei:
         split_sub_path("/other/orders", "aB3xK9mQ2wR4")
     assert ei.value.status == 400
+
+
+# ---------- Task 6 评审修复回归：重定向辅助函数 ----------
+
+
+def test_redirect_method_303_downgrades_payload_methods():
+    """303 → GET 仅降级载荷类方法（设计 §8.1 第 7 条）；GET 本就不变。"""
+    for m in ("POST", "PUT", "PATCH", "DELETE"):
+        assert _redirect_method(303, m) == "GET"
+    assert _redirect_method(303, "GET") == "GET"
+
+
+def test_redirect_method_301_302_307_308_keep_method():
+    for status in (301, 302, 307, 308):
+        assert _redirect_method(status, "POST") == "POST"
+        assert _redirect_method(status, "DELETE") == "DELETE"
+
+
+def test_origin_default_port_normalized():
+    """origin 比较的端口归一（评审 Minor）：省略与显式默认端口必须判同一 origin。"""
+    assert _origin(httpx.URL("http://x.com/a")) == ("http", "x.com", 80)
+    assert _origin(httpx.URL("https://x.com/a")) == ("https", "x.com", 443)
+    assert _origin(httpx.URL("https://x.com:443/b")) == _origin(httpx.URL("https://x.com/b"))
+    assert _origin(httpx.URL("http://x.com:80/b")) == _origin(httpx.URL("http://x.com/c"))
+    assert _origin(httpx.URL("http://x.com:8080/b")) == ("http", "x.com", 8080)
