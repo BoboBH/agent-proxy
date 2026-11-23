@@ -1851,3 +1851,4 @@ git commit -m "test(M2): trace body 模式集成（query 脱敏/request+response
 2. `filter_response_headers` 返回 dict，上游多值响应头（如多个 Set-Cookie）折叠加密为单值（M2 无多 cookie 场景）。
 3. DNS rebinding 强防护不做（设计 §9.10 已知限制，注册时校验 + 转发时不重校验）。
 4. 审计 bytes_in 为应用实际读取字节数（鉴权即拒的请求为 0）。
+5. Connection 列举的附加头不剥离（RFC 9110 允许 Connection 头枚举额外 hop-by-hop 头名；本实现只剥离固定集合 + Proxy-* 前缀，RFC 完整性缺口，M2 接受）。

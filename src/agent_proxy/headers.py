@@ -3,6 +3,7 @@
 出站 = 存储 upstream_headers 全量 + 协议白名单（Accept / Content-* / Content-Encoding /
 MCP 三头，从 caller 提取）；调用方其余 header（JWT / 占位 header / 浏览器指纹）一律不透传；
 hop-by-hop 双向剥离。响应 header 剥离 hop-by-hop 后原样回传，绝不含存储的真实 header。
+出站 key 统一小写归一（HTTP 头名大小写不敏感；防同名不同大小写发重复头行）。
 """
 from __future__ import annotations
 
@@ -33,15 +34,17 @@ def build_outbound_headers(stored_headers: dict[str, str] | None,
                            content_encoding: str | None) -> dict[str, str]:
     """出站 header：存储全量打底 + 协议白名单从 caller 提取（同名覆盖，白名单头描述本次载荷）。
 
+    出站 key 统一小写归一（评审修复）：存储 / caller / explicit 三源若同名不同
+    大小写会并存为两个 key，经 httpx 发出重复头行；归一后同名必然覆盖为一行。
     content_type / content_length / content_encoding 为入站请求三个 body 相关头的
     显式值（None = 入站未携带），优先级高于 caller_headers 中的同名白名单项。
     """
-    outbound: dict[str, str] = {k: v for k, v in (stored_headers or {}).items()
+    outbound: dict[str, str] = {k.lower(): v for k, v in (stored_headers or {}).items()
                                 if not is_hop_by_hop(k)}
-    caller = {k: v for k, v in (caller_headers or {}).items()
+    caller = {k.lower(): v for k, v in (caller_headers or {}).items()
               if k.lower() in PROTOCOL_ALLOWED_HEADERS and not is_hop_by_hop(k)}
-    explicit = {"Content-Type": content_type, "Content-Length": content_length,
-                "Content-Encoding": content_encoding}
+    explicit = {"content-type": content_type, "content-length": content_length,
+                "content-encoding": content_encoding}
     for name, value in explicit.items():
         if value is not None:
             caller[name] = value
