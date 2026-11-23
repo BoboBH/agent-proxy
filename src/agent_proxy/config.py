@@ -99,7 +99,7 @@ class Settings:
         return s
 
     def validate(self) -> None:
-        if self.env == "prod" and (self.token_verify_impl == "stub" or self.login_impl == "stub"):
+        if self.env.lower() == "prod" and (self.token_verify_impl == "stub" or self.login_impl == "stub"):
             raise ConfigError("prod 环境禁止 stub 校验/登录实现启动")
         if self.trace_mode not in ("off", "metadata", "body"):
             raise ConfigError(f"非法 TRACE_MODE: {self.trace_mode}")

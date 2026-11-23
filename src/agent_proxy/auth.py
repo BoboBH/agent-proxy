@@ -38,6 +38,8 @@ class StubVerifier:
             payload = json.loads(_b64url_decode(token.split(".")[1]))
         except Exception as exc:
             raise TokenInvalidError("token 格式非法") from exc
+        if not isinstance(payload, dict):
+            raise TokenInvalidError("token 格式非法")
         user_id = payload.get("user_id")
         if not user_id:
             raise TokenInvalidError("缺少 user_id claim")
