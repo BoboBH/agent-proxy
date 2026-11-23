@@ -30,6 +30,11 @@ def enabled() -> bool:
     return _mode != "off"
 
 
+def capture_limit() -> int:
+    """body 模式返回截断上限（转发层据此 tee 捕获 body 前缀）；其余模式 0（不捕获）。"""
+    return _max_body if _mode == "body" else 0
+
+
 def fingerprint(value: str) -> str:
     # 门槛 12：len==8 时前4后4恰好拼出全值，9-11 字符短密钥也泄露 8 字符
     if len(value) >= 12:
@@ -85,14 +90,16 @@ def _write(record: dict) -> None:
 
 
 def log_request(request_id: str, uid: str, mapping_id: str, method: str, url: str,
-                headers: dict[str, str], body: bytes = b"", content_type: str = "") -> None:
+                headers: dict[str, str], body: bytes = b"",
+                body_bytes: int | None = None, content_type: str = "") -> None:
     if _mode == "off":
         return
     record: dict = {
         "request_id": request_id, "uid": uid, "mapping_id": mapping_id,
         "phase": "request", "method": method, "url": redact_query(url),
         "headers": _headers_for_log(headers, body_mode=(_mode == "body")),
-        "body_bytes": len(body),
+        # 流式转发无法预知 body 长度：body_bytes 由转发层传入实际计数（缺省=len(body)）
+        "body_bytes": len(body) if body_bytes is None else body_bytes,
     }
     if _mode == "body":
         record.update(_truncate(body, content_type))

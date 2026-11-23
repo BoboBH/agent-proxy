@@ -26,5 +26,5 @@ cp .env.example .env   # 按环境修改
 |---|---|---|
 | POST/GET/PUT/DELETE | /api/v1/mappings[/{id}] | 映射 CRUD（JWT） |
 | GET | /api/v1/mappings/resolve?proxy_url= | 按代理地址回显真实配置 |
-| ANY | /p/{mapping_id}/{path} | 代理转发（M2 起） |
+| ANY | /p/{mapping_id}/{path} | 代理转发（M2 已支持 http 前缀流式转发；mcp 随 M3/M4） |
 | GET | /healthz /readyz /metrics | 运维端点 |

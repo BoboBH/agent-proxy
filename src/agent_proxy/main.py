@@ -1,9 +1,10 @@
-"""FastAPI 组装：lifespan（引擎/Redis/建表/自检/优雅停机）、中间件、路由、健康检查。"""
+"""FastAPI 组装：lifespan（引擎/Redis/http_client/建表/自检/优雅停机）、中间件、路由、健康检查。"""
 from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
 
+import httpx
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
@@ -17,6 +18,7 @@ from .logging_setup import setup_logging, shutdown_logging
 from .middleware import RequestContextMiddleware
 from . import models as _models  # noqa: F401  注册 ORM 元数据供 create_all
 from .api.mgmt import router as mgmt_router
+from .api.proxy import router as proxy_router
 
 log = logging.getLogger("agent_proxy")
 
@@ -30,6 +32,15 @@ async def lifespan(app: FastAPI):
     app.state.engine = engine
     app.state.sessionmaker = build_sessionmaker(engine)
     app.state.redis = build_redis(settings.redis_url)
+    # 全局共享上游 AsyncClient（设计 §8.1 第 11 条）：连接复用、池上限、超时配置；
+    # 重定向由转发层按同源策略手动跟随（第 7 条），不交给 httpx 自动跟随。
+    limits = httpx.Limits(max_connections=settings.upstream_max_connections,
+                          max_keepalive_connections=settings.upstream_max_connections)
+    app.state.http_client = httpx.AsyncClient(
+        limits=limits,
+        timeout=httpx.Timeout(connect=settings.upstream_connect_timeout,
+                              read=settings.upstream_read_timeout, write=60.0, pool=5.0),
+        follow_redirects=False)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     async with engine.connect() as conn:
@@ -37,6 +48,7 @@ async def lifespan(app: FastAPI):
     await app.state.redis.ping()
     log.info("agent-proxy 启动: listen=%s external_base=%s", settings.listen, settings.external_base)
     yield
+    await app.state.http_client.aclose()
     # redis-py 4.x 无 aclose()（5.0 起引入），close() 即异步关闭
     close = getattr(app.state.redis, "aclose", None) or app.state.redis.close
     await close()
@@ -57,6 +69,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_middleware(RequestContextMiddleware)
     errors.install_error_handlers(app)
     app.include_router(mgmt_router)
+    app.include_router(proxy_router)
 
     @app.get("/healthz")
     async def healthz():
