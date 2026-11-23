@@ -26,11 +26,21 @@ def test_prod_rejects_stub():
         Settings.from_env({**BASE, "ENV": "prod"})
 
 
-def test_prod_with_real_impls_ok():
-    s = Settings.from_env(
-        {**BASE, "ENV": "prod", "TOKEN_VERIFY_IMPL": "third_party", "LOGIN_IMPL": "company_sso"}
-    )
-    assert s.env == "prod" and s.token_verify_impl == "third_party" and s.login_impl == "company_sso"
+def test_illegal_impl_value_rejected():
+    # 未知 impl 值必须在配置期拒绝，而不是首个请求时才 NotImplementedError -> 500
+    with pytest.raises(ConfigError):
+        Settings.from_env({**BASE, "TOKEN_VERIFY_IMPL": "banana"})
+    with pytest.raises(ConfigError):
+        Settings.from_env({**BASE, "LOGIN_IMPL": "banana"})
+
+
+def test_prod_with_third_party_rejected_until_impl_lands():
+    # third_party/company_sso 尚未实现：prod 下会通过 stub 门禁但请求必 500，故白名单拦截；
+    # third_party/company_sso 实现接入后此测试改回构造成功
+    with pytest.raises(ConfigError):
+        Settings.from_env(
+            {**BASE, "ENV": "prod", "TOKEN_VERIFY_IMPL": "third_party", "LOGIN_IMPL": "company_sso"}
+        )
 
 
 def test_encrypt_with_master_key_ok():

@@ -102,6 +102,10 @@ class Settings:
     def validate(self) -> None:
         if self.env.lower() == "prod" and (self.token_verify_impl == "stub" or self.login_impl == "stub"):
             raise ConfigError("prod 环境禁止 stub 校验/登录实现启动")
+        if self.token_verify_impl not in ("stub",):
+            raise ConfigError(f"非法 TOKEN_VERIFY_IMPL: {self.token_verify_impl!r}（M1 可用：stub；third_party 接入后加入白名单）")
+        if self.login_impl not in ("stub",):
+            raise ConfigError(f"非法 LOGIN_IMPL: {self.login_impl!r}（M1 可用：stub；company_sso 接入后加入白名单）")
         if self.trace_mode not in ("off", "metadata", "body"):
             raise ConfigError(f"非法 TRACE_MODE: {self.trace_mode}")
         if not self.mysql_dsn or not self.redis_url:
