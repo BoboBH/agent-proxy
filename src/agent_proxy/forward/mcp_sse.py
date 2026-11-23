@@ -286,6 +286,11 @@ async def probe_sse_mapping(app_state, mapping_data: dict) -> dict:
     detail，不抛 502/504；endpoint 值经 redact_query 脱敏后进 detail
     （session_id 不落日志明文，与 trace query 脱敏同规）。
     OAuth 绑定用户（M6）以本人凭证走同一规则：注入 Authorization 后复用本函数。
+
+    超时语义注记（评审 Minor 3，M4 接入 Streamable initialize 探测前需定稿）：
+    TEST_PROBE_TIMEOUT 为**分阶段**期限——send（响应头到达）与读流（首个 endpoint
+    事件）各享 5s，两阶段不共享总 deadline，最坏总挂钟 ~10s。定稿候选策略：共享
+    start 起算剩余时间，或明文保留分阶段语义并修正文档/前端提示。
     """
     stored = mapping_data["upstream_headers"] or {}
     headers = build_outbound_headers(stored, {"Accept": "text/event-stream"},
@@ -333,6 +338,11 @@ async def probe_sse_mapping(app_state, mapping_data: dict) -> dict:
                     current_event = text[len("event:"):].strip()
                 elif text.startswith("data:") and current_event == "endpoint":
                     return text[len("data:"):].strip()
+                elif text == "":
+                    # 评审 Minor 2：空行 = 事件块结束，事件名复位（与
+                    # SseEndpointRewriter 对齐）——否则 `event: endpoint\n\n` 之后的
+                    # 默认事件类型 data 行被误判为 endpoint → 假 ok=true
+                    current_event = ""
         return None
 
     try:
@@ -341,8 +351,21 @@ async def probe_sse_mapping(app_state, mapping_data: dict) -> dict:
         await resp.aclose()
         return _result(False, status_code,
                        f"未在 {TEST_PROBE_TIMEOUT:.0f}s 内收到 endpoint 事件（非 MCP SSE 端点？）")
+    except httpx.HTTPError as exc:
+        # 评审 Important 1a：读阶段流断（上游头后 RST / gzip 坏流等）必须兜底——
+        # 原实现穿透到全局 handler 变 500，且 resp 永不 aclose（连接以 ACTIVE
+        # 滞留池内；probe 面向的恰是坏配置上游，高概率触发）
+        await resp.aclose()
+        return _result(False, status_code,
+                       f"上游 SSE 流读取失败: {type(exc).__name__}: {exc}")
     await resp.aclose()  # 首个 endpoint 事件即断开（§6.6）
     if endpoint_value is None:
         return _result(False, status_code, "流结束仍未收到 endpoint 事件")
-    return _result(True, status_code,
-                   f"SSE 握手成功（endpoint={trace.redact_query(endpoint_value)}）")
+    try:
+        redacted = trace.redact_query(endpoint_value)
+    except ValueError:
+        # 评审 Important 1b：畸形 endpoint 值（如非法 IPv6 字面量 `http://[bad`）
+        # 使 urlparse 抛 ValueError——降级为指纹占位（与转发管线对同一输入降级
+        # 透传同规，见 SseEndpointRewriter._rewrite_endpoint_data）
+        redacted = trace.fingerprint(endpoint_value)
+    return _result(True, status_code, f"SSE 握手成功（endpoint={redacted}）")

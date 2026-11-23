@@ -143,6 +143,71 @@ async def test_mcp_sse_probe_timeout_ok_false_no_5xx(client):
     assert body["ok"] is False and body["status_code"] is None and "超时" in body["detail"]
 
 
+# ---------- 评审修复：probe 读阶段兜底 / 事件名复位对齐 / 覆盖补缺 ----------
+
+
+async def test_mcp_sse_probe_upstream_headers_then_rst_ok_false(client, mcp_sse_upstream_server):
+    """评审 Important 1a：上游发完响应头即断（读阶段 aiter_bytes 抛 httpx.HTTPError）
+    ——ok=false 兜底而非穿透 500，且 resp 被 aclose（连接不滞留池内）。"""
+    created = await _register(client, type="mcp",
+                              upstream_url="http://127.0.0.1:9902/sse-headers-then-rst")
+    resp = await _test(client, created["mapping_id"])
+    assert resp.status_code == 200                      # 读阶段失败绝不变成代理 500
+    body = resp.json()
+    assert body["ok"] is False and body["status_code"] == 200
+    assert "上游 SSE 流读取失败" in body["detail"]       # 走 HTTPError 兜底分支
+
+
+async def test_mcp_sse_probe_malformed_endpoint_value_redacted(client, mcp_sse_upstream_server):
+    """评审 Important 1b：endpoint 值畸形（`http://[bad` 使 urlparse 抛 ValueError）
+    ——脱敏降级指纹占位，握手判定不受影响，绝不 500。"""
+    created = await _register(client, type="mcp",
+                              upstream_url="http://127.0.0.1:9902/sse-endpoint-malformed")
+    resp = await _test(client, created["mapping_id"])
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True and body["status_code"] == 200
+    assert "SSE 握手成功" in body["detail"]
+    assert "http://[bad" not in body["detail"]          # 畸形值已降级指纹占位
+
+
+async def test_mcp_sse_probe_blank_line_resets_event_name(client, mcp_sse_upstream_server):
+    """评审 Minor 2：空行结束事件块后事件名复位（与 SseEndpointRewriter 对齐）——
+    `event: endpoint\\n\\n` 后的默认类型 data 行不得被误判为 endpoint（假 ok=true）。"""
+    created = await _register(client, type="mcp",
+                              upstream_url="http://127.0.0.1:9902/sse-endpoint-no-data")
+    resp = await _test(client, created["mapping_id"])
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is False and body["status_code"] == 200
+    assert "流结束仍未收到 endpoint 事件" in body["detail"]  # 非超时路径（EOF 即决）
+
+
+async def test_mcp_sse_probe_same_origin_redirect_ok_false(client, mcp_sse_upstream_server):
+    """评审 Minor 4：注册端点为同源重定向（/sse-redirect-same，307 html）——
+    probe 判 ok=false（非 SSE 分支），detail 不含 Location（真实 origin 不外泄）。"""
+    created = await _register(client, type="mcp",
+                              upstream_url="http://127.0.0.1:9902/sse-redirect-same")
+    resp = await _test(client, created["mapping_id"])
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is False and body["status_code"] == 307
+    assert "非 SSE 响应" in body["detail"]
+    assert "9902/sse" not in body["detail"]             # Location 不落 detail
+
+
+async def test_mcp_sse_probe_stream_eof_no_endpoint_ok_false(client, mcp_sse_upstream_server):
+    """评审 Minor 4：流正常 EOF 但从未发 endpoint 事件——「流结束仍未收到 endpoint
+    事件」分支（区别于 5s 超时路径），ok=false 快速即决。"""
+    created = await _register(client, type="mcp",
+                              upstream_url="http://127.0.0.1:9902/sse-eof-no-endpoint")
+    resp = await _test(client, created["mapping_id"])
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is False and body["status_code"] == 200
+    assert "流结束仍未收到 endpoint 事件" in body["detail"]
+
+
 async def test_test_endpoint_audited_as_test_mapping(client):
     created = await _register(client)
     resp = await _test(client, created["mapping_id"])

@@ -9,6 +9,14 @@
   消息广播至所有活跃连接（多客户端同时在线各自可见）；
   initialize 返回 serverInfo、tools/list 返回固定工具列表（echo）、tools/call 回显 arguments；
 - GET /sse-no-endpoint：只发心跳、永不发 endpoint 事件（test 接口「握手失败」用例）；
+- GET /sse-headers-then-rst：发完响应头即断（断点在 endpoint 事件之前，坏上游
+  probe 读阶段 HTTPError 兜底用例）；
+- GET /sse-endpoint-malformed：endpoint 值 `http://[bad`（urlparse ValueError，
+  probe 脱敏降级用例）；
+- GET /sse-endpoint-no-data：`event: endpoint` 块无 data 行即空行结束 + 默认类型
+  data 行（空行复位钉住，防假 ok=true）+ EOF；
+- GET /sse-eof-no-endpoint：只发一个 message 事件即 EOF（probe「流结束仍未收到
+  endpoint 事件」分支用例）；
 - GET /：裸 origin 注册形态（评审 Issue 2）——根路径即 SSE 端点，行为与 /sse 一致；
 - GET /sse-redirect-same：同源 307（Location 指向本 mock = 注册 upstream origin，
   评审 Issue 1「同源 Location 永不回传」中止用例）；
@@ -116,6 +124,49 @@ def build_mcp_sse_app() -> FastAPI:
             while True:
                 yield b": heartbeat only, no endpoint event\n\n"
                 await asyncio.sleep(0.2)
+
+        return StreamingResponse(gen(), media_type="text/event-stream")
+
+    @app.get("/sse-headers-then-rst")
+    async def sse_headers_then_rst():
+        # 坏上游（评审 Important 1a）：发完 200 text/event-stream 响应头后连接即断
+        # （先发一条心跳注释证明流已启动，再在 endpoint 事件之前断开）——探测读阶段
+        # aiter_bytes 抛 httpx.HTTPError，必须 ok=false 兜底而非穿透 500，且 resp
+        # 必须 aclose（连接不滞留池内）。注意断点必须在 endpoint 事件之前：
+        # probe 读到首 endpoint 即 aclose，之后才断的流探测根本读不到断点。
+        async def gen():
+            yield b": stream starts, breaks before endpoint event\n\n"
+            raise RuntimeError("upstream reset after headers")
+
+        return StreamingResponse(gen(), media_type="text/event-stream")
+
+    @app.get("/sse-endpoint-malformed")
+    async def sse_endpoint_malformed():
+        # 畸形 endpoint 值（评审 Important 1b）：`http://[bad` 使 urlparse 抛
+        # ValueError → redact_query 必须降级指纹占位而非 500（与转发管线对同一
+        # 输入降级透传同规，mcp_sse.SseEndpointRewriter._rewrite_endpoint_data）
+        async def gen():
+            yield b"event: endpoint\ndata: http://[bad\n\n"
+
+        return StreamingResponse(gen(), media_type="text/event-stream")
+
+    @app.get("/sse-endpoint-no-data")
+    async def sse_endpoint_no_data():
+        # 空行复位钉住（评审 Minor 2）：endpoint 事件块**无 data 行**即被空行结束，
+        # 随后的默认事件类型 data 行不得被误判为 endpoint（未复位 → 假 ok=true）；
+        # 流随即 EOF → probe 走「流结束仍未收到 endpoint 事件」分支
+        async def gen():
+            yield b"event: endpoint\n\n"
+            yield b"data: /messages?session_id=leak\n\n"
+
+        return StreamingResponse(gen(), media_type="text/event-stream")
+
+    @app.get("/sse-eof-no-endpoint")
+    async def sse_eof_no_endpoint():
+        # EOF 无 endpoint 事件（评审 Minor 4）：流正常结束但从未发 endpoint——
+        # probe 读到 EOF 判失败（区别于 5s 超时路径的 /sse-no-endpoint）
+        async def gen():
+            yield b"event: message\ndata: {\"x\":1}\n\n"
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 
