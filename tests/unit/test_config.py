@@ -26,6 +26,18 @@ def test_prod_rejects_stub():
         Settings.from_env({**BASE, "ENV": "prod"})
 
 
+def test_prod_with_real_impls_ok():
+    s = Settings.from_env(
+        {**BASE, "ENV": "prod", "TOKEN_VERIFY_IMPL": "third_party", "LOGIN_IMPL": "company_sso"}
+    )
+    assert s.env == "prod" and s.token_verify_impl == "third_party" and s.login_impl == "company_sso"
+
+
+def test_encrypt_with_master_key_ok():
+    s = Settings.from_env({**BASE, "ENCRYPT_AT_REST": "true", "MASTER_KEY": "k"})
+    assert s.encrypt_at_rest is True and s.master_key == "k"
+
+
 def test_missing_dsn_rejected():
     with pytest.raises(ConfigError):
         Settings.from_env({"REDIS_URL": "redis://127.0.0.1:6379/1"})

@@ -10,12 +10,29 @@ class ConfigError(RuntimeError):
     pass
 
 
-def _parse_size(text: str) -> int:
+def _to_int(key: str, raw: str) -> int:
+    try:
+        return int(raw)
+    except ValueError:
+        raise ConfigError(f"非法数值: {key}={raw!r}") from None
+
+
+def _to_float(key: str, raw: str) -> float:
+    try:
+        return float(raw)
+    except ValueError:
+        raise ConfigError(f"非法数值: {key}={raw!r}") from None
+
+
+def _parse_size(key: str, text: str) -> int:
     t = text.strip().upper()
-    for suffix, mult in {"KB": 1024, "MB": 1024**2, "GB": 1024**3}.items():
-        if t.endswith(suffix):
-            return int(float(t[: -len(suffix)]) * mult)
-    return int(t)
+    try:
+        for suffix, mult in {"KB": 1024, "MB": 1024**2, "GB": 1024**3}.items():
+            if t.endswith(suffix):
+                return int(float(t[: -len(suffix)]) * mult)
+        return int(t)
+    except ValueError:
+        raise ConfigError(f"非法大小: {key}={text!r}") from None
 
 
 @dataclass(frozen=True)
@@ -58,25 +75,25 @@ class Settings:
             admin_role=e.get("ADMIN_ROLE", "admin"),
             mysql_dsn=e.get("MYSQL_DSN", ""),
             redis_url=e.get("REDIS_URL", ""),
-            cache_ttl=int(e.get("CACHE_TTL", "300")),
-            upstream_connect_timeout=float(e.get("UPSTREAM_CONNECT_TIMEOUT", "10")),
-            upstream_read_timeout=float(e.get("UPSTREAM_READ_TIMEOUT", "60")),
-            upstream_max_redirects=int(e.get("UPSTREAM_MAX_REDIRECTS", "3")),
-            upstream_max_connections=int(e.get("UPSTREAM_MAX_CONNECTIONS", "200")),
-            shutdown_drain_seconds=int(e.get("SHUTDOWN_DRAIN_SECONDS", "10")),
-            max_body_size=_parse_size(e.get("MAX_BODY_SIZE", "10MB")),
+            cache_ttl=_to_int("CACHE_TTL", e.get("CACHE_TTL", "300")),
+            upstream_connect_timeout=_to_float("UPSTREAM_CONNECT_TIMEOUT", e.get("UPSTREAM_CONNECT_TIMEOUT", "10")),
+            upstream_read_timeout=_to_float("UPSTREAM_READ_TIMEOUT", e.get("UPSTREAM_READ_TIMEOUT", "60")),
+            upstream_max_redirects=_to_int("UPSTREAM_MAX_REDIRECTS", e.get("UPSTREAM_MAX_REDIRECTS", "3")),
+            upstream_max_connections=_to_int("UPSTREAM_MAX_CONNECTIONS", e.get("UPSTREAM_MAX_CONNECTIONS", "200")),
+            shutdown_drain_seconds=_to_int("SHUTDOWN_DRAIN_SECONDS", e.get("SHUTDOWN_DRAIN_SECONDS", "10")),
+            max_body_size=_parse_size("MAX_BODY_SIZE", e.get("MAX_BODY_SIZE", "10MB")),
             ssrf_allow_private=e.get("SSRF_ALLOW_PRIVATE", "false").lower() == "true",
             cors_allowed_origins=tuple(
                 x.strip() for x in e.get("CORS_ALLOWED_ORIGINS", "").split(",") if x.strip()
             ),
-            oauth_state_ttl=int(e.get("OAUTH_STATE_TTL", "600")),
-            admin_session_ttl=int(e.get("ADMIN_SESSION_TTL", "28800")),
+            oauth_state_ttl=_to_int("OAUTH_STATE_TTL", e.get("OAUTH_STATE_TTL", "600")),
+            admin_session_ttl=_to_int("ADMIN_SESSION_TTL", e.get("ADMIN_SESSION_TTL", "28800")),
             encrypt_at_rest=e.get("ENCRYPT_AT_REST", "false").lower() == "true",
             master_key=e.get("MASTER_KEY", ""),
             log_dir=e.get("LOG_DIR", "logs"),
             log_level=e.get("LOG_LEVEL", "INFO"),
             trace_mode=e.get("TRACE_MODE", "metadata"),
-            trace_body_max_size=_parse_size(e.get("TRACE_BODY_MAX_SIZE", "64KB")),
+            trace_body_max_size=_parse_size("TRACE_BODY_MAX_SIZE", e.get("TRACE_BODY_MAX_SIZE", "64KB")),
         )
         s.validate()
         return s
