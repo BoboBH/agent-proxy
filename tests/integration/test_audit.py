@@ -70,3 +70,12 @@ async def test_audit_never_contains_header_values(client):
         text = "\n".join(lines)
         assert "sk-super-secret-value" not in text, f"映射 header 值泄漏进审计日志: {path}"
         assert "stub." not in text, f"调用方 bearer token 泄漏进审计日志: {path}"
+
+
+async def test_audit_records_bytes_in_out(client):
+    resp = await client.post("/api/v1/mappings", json=BODY,
+                             headers={"Authorization": f"Bearer {make_token('u888')}"})
+    assert resp.status_code == 201
+    entry = _find_audit_entry(resp.headers["x-request-id"])
+    assert entry["bytes_in"] > 0   # 请求体（JSON）被应用实际读取
+    assert entry["bytes_out"] > 0  # 响应体实际发送字节数

@@ -1,4 +1,4 @@
-"""中间件：request_id 生成与 X-Request-ID 回传、Prometheus 埋点、审计日志。"""
+"""中间件：request_id 生成与 X-Request-ID 回传、Prometheus 埋点（含 bytes）、审计日志。"""
 from __future__ import annotations
 
 import json
@@ -7,7 +7,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 
-from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from . import metrics
 
@@ -47,18 +47,30 @@ class RequestContextMiddleware:
         method = scope.get("method", "")
         start = time.monotonic()
         status_holder = {"status": 0}
+        bytes_in = 0   # 请求体字节数（应用实际读取到的；流式分片累计）
+        bytes_out = 0  # 响应体字节数（实际发送的，StreamingResponse 分片累计）
         metrics.inflight.inc()
 
-        async def send_wrapper(message) -> None:
+        async def receive_wrapper() -> Message:
+            nonlocal bytes_in
+            message = await receive()
+            if message["type"] == "http.request":
+                bytes_in += len(message.get("body", b""))
+            return message
+
+        async def send_wrapper(message: Message) -> None:
+            nonlocal bytes_out
             if message["type"] == "http.response.start":
                 status_holder["status"] = message["status"]
                 headers = message.setdefault("headers", [])
                 if not any(k.lower() == b"x-request-id" for k, _ in headers):
                     headers.append((b"x-request-id", request_id.encode()))
+            elif message["type"] == "http.response.body":
+                bytes_out += len(message.get("body", b""))
             await send(message)
 
         try:
-            await self.app(scope, receive, send_wrapper)
+            await self.app(scope, receive_wrapper, send_wrapper)
         finally:
             duration_ms = int((time.monotonic() - start) * 1000)
             metrics.inflight.dec()
@@ -66,6 +78,10 @@ class RequestContextMiddleware:
             t = _type_of(route)
             metrics.requests_total.labels(route=route, type=t, status=str(status)).inc()
             metrics.request_duration.labels(route=route, type=t).observe(duration_ms / 1000)
+            if bytes_in:
+                metrics.bytes_total.labels(direction="in").inc(bytes_in)
+            if bytes_out:
+                metrics.bytes_total.labels(direction="out").inc(bytes_out)
             if method != "OPTIONS" and route != "ops":  # 运维端点不记审计（设计 §6.2/§15.2）
                 state = scope["state"]
                 audit.info(json.dumps({
@@ -79,5 +95,7 @@ class RequestContextMiddleware:
                     "path": scope.get("path", ""),
                     "status": status,
                     "duration_ms": duration_ms,
+                    "bytes_in": bytes_in,
+                    "bytes_out": bytes_out,
                     "client_ip": (scope.get("client") or ("",))[0],
                 }, ensure_ascii=False))

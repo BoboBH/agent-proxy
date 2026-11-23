@@ -24,3 +24,11 @@ async def test_request_id_in_error_body(client):
     assert resp.status_code == 401
     body = resp.json()
     assert body["code"] == "INVALID_TOKEN" and body["request_id"]
+
+
+async def test_metrics_custom_buckets_and_bytes(client):
+    await client.get("/healthz")
+    resp = await client.get("/metrics")
+    text = resp.text
+    assert 'le="0.005"' in text and 'le="300.0"' in text  # 自定义直方图桶（终审债务）
+    assert "ap_bytes_total" in text                        # bytes 指标已注册

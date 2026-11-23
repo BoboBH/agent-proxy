@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timezone
+from urllib.parse import parse_qsl, urlparse, urlunparse
 
 SENSITIVE_HEADERS = {"authorization", "proxy-authorization", "cookie", "set-cookie",
                      "x-auth-token", "x-api-key", "api-key"}
@@ -34,6 +35,19 @@ def fingerprint(value: str) -> str:
     if len(value) >= 12:
         return f"{value[:4]}****{value[-4:]}(len={len(value)})"
     return f"****(len={len(value)})"
+
+
+def redact_query(url: str) -> str:
+    """URL query 值脱敏（终审债务 #3）：保留键名，值统一指纹化。
+
+    query 常携带 token / session_id 等敏感参数，与 header 同等对待（安全底线）。
+    """
+    parsed = urlparse(url)
+    if not parsed.query:
+        return url
+    pairs = parse_qsl(parsed.query, keep_blank_values=True)
+    redacted = "&".join(f"{key}={fingerprint(value)}" for key, value in pairs)
+    return urlunparse(parsed._replace(query=redacted))
 
 
 def _is_sensitive(name: str) -> bool:
@@ -76,7 +90,7 @@ def log_request(request_id: str, uid: str, mapping_id: str, method: str, url: st
         return
     record: dict = {
         "request_id": request_id, "uid": uid, "mapping_id": mapping_id,
-        "phase": "request", "method": method, "url": url,
+        "phase": "request", "method": method, "url": redact_query(url),
         "headers": _headers_for_log(headers, body_mode=(_mode == "body")),
         "body_bytes": len(body),
     }

@@ -124,3 +124,22 @@ def test_sse_event_uses_data_keys_in_body_mode(tmp_path):
     assert recs[0]["data"] == "hello" and recs[0]["data_truncated"] is False
     assert recs[1]["data_truncated"] is True and len(recs[1]["data"]) == 100
     assert "body" not in recs[0] and "body_truncated" not in recs[0]
+
+
+def test_redact_query_masks_values_keeps_keys():
+    out = trace.redact_query("http://x/api?session_id=abcdef12345678&status=paid")
+    assert out == "http://x/api?session_id=abcd****5678(len=14)&status=****(len=4)"
+    assert "abcdef12345678" not in out
+
+
+def test_redact_query_no_query_unchanged():
+    assert trace.redact_query("http://x/api/v1/orders") == "http://x/api/v1/orders"
+
+
+def test_log_request_redacts_url_query(tmp_path):
+    path = _capture(tmp_path, "metadata")
+    trace.log_request("r1", "u1", "m1", "GET",
+                      "http://x/api?access_token=secret-token-value", {})
+    recs = _read(path)
+    assert "secret-token-value" not in json.dumps(recs)
+    assert "access_token=" in recs[0]["url"]  # 键名保留，值指纹化
