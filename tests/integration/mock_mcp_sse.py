@@ -6,6 +6,7 @@
   此形式），随后每 0.2s 发 `: ping` 心跳注释行；每条连接独立消息队列；
 - POST /messages：接收 JSON-RPC，回 202 Accepted；有 id 的请求把结果作为
   `event: message` 推回 SSE 流（notifications 无 id 只收不回，MCP 规范）；
+  消息广播至所有活跃连接（多客户端同时在线各自可见）；
   initialize 返回 serverInfo、tools/list 返回固定工具列表（echo）、tools/call 回显 arguments；
 - GET /sse-no-endpoint：只发心跳、永不发 endpoint 事件（test 接口「握手失败」用例）；
 - GET /_connections：调试端点，返回当前活跃 SSE 连接数（客户端断开→上游取消
@@ -50,9 +51,9 @@ def build_mcp_sse_app() -> FastAPI:
     async def sse_endpoint():
         queue: asyncio.Queue = asyncio.Queue()
         mock_state["queues"].append(queue)
-        mock_state["sse_open"] += 1
 
         async def gen():
+            mock_state["sse_open"] += 1  # 首行：与 finally 的 -1 对称（客户端在首块下发前断开时生成器未启动，finally 永不执行——计数放 handler 里会在该路径泄漏）
             try:
                 yield b"event: endpoint\ndata: /messages?session_id=test123\n\n"
                 while True:
