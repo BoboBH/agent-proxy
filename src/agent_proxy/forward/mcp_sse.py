@@ -21,7 +21,8 @@ from fastapi.responses import StreamingResponse
 
 from .. import metrics, trace
 from ..errors import AppError
-from ..forward.http_forward import (assert_safe_sub_path, build_forward_target,
+from ..forward.http_forward import (_origin,  # 同包私有 origin 判定 helper 共享（评审准许）
+                                    assert_safe_sub_path, build_forward_target,
                                     split_sub_path)
 from ..headers import build_outbound_headers, filter_response_headers
 
@@ -112,7 +113,12 @@ class SseEndpointRewriter:
     def _rewrite_endpoint_data(self, text: str, ending: bytes) -> bytes:
         raw_value = text[len("data:"):]
         value = raw_value[1:] if raw_value.startswith(" ") else raw_value
-        parsed = urlparse(value)
+        try:
+            parsed = urlparse(value)
+        except ValueError:
+            # 评审 Issue 6：畸形值（如非法 IPv6 字面量 `http://[bad`）urlparse 抛
+            # ValueError——降级为原样透传（不改写），绝不炸整条 SSE 流
+            return text.encode("utf-8") + ending
         if parsed.netloc:                            # 绝对 URL：取 path + query（§8.3 改写规则）
             path_query = parsed.path or "/"
             if parsed.query:
@@ -191,11 +197,32 @@ async def stream_sse_forward(app_state, mapping_data: dict, request: Request) ->
     trace.log_response(request_id, status, duration_ms)
 
     if not is_sse:
+        # 同源重定向防护（§8.1 第 7 条「同源 Location 永不回传」，评审 Issue 1）：
+        # SSE 分支不跟随重定向——非 SSE 的 30x 若 Location 与注册 upstream_url 同源，
+        # 透传会把注册上游真实 origin 直达调用方，必须中止回 502；跨源重定向属上游
+        # 自身行为，透传不变（与 http 管线跨源透传语义一致）
+        if upstream_resp.is_redirect:
+            location = upstream_resp.headers.get("location") or ""
+            try:
+                still_same_origin = bool(location) and _origin(
+                    httpx.URL(target).join(location)) == _origin(
+                    httpx.URL(mapping_data["upstream_url"]))
+            except httpx.InvalidURL:
+                still_same_origin = False  # 畸形 Location 无 origin 可判，按透传交下游自行处理
+            if still_same_origin:
+                await upstream_resp.aclose()
+                raise AppError(502, "TOO_MANY_REDIRECTS",
+                               "上游返回同源重定向，已中止转发（Location 不回传）")
         # 非 SSE 响应（上游 4xx/5xx 错误体等）：不改写、不计 sse_active，原样流式回传
         async def _plain_stream():
             try:
                 async for chunk in upstream_resp.aiter_bytes():
                     yield chunk
+            except httpx.HTTPError as exc:
+                # 流中断可观测（评审 Issue 3）：与 http 管线 _response_stream 对称
+                metrics.upstream_errors_total.labels(type="mcp", code="stream_broken").inc()
+                log.exception("上游响应流中断: %s", exc)
+                raise
             finally:
                 await upstream_resp.aclose()
         return StreamingResponse(_plain_stream(), status_code=status, headers=resp_headers)

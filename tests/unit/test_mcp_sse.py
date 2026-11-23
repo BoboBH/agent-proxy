@@ -105,6 +105,15 @@ def test_rewriter_non_path_endpoint_value_passthrough():
     assert out[1] == b"data: not-a-path\n"
 
 
+def test_rewriter_malformed_absolute_url_degrades_to_passthrough():
+    """评审 Issue 6：畸形绝对 URL（urlparse 抛 ValueError，如非法 IPv6 字面量
+    `http://[bad`）降级为原样透传（不改写、不产 trace 记录），绝不炸整条 SSE 流。"""
+    rw = SseEndpointRewriter("m1m2m3m4m5m6")
+    out = _feed_all(rw, [b"event: endpoint\ndata: http://[bad\n\n"])
+    assert out == [b"event: endpoint\n", b"data: http://[bad\n", b"\n"]
+    assert rw.take_trace_records() == []
+
+
 def test_rewriter_multiple_data_lines_all_rewritten():
     """endpoint 事件块内多条 data 行（SSE 规范允许多值）逐行改写。"""
     rw = SseEndpointRewriter("m1m2m3m4m5m6")

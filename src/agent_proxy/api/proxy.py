@@ -47,11 +47,13 @@ async def _handle_proxy(request: Request, mapping_id: str, identity: Identity,
     if data["type"] == "mcp":
         # 路径分发（§8.3 表）：仅 GET/HEAD 且命中注册端点路径 → SSE 初始连接
         # （stream_sse_forward 不转发请求体，故非 GET/HEAD 不走此分支）；其余
-        # 路径按上游 origin 根还原后复用 http 流式管线
+        # 路径按上游 origin 根还原后复用 http 流式管线。
+        # 评审 Issue 2：裸 origin 注册（端点路径为 /）时根路径 /p/{id} 与 /p/{id}/
+        # 同为注册端点——空 sub_path 归一为 / 参与匹配，否则被 origin 根还原绕过改写
         sub_path = split_sub_path(request.scope["path"], mapping_id)
         assert_safe_sub_path(sub_path)
         if request.method in ("GET", "HEAD") and \
-                sub_path == registered_endpoint_path(data["upstream_url"]):
+                (sub_path or "/") == registered_endpoint_path(data["upstream_url"]):
             return await stream_sse_forward(request.app.state, data, request)
         target = build_origin_target(data["upstream_url"], sub_path, request.url.query)
         return await stream_http_forward(request.app.state, data, request,

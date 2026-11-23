@@ -9,6 +9,12 @@
   消息广播至所有活跃连接（多客户端同时在线各自可见）；
   initialize 返回 serverInfo、tools/list 返回固定工具列表（echo）、tools/call 回显 arguments；
 - GET /sse-no-endpoint：只发心跳、永不发 endpoint 事件（test 接口「握手失败」用例）；
+- GET /：裸 origin 注册形态（评审 Issue 2）——根路径即 SSE 端点，行为与 /sse 一致；
+- GET /sse-redirect-same：同源 307（Location 指向本 mock = 注册 upstream origin，
+  评审 Issue 1「同源 Location 永不回传」中止用例）；
+- GET /sse-redirect-cross：跨源 307（Location 指向 9901 echo 上游，不同端口即不同
+  origin，透传对照面）；
+- GET /sse-503：注册端点返回非 SSE 错误体（503 text/html，原样透传/不计 sse_active 用例）；
 - GET /_connections：调试端点，返回当前活跃 SSE 连接数（客户端断开→上游取消
   的端到端验证用）。
 
@@ -20,7 +26,8 @@ import asyncio
 import json
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import (HTMLResponse, JSONResponse, RedirectResponse,
+                               Response, StreamingResponse)
 
 # 模块级状态：测试直接 import 断言
 mock_state: dict = {"sse_open": 0, "received": [], "queues": []}
@@ -47,7 +54,7 @@ def _result_for(rpc: dict) -> dict:
 def build_mcp_sse_app() -> FastAPI:
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
-    @app.get("/sse")
+    @app.api_route("/sse", methods=["GET", "HEAD"])
     async def sse_endpoint():
         queue: asyncio.Queue = asyncio.Queue()
         mock_state["queues"].append(queue)
@@ -68,6 +75,26 @@ def build_mcp_sse_app() -> FastAPI:
                     mock_state["queues"].remove(queue)
 
         return StreamingResponse(gen(), media_type="text/event-stream")
+
+    @app.api_route("/", methods=["GET", "HEAD"])
+    async def root_sse():
+        # 裸 origin 注册形态（评审 Issue 2）：根路径即 SSE 端点，行为与 /sse 一致
+        return await sse_endpoint()
+
+    @app.get("/sse-redirect-same")
+    async def sse_redirect_same():
+        # 同源重定向（评审 Issue 1）：Location 指向本 mock 自身 = 注册 upstream origin
+        return RedirectResponse("http://127.0.0.1:9902/sse", status_code=307)
+
+    @app.get("/sse-redirect-cross")
+    async def sse_redirect_cross():
+        # 跨源重定向（评审 Issue 1 对照面）：9901 与 9902 不同端口 = 不同 origin
+        return RedirectResponse("http://127.0.0.1:9901/echo-target", status_code=307)
+
+    @app.get("/sse-503")
+    async def sse_503():
+        # 非 SSE 错误体（评审 Issue 7）：原样透传、不进改写管线、不计 sse_active
+        return HTMLResponse("<html><body>upstream-503-html</body></html>", status_code=503)
 
     @app.get("/sse-no-endpoint")
     async def sse_no_endpoint():

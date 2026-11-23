@@ -7,6 +7,7 @@ session_id）；POST messages 经代理按上游 origin 根还原到达上游（
 tools/call JSON-RPC 全链路；心跳注释行透传；SSE 读超时不设（§8.1 第 5 条）。
 """
 import json
+import re
 
 import httpx
 
@@ -35,6 +36,13 @@ async def _register_mcp(user="u888", **overrides):
 def _post_url(endpoint_path: str) -> str:
     """endpoint 事件改写后的代理地址（根相对）→ 完整 URL。"""
     return f"{PROXY}{endpoint_path}"
+
+
+def _sse_active_gauge(metrics_text: str) -> float:
+    """从 /metrics 文本解析 ap_sse_active_connections 当前值（gauge 无标签单行）。"""
+    m = re.search(r"^ap_sse_active_connections ([0-9.]+)$", metrics_text, re.M)
+    assert m, "ap_sse_active_connections 不在 metrics 输出中"
+    return float(m.group(1))
 
 
 async def test_sse_handshake_endpoint_event_rewritten():
@@ -199,3 +207,64 @@ async def test_proxy_metrics_type_mcp():
         assert r.status_code == 404
         m = await c.get(f"{PROXY}/metrics")
     assert 'route="proxy",type="mcp"' in m.text
+
+
+async def test_sse_same_origin_redirect_aborted_502():
+    """评审 Issue 1：注册端点上游回同源 30x——Location 含注册上游真实 origin，
+    不得回传调用方：中止回 502/TOO_MANY_REDIRECTS 且响应无 location 头（§8.1 第 7 条）。"""
+    created = await _register_mcp(upstream_url=f"{UPSTREAM_BASE}/sse-redirect-same")
+    mid = created["mapping_id"]
+    async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+        # 调用注册端点路径本身（§8.3：非注册路径会被 origin 根还原到别处）
+        r = await c.get(f"{PROXY}/p/{mid}/sse-redirect-same", headers=AUTH)
+    assert r.status_code == 502
+    assert r.json()["code"] == "TOO_MANY_REDIRECTS"
+    assert "location" not in r.headers                   # 真实 origin 绝不外泄
+
+
+async def test_sse_cross_origin_redirect_passthrough():
+    """评审 Issue 1 对照面：跨源 30x 属上游自身行为，原样透传（status/location 保留）。"""
+    created = await _register_mcp(upstream_url=f"{UPSTREAM_BASE}/sse-redirect-cross")
+    mid = created["mapping_id"]
+    async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+        r = await c.get(f"{PROXY}/p/{mid}/sse-redirect-cross", headers=AUTH)
+    assert r.status_code == 307
+    assert r.headers["location"] == "http://127.0.0.1:9901/echo-target"
+
+
+async def test_non_sse_upstream_error_plain_passthrough_no_sse_active():
+    """评审 Issue 7：注册端点上游返回非 SSE（503 html）——原样透传（不改写、
+    不改状态码）且 sse_active 不计（gauge 前后不变）。"""
+    created = await _register_mcp(upstream_url=f"{UPSTREAM_BASE}/sse-503")
+    mid = created["mapping_id"]
+    async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+        m0 = await c.get(f"{PROXY}/metrics")
+        r = await c.get(f"{PROXY}/p/{mid}/sse-503", headers=AUTH)
+        m1 = await c.get(f"{PROXY}/metrics")
+    assert r.status_code == 503                          # 上游状态码原样
+    assert r.headers["content-type"].startswith("text/html")
+    assert "upstream-503-html" in r.text                 # 错误体原样（无任何改写痕迹）
+    assert _sse_active_gauge(m0.text) == _sse_active_gauge(m1.text)
+
+
+async def test_root_registered_endpoint_dispatches_sse_pipeline():
+    """评审 Issue 2：裸 origin 注册（端点路径 /）时根路径 /p/{id} 同为注册端点——
+    必须走 SSE 管线改写 endpoint（不得被 origin 根还原绕过改写直达上游）。"""
+    created = await _register_mcp(upstream_url=UPSTREAM_BASE)
+    mid = created["mapping_id"]
+    async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+        async with c.stream("GET", f"{PROXY}/p/{mid}", headers=SSE_HEADERS) as resp:
+            assert resp.status_code == 200
+            endpoint = await read_first_endpoint_event(resp)
+    assert endpoint.startswith(f"/p/{mid}/")             # 改写发生（修复前为原样透传）
+    assert "session_id=test123" in endpoint
+
+
+async def test_head_registered_endpoint_dispatches_sse_branch():
+    """§8.3 分发表第 1 行含 HEAD：HEAD 到注册端点路径同样走 SSE 初始连接分支。"""
+    created = await _register_mcp()
+    mid = created["mapping_id"]
+    async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+        r = await c.head(f"{PROXY}/p/{mid}/sse", headers=SSE_HEADERS)
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/event-stream")
