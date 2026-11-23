@@ -157,3 +157,14 @@ async def test_list_page_size_negative_400(client):
     resp = await client.get("/api/v1/mappings?page_size=-1",
                             headers={"Authorization": f"Bearer {make_token('u888')}"})
     assert resp.status_code == 400 and resp.json()["code"] == "INVALID_PARAM"
+
+
+async def test_resolve_rejects_foreign_netloc(client):
+    """终审债务：带 netloc 的 proxy_url，host 必须等于 EXTERNAL_BASE 的 host。"""
+    created = (await _create(client)).json()
+    mid = created["mapping_id"]
+    resp = await client.get(
+        f"/api/v1/mappings/resolve?proxy_url=http%3A%2F%2Fevil.example.com%2Fp%2F{mid}",
+        headers={"Authorization": f"Bearer {make_token('u888')}"})
+    assert resp.status_code == 400 and resp.json()["code"] == "INVALID_PARAM"
+    # 本服务 host 正常回显（EXTERNAL_BASE=http://testserver，既有用例已覆盖 200）

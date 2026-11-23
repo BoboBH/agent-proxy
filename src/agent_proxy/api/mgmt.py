@@ -24,13 +24,21 @@ router = APIRouter(prefix="/api/v1/mappings", tags=["mgmt"])
 _PROXY_PATH_RE = re.compile(r"^/p/([A-Za-z0-9]{12})(/.*)?$")
 
 
-def parse_proxy_url(raw: str) -> str:
-    """proxy_url（URL 编码）或裸 12 位 mapping_id → mapping_id。无法解析 → 400。"""
+def parse_proxy_url(raw: str, external_base: str = "") -> str:
+    """proxy_url（URL 编码）或裸 12 位 mapping_id → mapping_id。无法解析 → 400。
+
+    加固（终审债务）：带 netloc 的输入，host 必须等于 EXTERNAL_BASE 的 host，
+    防止把任意第三方 URL 当作本服务代理地址解析（探测/混淆）。
+    """
     value = unquote(raw)
     if MAPPING_ID_RE.match(value):
         return value
-    path = urlparse(value).path
-    matched = _PROXY_PATH_RE.match(path)
+    parsed = urlparse(value)
+    if parsed.netloc:
+        base_host = urlparse(external_base).hostname if external_base else None
+        if not base_host or (parsed.hostname or "") != base_host:
+            raise AppError(400, "INVALID_PARAM", "代理地址 host 与本服务不符")
+    matched = _PROXY_PATH_RE.match(parsed.path)
     if not matched:
         raise AppError(400, "INVALID_PARAM", "无法解析为本服务代理地址")
     return matched.group(1)
@@ -59,7 +67,7 @@ def _detail_out(settings: Settings, data: dict) -> MappingDetailOut:
 async def resolve_mapping(request: Request, proxy_url: str = Query(...),
                           identity: Identity = Depends(get_current_identity),
                           session=Depends(get_db), settings: Settings = Depends(get_settings)):
-    mapping_id = parse_proxy_url(proxy_url)
+    mapping_id = parse_proxy_url(proxy_url, settings.external_base)
     data = await get_owned(session, request.app.state.redis, mapping_id,
                            identity.user_id, settings.cache_ttl)
     if data is None:
