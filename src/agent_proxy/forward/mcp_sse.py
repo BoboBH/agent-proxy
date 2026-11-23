@@ -6,11 +6,12 @@
 下发，其余行（message 事件 / retry: 行 / `:` 心跳注释行 / 字段行）字节级原样
 透传，每行产出即交由管线 yield（每行立即 flush，不做整体缓冲）。
 
-流式转发管线 stream_sse_forward（Task 4）与 test 探测 probe_sse_mapping（Task 6）
-同在本模块；trace 记录由解析器产出（take_trace_records），管线层接 trace.log_sse_event。
+流式转发管线 stream_sse_forward 与 test 探测 probe_sse_mapping（§6.6）同在本模块；
+trace 记录由解析器产出（take_trace_records），管线层接 trace.log_sse_event。
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from urllib.parse import urlparse
@@ -21,7 +22,7 @@ from fastapi.responses import StreamingResponse
 
 from .. import metrics, trace
 from ..errors import AppError
-from ..forward.http_forward import (_origin,  # 同包私有 origin 判定 helper 共享（评审准许）
+from ..forward.http_forward import (TEST_PROBE_TIMEOUT, _origin,  # 同包私有 origin 判定 helper 共享（评审准许）
                                     assert_safe_sub_path, build_forward_target,
                                     split_sub_path)
 from ..headers import build_outbound_headers, filter_response_headers
@@ -275,3 +276,73 @@ async def stream_sse_forward(app_state, mapping_data: dict, request: Request) ->
         metrics.sse_active.dec()                          # 生成器未启动的交棒窗口防泄漏
         await upstream_resp.aclose()
         raise
+
+
+async def probe_sse_mapping(app_state, mapping_data: dict) -> dict:
+    """mcp+SSE 类型 test（设计 §6.6）：GET 注册端点读流，收到 text/event-stream +
+    首个 endpoint 事件即通过；随后立即断开（不维持长连接）。
+
+    复用转发管线的出站 header 重建（测的即真实路径）；上游失败一律 ok=false +
+    detail，不抛 502/504；endpoint 值经 redact_query 脱敏后进 detail
+    （session_id 不落日志明文，与 trace query 脱敏同规）。
+    OAuth 绑定用户（M6）以本人凭证走同一规则：注入 Authorization 后复用本函数。
+    """
+    stored = mapping_data["upstream_headers"] or {}
+    headers = build_outbound_headers(stored, {"Accept": "text/event-stream"},
+                                     None, None, None)
+    # 与 Task 5 转发管线同规：读到首事件即 aclose 的 SSE 连接绝不回流 keepalive 池
+    # （read=None 请求消费死 IDLE 供体 → sweep/send 竞态无界挂死，见 stream_sse_forward）
+    headers["Connection"] = "close"
+    target = mapping_data["upstream_url"]
+    start = time.monotonic()
+
+    def _result(ok: bool, status_code: int | None, detail: str) -> dict:
+        return {"ok": ok, "status_code": status_code,
+                "latency_ms": int((time.monotonic() - start) * 1000), "detail": detail}
+
+    client: httpx.AsyncClient = app_state.http_client
+    try:
+        req = client.build_request("GET", target, headers=headers,
+                                   timeout=TEST_PROBE_TIMEOUT)
+        resp = await asyncio.wait_for(client.send(req, stream=True), TEST_PROBE_TIMEOUT)
+    except asyncio.TimeoutError as exc:  # 3.11+ 即内置 TimeoutError（wait_for 总期限）
+        return _result(False, None,
+                       f"上游超时（>{TEST_PROBE_TIMEOUT:.0f}s 总期限）: {type(exc).__name__}")
+    except httpx.TimeoutException as exc:  # 分项超时先到（connect/read/pool）
+        return _result(False, None, f"上游超时（>{TEST_PROBE_TIMEOUT:.0f}s）: {type(exc).__name__}")
+    except httpx.HTTPError as exc:
+        return _result(False, None, f"上游不可达: {type(exc).__name__}: {exc}")
+
+    status_code = resp.status_code
+    content_type = next((v for k, v in resp.headers.items()
+                         if k.lower() == "content-type"), "")
+    if status_code != 200 or "text/event-stream" not in content_type.lower():
+        await resp.aclose()
+        return _result(False, status_code,
+                       f"非 SSE 响应（status={status_code}，content-type={content_type or '无'}）")
+
+    async def _first_endpoint() -> str | None:
+        buf = b""
+        current_event = ""
+        async for chunk in resp.aiter_bytes():
+            buf += chunk
+            while b"\n" in buf:
+                line, _, buf = buf.partition(b"\n")
+                text = line.decode("utf-8", "replace").rstrip("\r")
+                if text.startswith("event:"):
+                    current_event = text[len("event:"):].strip()
+                elif text.startswith("data:") and current_event == "endpoint":
+                    return text[len("data:"):].strip()
+        return None
+
+    try:
+        endpoint_value = await asyncio.wait_for(_first_endpoint(), TEST_PROBE_TIMEOUT)
+    except asyncio.TimeoutError:
+        await resp.aclose()
+        return _result(False, status_code,
+                       f"未在 {TEST_PROBE_TIMEOUT:.0f}s 内收到 endpoint 事件（非 MCP SSE 端点？）")
+    await resp.aclose()  # 首个 endpoint 事件即断开（§6.6）
+    if endpoint_value is None:
+        return _result(False, status_code, "流结束仍未收到 endpoint 事件")
+    return _result(True, status_code,
+                   f"SSE 握手成功（endpoint={trace.redact_query(endpoint_value)}）")

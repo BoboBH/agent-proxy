@@ -1,11 +1,13 @@
 """test 接口（设计 §6.6）：http 连通判定 / test_request 严格验证 / 5s 短超时 / 安全边界。
 
 上游失败一律 ok=false + detail，不产生代理自身 502/504；仅注册者可测；
-mcp 类型 M2 明确返回未支持（M3/M4 补语义验证）。
+mcp 类型按 SSE 握手语义验证（M3：text/event-stream + 首个 endpoint 事件即通过），
+Streamable initialize 语义验证随 M4（§8.4）。
 """
 import glob
 import json
 
+from tests.integration.mock_mcp_sse import mock_state
 from tests.utils import make_token
 
 
@@ -86,12 +88,59 @@ async def test_test_endpoint_owner_only_404(client):
     assert resp.status_code == 404 and resp.json()["code"] == "MAPPING_NOT_FOUND"
 
 
-async def test_test_endpoint_mcp_not_supported_400(client):
-    created = await _register(client, type="mcp", upstream_url="https://mcp.ex.com/sse")
+# ---------- M3：mcp + SSE 类型验证（§6.6：text/event-stream + 首个 endpoint 事件即通过） ----------
+
+
+async def test_mcp_sse_probe_ok(client, mcp_sse_upstream_server):
+    """SSE 握手验证：收到 text/event-stream + 首个 endpoint 事件即通过，随后立即断开。"""
+    created = await _register(client, type="mcp", upstream_url="http://127.0.0.1:9902/sse",
+                              headers={"Authorization": "Bearer sk-mcp-12345678"})
     resp = await _test(client, created["mapping_id"])
-    assert resp.status_code == 400
+    assert resp.status_code == 200
     body = resp.json()
-    assert body["code"] == "INVALID_PARAM" and "M3" in body["message"]
+    assert body["ok"] is True and body["status_code"] == 200
+    assert "SSE 握手成功" in body["detail"]
+    assert "session_id=" in body["detail"] and "test123" not in body["detail"]  # 值已脱敏
+    # 与 Task 5 转发管线同规（评审遗留）：SSE 探测连接同样不复用——出站必须
+    # 显式 Connection: close（读到首事件即 aclose 的连接绝不回流 keepalive 池）
+    assert mock_state["last_sse_headers"].get("connection") == "close"
+
+
+async def test_mcp_sse_probe_upstream_down_ok_false(client):
+    """上游不可达（9909 不存在端口）：ok=false + status_code=None，不抛 502。"""
+    created = await _register(client, type="mcp", upstream_url="http://127.0.0.1:9909/sse")
+    resp = await _test(client, created["mapping_id"])
+    body = resp.json()
+    assert body["ok"] is False and body["status_code"] is None and "不可达" in body["detail"]
+
+
+async def test_mcp_sse_probe_non_sse_response_ok_false(client):
+    """上游 200 但非 text/event-stream（echo JSON 端点）：ok=false + detail 说明。"""
+    created = await _register(client, type="mcp",
+                              upstream_url="http://127.0.0.1:9901/api/v1/orders")
+    resp = await _test(client, created["mapping_id"])
+    body = resp.json()
+    assert body["ok"] is False and "非 SSE 响应" in body["detail"]
+
+
+async def test_mcp_sse_probe_no_endpoint_event_ok_false(client, mcp_sse_upstream_server):
+    """SSE 流但 5s 内无 endpoint 事件（mock /sse-no-endpoint）：ok=false。"""
+    created = await _register(client, type="mcp",
+                              upstream_url="http://127.0.0.1:9902/sse-no-endpoint")
+    resp = await _test(client, created["mapping_id"])
+    body = resp.json()
+    assert body["ok"] is False and body["status_code"] == 200
+    assert "endpoint" in body["detail"]
+
+
+async def test_mcp_sse_probe_timeout_ok_false_no_5xx(client):
+    """上游可达但不回响应（echo /slow 8s > 5s 总期限）：ok=false，不产生代理 5xx。"""
+    created = await _register(client, type="mcp",
+                              upstream_url="http://127.0.0.1:9901/api/v1/slow?seconds=8")
+    resp = await _test(client, created["mapping_id"])
+    assert resp.status_code == 200                      # 上游失败不变成代理 5xx（§6.6）
+    body = resp.json()
+    assert body["ok"] is False and body["status_code"] is None and "超时" in body["detail"]
 
 
 async def test_test_endpoint_audited_as_test_mapping(client):

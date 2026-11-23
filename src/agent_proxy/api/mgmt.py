@@ -12,6 +12,7 @@ from ..auth import Identity
 from ..config import Settings, get_settings
 from ..errors import AppError
 from ..forward.http_forward import probe_http_mapping
+from ..forward.mcp_sse import probe_sse_mapping
 from ..mapping_id import MAPPING_ID_RE
 from ..schemas import (ListItemOut, MappingCreate, MappingDetailOut, MappingTestOut,
                        MappingUpdate, RegisteredOut)
@@ -169,6 +170,6 @@ async def test_mapping_route(request: Request, mapping_id: str,
     request.state.audit_action = "test_mapping"
     request.state.mapping_id = data["mapping_id"]
     if data["type"] == "mcp":
-        # M3/M4 补 SSE endpoint / Streamable initialize 语义验证（设计 §16）
-        raise AppError(400, "INVALID_PARAM", "mcp 类型 test 随 M3/M4 交付，当前仅支持 http")
+        # SSE 握手语义验证（§6.6 / §16 M3）；Streamable initialize 语义验证随 M4（§8.4）
+        return await probe_sse_mapping(request.app.state, data)
     return await probe_http_mapping(request.app.state, data)
