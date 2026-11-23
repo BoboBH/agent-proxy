@@ -18,7 +18,7 @@ class ProxyMapping(Base):
     name: Mapped[str | None] = mapped_column(String(128))
     type: Mapped[str] = mapped_column(Enum("http", "mcp", name="mapping_type"))
     visibility: Mapped[str] = mapped_column(
-        Enum("private", "public", name="mapping_visibility"), default="private")
+        Enum("private", "public", name="mapping_visibility"), default="private", index=True)
     auth_mode: Mapped[str] = mapped_column(
         Enum("static", "oauth", name="mapping_auth_mode"), default="static")
     upstream_url: Mapped[str] = mapped_column(String(2048))
