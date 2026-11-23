@@ -1,6 +1,8 @@
 import json
 import logging
 
+import pytest
+
 from agent_proxy import trace
 from agent_proxy.logging_setup import flush_trace
 
@@ -69,6 +71,48 @@ def test_sse_event_only_in_body_mode(tmp_path):
     path = _capture(tmp_path, "metadata")
     trace.log_sse_event("r1", "message", b"data")
     assert _read(path) == []
+
+
+@pytest.mark.parametrize("value", ["", "abc", "abcd1234", "abcdefghij", "sk-short"])
+def test_fingerprint_short_value_no_leak(value):
+    fp = trace.fingerprint(value)
+    assert fp == f"****(len={len(value)})"
+    # 原值的任意连续片段（≥2 字符）不应出现在指纹中（单字符与 len 文案撞字母不算泄露）
+    chunks = {value[i:i + 2] for i in range(len(value) - 1)}
+    assert not (chunks & {fp[i:i + 2] for i in range(len(fp) - 1)}), f"短值指纹不应泄露原值片段: {fp}"
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("abcd12345678", "abcd****5678(len=12)"),  # 恰为门槛 12
+        ("sk-abcdefgh12345678", "sk-a****5678(len=19)"),
+    ],
+)
+def test_fingerprint_long_value_first4_last4(value, expected):
+    assert trace.fingerprint(value) == expected
+
+
+def test_sensitive_header_substring_fallback_in_body_mode(tmp_path):
+    path = _capture(tmp_path, "body")
+    trace.log_request("r1", "u1", "m1", "POST", "http://x",
+                      {"X-Custom-Token": "tok-9ab2", "X-Request-Id": "abc123"},
+                      body=b'{"q":1}', content_type="application/json")
+    recs = _read(path)
+    assert recs[0]["headers"]["X-Custom-Token"] == "****(len=8)"
+    assert recs[0]["headers"]["X-Request-Id"] == "abc123"
+    assert "tok-9ab2" not in json.dumps(recs[0])
+
+
+def test_plus_json_and_yaml_content_types_kept_as_text(tmp_path):
+    path = _capture(tmp_path, "body")
+    trace.log_request("r1", "u1", "m1", "POST", "http://x", {},
+                      body=b'{"a":1}', content_type="application/vnd.api+json")
+    trace.log_request("r2", "u1", "m1", "POST", "http://x", {},
+                      body=b"a: 1", content_type="application/yaml; charset=utf-8")
+    recs = _read(path)
+    assert recs[0]["body"] == '{"a":1}' and recs[0]["body_truncated"] is False
+    assert recs[1]["body"] == "a: 1" and recs[1]["body_truncated"] is False
 
 
 def test_sse_event_uses_data_keys_in_body_mode(tmp_path):

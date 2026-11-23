@@ -638,7 +638,8 @@ sequenceDiagram
 
 **脱敏规则（安全底线，任何模式都生效）**：
 
-- 真实凭据（存储 header 值、调用方 token、OAuth token / client_secret）：**值以指纹呈现** `前4****后4(len=N)`——足以比对「发出的凭据与配置是否一致」（典型如 401 排障），不泄露完整密钥；
+- 真实凭据（存储 header 值、调用方 token、OAuth token / client_secret）：**值以指纹呈现** `前4****后4(len=N)`——足以比对「发出的凭据与配置是否一致」（典型如 401 排障），不泄露完整密钥；**短值规则**：长度 ≥12 才显示前4后4，否则只记 `****(len=N)`（防 8–11 字符短密钥被前后缀拼出全值）；
+- 打码范围：精确集合（authorization / proxy-authorization / cookie / set-cookie / x-auth-token / x-api-key / api-key）+ 子串兜底——header 名含 `token` / `secret` / `key` / `auth` / `cookie` 之一一律打码（未列出的敏感头默认安全）；
 - 占位 header 显示为 `${PX:<名>}`（本就无敏感内容）；上游响应的 `Authorization` 等敏感头同样打码。
 
 **body / SSE 处理**：

@@ -5,7 +5,10 @@ import json
 import logging
 from datetime import datetime, timezone
 
-SENSITIVE_HEADERS = {"authorization", "proxy-authorization", "cookie", "set-cookie", "x-auth-token"}
+SENSITIVE_HEADERS = {"authorization", "proxy-authorization", "cookie", "set-cookie",
+                     "x-auth-token", "x-api-key", "api-key"}
+# 兜底：header 名含这些子串一律按敏感处理（未列入精确集合的敏感头默认安全）
+_SENSITIVE_SUBSTRINGS = ("token", "secret", "key", "auth", "cookie")
 _TEXT_TYPES = ("text/", "application/json", "application/xml", "application/x-www-form-urlencoded")
 
 _trace = logging.getLogger("agent_proxy.trace")
@@ -27,21 +30,30 @@ def enabled() -> bool:
 
 
 def fingerprint(value: str) -> str:
-    if len(value) >= 8:
+    # 门槛 12：len==8 时前4后4恰好拼出全值，9-11 字符短密钥也泄露 8 字符
+    if len(value) >= 12:
         return f"{value[:4]}****{value[-4:]}(len={len(value)})"
-    return "****"
+    return f"****(len={len(value)})"
+
+
+def _is_sensitive(name: str) -> bool:
+    lowered = name.lower()
+    return lowered in SENSITIVE_HEADERS or any(s in lowered for s in _SENSITIVE_SUBSTRINGS)
 
 
 def _headers_for_log(headers: dict[str, str], body_mode: bool) -> dict[str, str]:
     out = {}
     for key, value in headers.items():
-        sensitive = key.lower() in SENSITIVE_HEADERS
+        sensitive = _is_sensitive(key)
         out[key] = fingerprint(value) if (sensitive or not body_mode) else value
     return out
 
 
 def _truncate(body: bytes | str, content_type: str = "") -> dict:
-    if content_type and not content_type.lower().startswith(_TEXT_TYPES):
+    ct = content_type.lower().split(";")[0].strip()
+    # +json 后缀（如 application/vnd.api+json）与 yaml 属文本，不能当二进制丢弃
+    is_text = ct.startswith(_TEXT_TYPES) or ct.endswith("+json") or ct == "application/yaml"
+    if content_type and not is_text:
         size = len(body) if isinstance(body, bytes) else len(body.encode("utf-8"))
         return {"body_bytes": size, "body_skipped": "binary"}
     text = body.decode("utf-8", "replace") if isinstance(body, bytes) else body
