@@ -4,6 +4,7 @@
 上游地址含 SSRF_ALLOW_PRIVATE=true 放行的 127.0.0.1（测试环境既定）。
 """
 import re
+from contextlib import asynccontextmanager
 
 import httpx
 import pytest
@@ -282,3 +283,150 @@ async def test_stream_broken_is_observable(client, app):
     after = metrics_mod.upstream_errors_total.labels(
         type="http", code="stream_broken")._value.get()
     assert after == before + 1
+
+
+# ---------- 第二批：重定向 / 大响应流式 / 413 / 连接池 / 502 / 504 ----------
+
+
+async def test_same_origin_redirect_followed_internally(client):
+    """同源 302：代理内部跟随，存储 header 每跳重放；同源 Location 永不回传（§8.1 第 7 条）。"""
+    created = await _register(client)
+    mid = created["mapping_id"]
+    resp = await _call(client, mid, "GET", "/redirect/same-origin")
+    assert resp.status_code == 200                                   # 内部跟随完成
+    echo = resp.json()
+    assert echo["path"] == "/final" and echo["query"] == {"via": "redirect"}
+    assert _hdr(echo["headers"], "authorization") == "Bearer sk-real-12345678"  # 每跳重放
+    assert "location" not in {k.lower() for k in resp.headers.keys()}
+
+
+async def test_same_origin_307_post_keeps_method(client):
+    """307 保方法（body 不重放为 M2 已知限制：首跳已流式消耗，断言只看方法与路径）。"""
+    created = await _register(client)
+    resp = await _call(client, created["mapping_id"], "POST", "/redirect/307",
+                       headers={"Content-Type": "application/json"}, content=b'{"a":1}')
+    assert resp.status_code == 200
+    echo = resp.json()
+    assert echo["method"] == "POST" and echo["path"] == "/final"
+
+
+async def test_cross_origin_redirect_passthrough(client):
+    """跨源 302（→9902 不存在端口）：不跟随原样透传；若被跟随会得到 502 而非 302。"""
+    created = await _register(client)
+    resp = await _call(client, created["mapping_id"], "GET", "/redirect/cross-origin")
+    assert resp.status_code == 302
+    assert "127.0.0.1:9902" in resp.headers["location"]
+
+
+async def test_redirect_loop_stops_at_limit(client):
+    """超过 UPSTREAM_MAX_REDIRECTS(默认 3) 后最后一跳原样透传。"""
+    created = await _register(client)
+    resp = await _call(client, created["mapping_id"], "GET", "/redirect/loop")
+    assert resp.status_code == 302
+
+
+async def test_redirect_hop_dot_segment_400(client):
+    """Task 3 评审携带项：Location 派生的跳路径与基本路径同有 dot-segment/编码斜杠
+    逃逸暴露——同源跳路径必须重过 assert_safe_sub_path（跟随跳 → 400 而非 200）。"""
+    created = await _register(client)
+    resp = await _call(client, created["mapping_id"], "GET", "/redirect/unsafe")
+    assert resp.status_code == 400 and resp.json()["code"] == "INVALID_PARAM"
+
+
+async def test_request_body_over_limit_413(client):
+    """流式计数超限立即 413（conftest MAX_BODY_SIZE=1MB；响应未开始，标准错误体）。"""
+    created = await _register(client)
+    big = b"x" * (1024 * 1024 + 1024)
+    resp = await _call(client, created["mapping_id"], "POST", "/orders",
+                       headers={"Content-Type": "application/octet-stream"}, content=big)
+    assert resp.status_code == 413 and resp.json()["code"] == "BODY_TOO_LARGE"
+
+
+async def test_large_response_streamed_intact(client):
+    """8MB 响应经代理逐块回传，字节级完整（不整体驻留：转发层为 aiter_bytes 逐块 yield）。"""
+    created = await _register(client)
+    resp = await _call(client, created["mapping_id"], "GET", "/big?kb=8192")
+    assert resp.status_code == 200
+    size = 8192 * 1024
+    pattern = bytes(range(256))
+    expected = (pattern * (size // len(pattern) + 1))[:size]
+    assert resp.content == expected
+
+
+@asynccontextmanager
+async def _dedicated_app_client(**env_overrides):
+    """专用 app（独立 Settings 覆盖）+ 其测试 client——超时/池上限类用例专用，用毕即弃。"""
+    import os
+
+    from agent_proxy.config import Settings
+    from agent_proxy.main import create_app
+    from httpx import ASGITransport, AsyncClient
+
+    settings = Settings.from_env({**os.environ, **env_overrides})
+    application = create_app(settings)
+    async with application.router.lifespan_context(application):
+        async with AsyncClient(transport=ASGITransport(app=application),
+                               base_url="http://testserver") as c:
+            yield c
+
+
+async def test_upstream_dead_port_maps_502(client):
+    """评审核销项：上游连接失败（127.0.0.1:1 死端口）→ 502 UPSTREAM_ERROR，
+    metrics ap_upstream_errors_total{code=connect} 打点。"""
+    from agent_proxy import metrics as metrics_mod
+
+    created = await _register(client, upstream_url="http://127.0.0.1:1/api/v1")
+    before = metrics_mod.upstream_errors_total.labels(
+        type="http", code="connect")._value.get()
+    resp = await _call(client, created["mapping_id"], "GET", "/orders")
+    after = metrics_mod.upstream_errors_total.labels(
+        type="http", code="connect")._value.get()
+    assert resp.status_code == 502 and resp.json()["code"] == "UPSTREAM_ERROR"
+    assert after == before + 1
+
+
+async def test_upstream_read_timeout_maps_504():
+    """评审核销项：上游读超时（UPSTREAM_READ_TIMEOUT=1 < slow 3s）→ 504 UPSTREAM_TIMEOUT，
+    metrics ap_upstream_errors_total{code=timeout} 打点。"""
+    from agent_proxy import metrics as metrics_mod
+
+    before = metrics_mod.upstream_errors_total.labels(
+        type="http", code="timeout")._value.get()
+    async with _dedicated_app_client(UPSTREAM_READ_TIMEOUT="1") as c:
+        resp = await c.post("/api/v1/mappings",
+                            json={"type": "http",
+                                  "upstream_url": "http://127.0.0.1:9901/api/v1",
+                                  "headers": {}},
+                            headers={"Authorization": f"Bearer {make_token('u888')}"})
+        mid = resp.json()["mapping_id"]
+        resp = await _call(c, mid, "GET", "/slow?seconds=3")
+    after = metrics_mod.upstream_errors_total.labels(
+        type="http", code="timeout")._value.get()
+    assert resp.status_code == 504 and resp.json()["code"] == "UPSTREAM_TIMEOUT"
+    assert after == before + 1
+
+
+async def test_pool_exhausted_returns_503():
+    """评审核销项：max_connections=1 + 慢上游：第二个请求等池超时 → 503 PROXY_BUSY。
+
+    专用 app（UPSTREAM_MAX_CONNECTIONS=1 + UPSTREAM_POOL_TIMEOUT=2）：2s 池超时
+    < 5s 慢响应占用，保证恰一个请求拿到连接、另一个 503（POOL_TIMEOUT 配置可用性
+    一并钉住；评审要求断言 [200, 503]）。
+    """
+    import asyncio
+
+    async with _dedicated_app_client(UPSTREAM_MAX_CONNECTIONS="1",
+                                     UPSTREAM_POOL_TIMEOUT="2") as c:
+        resp = await c.post("/api/v1/mappings",
+                            json={"type": "http",
+                                  "upstream_url": "http://127.0.0.1:9901/api/v1",
+                                  "headers": {}},
+                            headers={"Authorization": f"Bearer {make_token('u888')}"})
+        mid = resp.json()["mapping_id"]
+        r1, r2 = await asyncio.gather(
+            _call(c, mid, "GET", "/slow?seconds=5"),
+            _call(c, mid, "GET", "/slow?seconds=5"))
+    statuses = sorted(r.status_code for r in (r1, r2))
+    busy = [r for r in (r1, r2) if r.status_code == 503]
+    assert statuses == [200, 503], f"池耗尽应恰一请求 503: {statuses}"
+    assert busy and busy[0].json()["code"] == "PROXY_BUSY"

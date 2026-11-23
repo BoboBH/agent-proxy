@@ -51,6 +51,14 @@ def build_echo_app() -> FastAPI:
     async def redirect_loop():
         return RedirectResponse("/api/v1/redirect/loop", status_code=302)
 
+    @app.get("/api/v1/redirect/unsafe")
+    async def redirect_unsafe():
+        # Task 3 评审携带项：同源 Location 携带编码 dot-segment——跳路径与基本路径
+        # 同有编码斜杠/dot-segment 逃逸暴露，代理对 Location 派生的跳路径必须重过
+        # assert_safe_sub_path（否则跟随跳可逃逸注册前缀）。未加检查的代理会跟随
+        # 该跳并得到 echo 回显 200（path=/../escaped），加了则 400。
+        return RedirectResponse("/api/v1/%2e%2e/escaped", status_code=302)
+
     @app.post("/api/v1/redirect/307")
     async def redirect_307():
         return RedirectResponse("/api/v1/final", status_code=307)

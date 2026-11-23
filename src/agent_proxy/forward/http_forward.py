@@ -63,8 +63,20 @@ def build_forward_target(upstream_url: str, sub_path: str, query: str) -> str:
     return f"{target}?{query}" if query else target
 
 
+def _origin(url: httpx.URL) -> tuple[str, str, int]:
+    default = 443 if url.scheme == "https" else 80
+    return (url.scheme, url.host, url.port or default)
+
+
+def _redirect_method(status: int, method: str) -> str:
+    """303 → GET（载荷类方法），301/302/307/308 保方法（设计 §8.1 第 7 条）。"""
+    if status == 303 and method in ("POST", "PUT", "PATCH", "DELETE"):
+        return "GET"
+    return method
+
+
 async def stream_http_forward(app_state, mapping_data: dict, request: Request) -> Response:
-    """HTTP 前缀流式转发主管线（本 Task 版本：3xx 一律透传；同源内部跟随在 Task 6 加入）。"""
+    """HTTP 前缀流式转发主管线（设计 §8.1 / §8.2）：同源重定向内部跟随、跨源透传。"""
     settings = app_state.settings
     client: httpx.AsyncClient = app_state.http_client
     mapping_id = mapping_data["mapping_id"]
@@ -134,7 +146,45 @@ async def stream_http_forward(app_state, mapping_data: dict, request: Request) -
         raise AppError(502, "UPSTREAM_ERROR", f"上游连接失败: {exc}") from exc
     _log_request()
 
+    # 同源重定向内部跟随（设计 §8.1 第 7 条）：同源判定与「注册 upstream_url 的
+    # origin」比较（非逐跳 target）；存储 header 每跳重放；跨源不跟随原样透传
+    # （Location 指向第三方属上游自身行为）；超过 UPSTREAM_MAX_REDIRECTS 后
+    # 最后一跳同样透传。
+    upstream_origin = _origin(httpx.URL(mapping_data["upstream_url"]))
+    redirects = 0
+    while upstream_resp.is_redirect and redirects < settings.upstream_max_redirects:
+        location = upstream_resp.headers.get("location")
+        if not location:
+            break
+        next_url = httpx.URL(target).join(location)
+        if _origin(next_url) != upstream_origin:
+            break  # 跨源：透传
+        # 跳路径与基本路径同有 dot-segment/编码斜杠逃逸暴露（Task 3 评审携带项）：
+        # Location 派生的跳路径必须重过安全检查，否则跟随跳可逃逸注册前缀。
+        # 用 .path（httpx 已解一层码、不含 query）而非 raw_path（含 query）；
+        # assert_safe_sub_path 自带两层 unquote 深度，解码层次覆盖不变。
+        assert_safe_sub_path(next_url.path)
+        await upstream_resp.aclose()
+        target = str(next_url)
+        method = _redirect_method(upstream_resp.status_code, request.method)
+        # 已知限制（M2 接受）：首跳 body 已流式消耗，跳间不重放 body（303 已降为 GET）；
+        # content-length 随之失效，跟随跳不再携带
+        hop_headers = {k: v for k, v in outbound.items() if k.lower() != "content-length"}
+        try:
+            upstream_resp = await client.request(method, target, headers=hop_headers)
+        except httpx.PoolTimeout as exc:  # 池上限（必须先于 TimeoutException 捕获）
+            metrics.upstream_errors_total.labels(type="http", code="pool_exhausted").inc()
+            raise AppError(503, "PROXY_BUSY", "上游连接池已满，请稍后重试") from exc
+        except httpx.TimeoutException as exc:
+            metrics.upstream_errors_total.labels(type="http", code="timeout").inc()
+            raise AppError(504, "UPSTREAM_TIMEOUT", f"上游超时: {exc}") from exc
+        except httpx.HTTPError as exc:
+            metrics.upstream_errors_total.labels(type="http", code="connect").inc()
+            raise AppError(502, "UPSTREAM_ERROR", f"上游连接失败: {exc}") from exc
+        redirects += 1
+
     # duration_ms 语义：time-to-headers——上游响应头到达耗时，不含 body 流式传输时长
+    # （有重定向时含各跳耗时）
     duration_ms = int((time.monotonic() - start) * 1000)
     metrics.upstream_duration.labels(type="http").observe(duration_ms / 1000)
 

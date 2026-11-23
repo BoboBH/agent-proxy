@@ -15,6 +15,7 @@ os.environ.update({
     "MYSQL_DSN": "mysql+aiomysql://root:123456@127.0.0.1:3306/agent_proxy_test",
     "REDIS_URL": "redis://127.0.0.1:6379/9",
     "SSRF_ALLOW_PRIVATE": "true",
+    "MAX_BODY_SIZE": "1MB",
     "ENCRYPT_AT_REST": "false",
     "MASTER_KEY": "test-master-key",
     "TRACE_MODE": "metadata",
