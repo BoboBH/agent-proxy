@@ -2322,10 +2322,12 @@ async def update_mapping_route(request: Request, mapping_id: str, body: MappingU
                                settings: Settings = Depends(get_settings)):
     if body.visibility == "public" and not is_admin(identity, settings.admin_role):
         raise AppError(403, "FORBIDDEN", "仅管理员可设置 public 可见性")
-    patch = body.model_dump(exclude_unset=False)
+    # update_mapping 服务层签名为 **patch 关键字展开（Task 9 实现定稿），
+    # patch 语义：字段缺省/None = 不更新；headers={} = 清空；必须 ** 展开传入，不能位置传参。
     try:
         data = await update_mapping(session, request.app.state.redis, settings,
-                                    mapping_id, identity.user_id, patch)
+                                    mapping_id, identity.user_id,
+                                    **body.model_dump(exclude_unset=True))
     except ValueError as exc:
         raise AppError(400, "INVALID_PARAM", str(exc))
     except UpstreamNotAllowed as exc:

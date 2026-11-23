@@ -6,6 +6,13 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator
 
 
+def _require_method_path(v: dict | None) -> dict | None:
+    """共享校验：test_request 必须包含 method/path（Create/Update 共用，保持不变量）。"""
+    if v is not None and not {"method", "path"} <= set(v.keys()):
+        raise ValueError("test_request 需包含 method/path")
+    return v
+
+
 class MappingCreate(BaseModel):
     type: Literal["http", "mcp"]
     name: str | None = Field(default=None, max_length=128)
@@ -17,9 +24,7 @@ class MappingCreate(BaseModel):
     @field_validator("test_request")
     @classmethod
     def _validate_test_request(cls, v: dict | None) -> dict | None:
-        if v is not None and not {"method", "path"} <= set(v.keys()):
-            raise ValueError("test_request 需包含 method/path")
-        return v
+        return _require_method_path(v)
 
 
 class MappingUpdate(BaseModel):
@@ -29,6 +34,11 @@ class MappingUpdate(BaseModel):
     headers: dict[str, str] | None = None
     test_request: dict | None = None
     status: Literal["active", "disabled"] | None = None
+
+    @field_validator("test_request")
+    @classmethod
+    def _validate_test_request(cls, v: dict | None) -> dict | None:
+        return _require_method_path(v)
 
 
 class RegisteredOut(BaseModel):

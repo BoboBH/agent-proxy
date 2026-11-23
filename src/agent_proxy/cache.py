@@ -23,7 +23,18 @@ async def get_mapping(r, mapping_id: str) -> dict | None:
     except Exception as exc:
         log.warning("redis get 失败，回源 MySQL: %s", exc)
         return None
-    return json.loads(raw) if raw is not None else None
+    if raw is None:
+        return None
+    try:
+        data = json.loads(raw)
+    except ValueError as exc:
+        # 坏 JSON 视为未命中，load_mapping 回源 MySQL 回填覆盖坏键（自愈），避免粘性 500
+        log.warning("缓存载荷非法 JSON，回源 MySQL 自愈: mapping_id=%s err=%s", mapping_id, exc)
+        return None
+    if not isinstance(data, dict):
+        log.warning("缓存载荷非 dict，回源 MySQL 自愈: mapping_id=%s", mapping_id)
+        return None
+    return data
 
 
 async def set_mapping(r, mapping_id: str, data: dict, ttl: int) -> None:
