@@ -11,6 +11,7 @@ from .db import Base
 
 class ProxyMapping(Base):
     __tablename__ = "proxy_mapping"
+    __table_args__ = {"mysql_engine": "InnoDB", "mysql_charset": "utf8mb4"}
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     mapping_id: Mapped[str] = mapped_column(String(16), unique=True, index=True)
@@ -22,8 +23,8 @@ class ProxyMapping(Base):
     auth_mode: Mapped[str] = mapped_column(
         Enum("static", "oauth", name="mapping_auth_mode"), default="static")
     upstream_url: Mapped[str] = mapped_column(String(2048))
-    upstream_headers: Mapped[dict] = mapped_column(JSON, default=dict)
-    test_request: Mapped[dict | None] = mapped_column(JSON)
+    upstream_headers: Mapped[dict[str, str]] = mapped_column(JSON, default=dict)
+    test_request: Mapped[dict[str, str] | None] = mapped_column(JSON)
     status: Mapped[str] = mapped_column(
         Enum("active", "disabled", name="mapping_status"), default="active")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
@@ -33,6 +34,7 @@ class ProxyMapping(Base):
 
 class OAuthClient(Base):
     __tablename__ = "proxy_oauth_client"
+    __table_args__ = {"mysql_engine": "InnoDB", "mysql_charset": "utf8mb4"}
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     mapping_id: Mapped[str] = mapped_column(String(16), unique=True, index=True)
@@ -52,10 +54,13 @@ class OAuthClient(Base):
 
 class OAuthCredential(Base):
     __tablename__ = "proxy_oauth_credential"
-    __table_args__ = (UniqueConstraint("mapping_id", "uid", name="uk_mapping_uid"),)
+    __table_args__ = (
+        UniqueConstraint("mapping_id", "uid", name="uk_mapping_uid"),
+        {"mysql_engine": "InnoDB", "mysql_charset": "utf8mb4"},
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    mapping_id: Mapped[str] = mapped_column(String(16), index=True)
+    mapping_id: Mapped[str] = mapped_column(String(16))
     uid: Mapped[str] = mapped_column(String(64), index=True)
     access_token: Mapped[str] = mapped_column(Text)
     refresh_token: Mapped[str | None] = mapped_column(Text)
