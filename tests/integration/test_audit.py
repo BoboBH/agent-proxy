@@ -12,20 +12,31 @@ from tests.utils import make_token
 BODY = {"type": "http", "upstream_url": "http://10.0.0.5/api/v1", "headers": {}}
 
 
-def _all_audit_entries() -> list[dict]:
-    entries = []
+def _read_audit_files() -> dict[str, list[str]]:
+    """读 logs-test 下全部 audit.log.* → {文件路径: 非空行列表}。"""
+    files = {}
     for path in sorted(glob.glob("logs-test/audit.log.*")):
         with open(path, encoding="utf-8") as fh:
-            for line in fh.read().splitlines():
-                if line.strip():
-                    entries.append(json.loads(line))
+            files[path] = [x for x in fh.read().splitlines() if x.strip()]
+    return files
+
+
+def _all_audit_entries() -> list[dict]:
+    entries = []
+    for path, lines in _read_audit_files().items():
+        for line in lines:
+            try:
+                entries.append(json.loads(line))
+            except json.JSONDecodeError as exc:
+                raise AssertionError(f"audit 日志存在非 JSON 行: {path}: {line!r}") from exc
     return entries
 
 
 def _find_audit_entry(request_id: str) -> dict:
     matches = [e for e in _all_audit_entries() if e["request_id"] == request_id]
     assert matches, f"audit 日志中找不到 request_id={request_id} 的记录"
-    return matches[-1]
+    assert len(matches) == 1, f"重复审计条目: request_id={request_id} 出现 {len(matches)} 次"
+    return matches[0]
 
 
 async def test_audit_has_identity_and_request_id(client):
@@ -55,8 +66,7 @@ async def test_audit_never_contains_header_values(client):
     resp = await client.post("/api/v1/mappings", json=body,
                              headers={"Authorization": f"Bearer {make_token('u888')}"})
     assert resp.status_code == 201
-    content = ""
-    for path in glob.glob("logs-test/audit.log.*"):
-        with open(path, encoding="utf-8") as fh:
-            content += fh.read()
-    assert "sk-super-secret-value" not in content
+    for path, lines in _read_audit_files().items():
+        text = "\n".join(lines)
+        assert "sk-super-secret-value" not in text, f"映射 header 值泄漏进审计日志: {path}"
+        assert "stub." not in text, f"调用方 bearer token 泄漏进审计日志: {path}"

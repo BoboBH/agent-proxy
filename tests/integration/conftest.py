@@ -1,6 +1,13 @@
 """集成目录独占夹具：建测试库 + 每测试后清库清缓存（仅作用于 integration，避免污染单元测试）。"""
 import pymysql
 import pytest
+import shutil
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _clean_test_logs():
+    """会话开始清空集成测试日志目录：audit handler 持续 append，不清则审计测试读到上次运行的旧行（非密封）。"""
+    shutil.rmtree("logs-test", ignore_errors=True)
 
 
 @pytest.fixture(scope="session", autouse=True)
