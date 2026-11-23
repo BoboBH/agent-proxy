@@ -8,6 +8,7 @@ import pytest_asyncio
 import shutil
 import uvicorn
 
+from tests.integration.mock_mcp_sse import build_mcp_sse_app
 from tests.integration.mock_upstream import build_echo_app
 
 
@@ -76,4 +77,34 @@ async def real_upstream_server():
     server.force_exit = True  # 兜底：优雅停机超时则强制置位，防止 join 卡死拖垮会话
     thread.join(timeout=5)
     assert not thread.is_alive(), "echo 上游未在 15s 内停机"
+    loop.close()
+
+
+@pytest_asyncio.fixture(scope="session", autouse=True, loop_scope="session")
+async def mcp_sse_upstream_server():
+    """真实 MCP SSE 上游：uvicorn 真实监听 127.0.0.1:9902（session 级，独立线程 loop）。
+
+    非 autouse 改 autouse（评审自检修正）：SSE 相关测试分布多个文件且均经代理
+    隐式访问 9902（无人显式请求夹具时 9902 不会启动）——统一随 session 启动，
+    成本一次性 ~1s。启动/停机模式与 echo 上游 9901 夹具一致
+    （uvicorn.serve() 挂独立线程独立 loop；测试用例经真实 TCP 访问，跨 loop 只过网络）。
+    """
+    config = uvicorn.Config(build_mcp_sse_app(), host="127.0.0.1", port=9902,
+                            log_level="warning", access_log=False)
+    server = uvicorn.Server(config)
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_until_complete, args=(server.serve(),),
+                              daemon=True, name="mcp-sse-upstream-9902")
+    thread.start()
+    for _ in range(200):
+        if server.started or not thread.is_alive():
+            break
+        await asyncio.sleep(0.05)
+    assert server.started, "MCP SSE 上游启动失败（127.0.0.1:9902 被占用？）"
+    yield server
+    server.should_exit = True
+    thread.join(timeout=10)
+    server.force_exit = True  # 兜底：SSE 长连接下优雅停机可能超时，强制置位防 join 卡死
+    thread.join(timeout=5)
+    assert not thread.is_alive(), "MCP SSE 上游未在 15s 内停机"
     loop.close()

@@ -2,7 +2,7 @@
 
 用户明确要求「真实的 http 代理测试」：集成测试经代理→上游走真实 TCP，
 不用 ASGI 直连伪造上游。端点能力：全路径回显 / 大响应 / 慢响应 / 状态码 /
-同源重定向 / 跨源重定向（→ 9902 不存在端口）/ 重定向循环 / 307 保方法。
+同源重定向 / 跨源重定向（→ 9909 不存在端口）/ 重定向循环 / 307 保方法。
 注意：具体端点必须定义在 /api/v1/{path:path} 回显兜底之前（先注册先匹配）。
 
 回显契约（Task 4 评审携带项）：
@@ -45,7 +45,7 @@ def build_echo_app() -> FastAPI:
 
     @app.get("/api/v1/redirect/cross-origin")
     async def redirect_cross_origin():
-        return RedirectResponse("http://127.0.0.1:9902/nowhere", status_code=302)
+        return RedirectResponse("http://127.0.0.1:9909/nowhere", status_code=302)
 
     @app.get("/api/v1/redirect/loop")
     async def redirect_loop():

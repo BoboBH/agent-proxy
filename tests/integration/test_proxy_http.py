@@ -380,11 +380,11 @@ async def test_malformed_redirect_location_maps_502(client):
 
 
 async def test_cross_origin_redirect_passthrough(client):
-    """跨源 302（→9902 不存在端口）：不跟随原样透传；若被跟随会得到 502 而非 302。"""
+    """跨源 302（→9909 不存在端口）：不跟随原样透传；若被跟随会得到连接失败而非 302。"""
     created = await _register(client)
     resp = await _call(client, created["mapping_id"], "GET", "/redirect/cross-origin")
     assert resp.status_code == 302
-    assert "127.0.0.1:9902" in resp.headers["location"]
+    assert "127.0.0.1:9909" in resp.headers["location"]
 
 
 async def test_redirect_loop_stops_at_limit(client):

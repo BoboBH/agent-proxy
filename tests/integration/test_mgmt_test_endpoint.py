@@ -72,8 +72,8 @@ async def test_http_probe_timeout_ok_false_no_502(client):
 
 
 async def test_http_probe_upstream_down_ok_false(client):
-    """上游不可达（9902 不存在端口）：ok=false，status_code=None。"""
-    created = await _register(client, upstream_url="http://127.0.0.1:9902/api/v1")
+    """上游不可达（9909 不存在端口）：ok=false，status_code=None。"""
+    created = await _register(client, upstream_url="http://127.0.0.1:9909/api/v1")
     resp = await _test(client, created["mapping_id"])
     assert resp.status_code == 200
     body = resp.json()
