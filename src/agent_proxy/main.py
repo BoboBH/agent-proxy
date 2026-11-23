@@ -15,6 +15,7 @@ from .config import Settings, get_settings
 from .db import Base, build_engine, build_sessionmaker
 from .logging_setup import setup_logging, shutdown_logging
 from .middleware import RequestContextMiddleware
+from . import models as _models  # noqa: F401  注册 ORM 元数据供 create_all
 from .api.mgmt import router as mgmt_router
 
 log = logging.getLogger("agent_proxy")
