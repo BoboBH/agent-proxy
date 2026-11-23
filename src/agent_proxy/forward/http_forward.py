@@ -19,21 +19,23 @@ def split_sub_path(full_path: str, mapping_id: str) -> str:
     return full_path[len(prefix):]
 
 
-def _seg_is_dot_segment(seg: str) -> bool:
-    # 两层解码：覆盖 %2e（一层编码）与 %252e（两层双重编码）变体
-    cur = seg
-    for _ in range(2):
-        cur = unquote(cur)
-        if cur.lower() in (".", ".."):
-            return True
-    return False
-
-
 def assert_safe_sub_path(sub_path: str) -> None:
-    """拒绝 dot-segment 及 URL 编码变体（设计 §8.1 第 8 条）——防止拼接后逃逸注册前缀。"""
-    for seg in sub_path.split("/"):
-        if seg and _seg_is_dot_segment(seg):
-            raise AppError(400, "INVALID_PARAM", "代理子路径含非法 dot-segment")
+    """拒绝 dot-segment 及 URL 编码变体（设计 §8.1 第 8 条）——防止拼接后逃逸注册前缀。
+
+    解码层契约：uvicorn/h11 在 ASGI 边界已对原始请求目标做一次百分号解码（第 0 层，
+    即本函数入参），此后每层 unquote 对应「上游再解码一次」的深度（第 1-2 层）。
+    每层解码后按 / 切分组件，任一组件为 "." / ".." 即拒绝——不依赖整段相等比较：
+    复合逃逸例：线上 `..%252f` 经第 0 层解码为 `..%2f`（既非 `.` 也非 `..`），
+    第 2 层解码为 `../`（仍非整段相等），但按组件切分即得 `..`；若放行，上游
+    再解码一次即逃逸注册前缀。故必须逐组件判定。
+    """
+    cur = sub_path
+    for layer in range(3):  # 第 0 层（入参）+ 上游解码深度 1-2 层
+        for comp in cur.split("/"):
+            if comp in (".", ".."):
+                raise AppError(400, "INVALID_PARAM", "代理子路径含非法 dot-segment")
+        if layer < 2:
+            cur = unquote(cur)
 
 
 def build_forward_target(upstream_url: str, sub_path: str, query: str) -> str:

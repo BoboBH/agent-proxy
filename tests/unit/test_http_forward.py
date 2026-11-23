@@ -28,6 +28,19 @@ def test_assert_safe_sub_path_rejects_dot_segments(bad):
     assert ei.value.status == 400 and ei.value.code == "INVALID_PARAM"
 
 
+@pytest.mark.parametrize("bad", ["/..%252f", "/%2e%2e%252f", "/a/..%252fb",
+                                 "/..%2f", "/%2e%2e%2fetc"])
+def test_assert_safe_sub_path_rejects_encoded_slash_composites(bad):
+    """复合逃逸变体（Task 3 评审携带项）：编码斜杠与 dot 的组合，解码后按组件切分出 `..`。
+
+    线上链路：`..%252f` 经 uvicorn 第 0 层解码 → `..%2f`（与段相等比较永不命中），
+    上游再解码一次即 `../` → 逃逸注册前缀。修复契约：每层解码后按 / 切分，逐组件判定。
+    """
+    with pytest.raises(AppError) as ei:
+        assert_safe_sub_path(bad)
+    assert ei.value.status == 400 and ei.value.code == "INVALID_PARAM"
+
+
 @pytest.mark.parametrize("ok", ["", "/", "/orders", "/orders/123", "/a-b.c_d", "/%E4%B8%AD"])
 def test_assert_safe_sub_path_allows_normal_paths(ok):
     assert_safe_sub_path(ok)
