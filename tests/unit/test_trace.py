@@ -34,7 +34,9 @@ def test_metadata_mode_fingerprint_no_body(tmp_path):
     assert recs[0]["phase"] == "request"
     assert recs[0]["headers"]["X-API-Key"].startswith("sk-v****") and "(len=" in recs[0]["headers"]["X-API-Key"]
     assert "body" not in recs[0] and "body" not in recs[1]
-    assert recs[1] == {"request_id": "r1", "phase": "response", "status": 200, "duration_ms": 123}
+    assert recs[1]["request_id"] == "r1" and recs[1]["phase"] == "response"
+    assert recs[1]["status"] == 200 and recs[1]["duration_ms"] == 123
+    assert "ts" in recs[1] and list(recs[1])[0] == "ts"
 
 
 def test_body_mode_masks_sensitive_but_keeps_normal(tmp_path):
@@ -67,3 +69,14 @@ def test_sse_event_only_in_body_mode(tmp_path):
     path = _capture(tmp_path, "metadata")
     trace.log_sse_event("r1", "message", b"data")
     assert _read(path) == []
+
+
+def test_sse_event_uses_data_keys_in_body_mode(tmp_path):
+    path = _capture(tmp_path, "body")
+    trace.log_sse_event("r1", "message", b"hello")
+    trace.log_sse_event("r1", "delta", b"x" * 200)
+    recs = _read(path)
+    assert recs[0]["phase"] == "sse_event" and recs[0]["event"] == "message"
+    assert recs[0]["data"] == "hello" and recs[0]["data_truncated"] is False
+    assert recs[1]["data_truncated"] is True and len(recs[1]["data"]) == 100
+    assert "body" not in recs[0] and "body_truncated" not in recs[0]

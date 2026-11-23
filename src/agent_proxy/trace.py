@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 
 SENSITIVE_HEADERS = {"authorization", "proxy-authorization", "cookie", "set-cookie", "x-auth-token"}
 _TEXT_TYPES = ("text/", "application/json", "application/xml", "application/x-www-form-urlencoded")
@@ -52,8 +53,9 @@ def _truncate(body: bytes | str, content_type: str = "") -> dict:
 
 
 def _write(record: dict) -> None:
-    # 记录体即唯一 JSON 行，不加额外字段（响应记录需保证键集合精简可断言）
-    _trace.info(json.dumps(record, ensure_ascii=False))
+    # ts 固定为行首键：排障需时间证明与行序（设计 §11.1）
+    line = {"ts": datetime.now(timezone.utc).astimezone().isoformat(timespec="milliseconds"), **record}
+    _trace.info(json.dumps(line, ensure_ascii=False))
 
 
 def log_request(request_id: str, uid: str, mapping_id: str, method: str, url: str,
@@ -90,5 +92,11 @@ def log_sse_event(request_id: str, event: str, data: bytes) -> None:
     if _mode != "body":
         return
     record: dict = {"request_id": request_id, "phase": "sse_event", "event": event}
-    record.update(_truncate(data))
+    fields = _truncate(data)
+    # 设计 §11.1：SSE 行的载荷键名为 data/data_truncated，非 body/body_truncated
+    if "body" in fields:
+        fields["data"] = fields.pop("body")
+    if "body_truncated" in fields:
+        fields["data_truncated"] = fields.pop("body_truncated")
+    record.update(fields)
     _write(record)
