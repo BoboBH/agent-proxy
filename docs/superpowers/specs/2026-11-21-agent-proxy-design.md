@@ -631,7 +631,8 @@ sequenceDiagram
 **格式（JSON 行，同 request_id 可完整回放一次调用）**：
 
 ```json
-{"ts":"2026-11-21T10:00:00.123+08:00","request_id":"9f8e7d","uid":"u999","mapping_id":"aB3xK9mQ2wR4","phase":"request","method":"POST","url":"https://bobo.com/api/v1/orders","headers":{"X-API-Key":"sk-a****-key(len=13)","Content-Type":"application/json"},"body_bytes":212}
+{"ts":"2026-11-21T10:00:00.123+08:00","request_id":"9f8e7d","uid":"u999","mapping_id":"aB3xK9mQ2wR4","phase":"request","method":"POST","url":"https://bobo.com/api/v1/orders","headers":{"X-API-Key":"sk-a****-key(len=13)","Content-Type":"appl****json(len=16)"},"body_bytes":212}
+（metadata 模式所有 header 值均为指纹——上例 Content-Type 亦不例外；body 模式下非敏感头才显示原值）
 {"ts":"...","request_id":"9f8e7d","phase":"response","status":200,"duration_ms":123,"body":"{\"orders\":[...]}","body_truncated":false}
 {"ts":"...","request_id":"...","phase":"sse_event","event":"message","data":"{\"jsonrpc\":\"2.0\",...}","data_truncated":false}
 ```
