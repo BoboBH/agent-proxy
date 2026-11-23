@@ -6,6 +6,7 @@ httpx 流式转发（请求体字节计数限流）→ 同源重定向内部跟�
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from urllib.parse import unquote
@@ -273,6 +274,13 @@ async def probe_http_mapping(app_state, mapping_data: dict) -> dict:
 
     复用转发管线的 URL 拼接与出站 header 重建（测的即真实路径）；
     上游失败一律 ok=false + detail，不抛 502/504。审计由调用方记 action=test_mapping。
+
+    语义注记（评审修复）：
+    - 探测为流式惯用法，只读响应头即 aclose，绝不读 body——不整体缓冲上游响应
+      （否则 owner 指向大文件的 URL + 循环 /test 即无界内存压力）；latency_ms
+      随之与转发路径同义（time-to-headers）。
+    - 严格模式必须提供 expect_status：缺失或畸形（绕过 schema 的历史数据）一律
+      判失败 + detail，绝不当作「任意状态码皆可」，也不抛 500。
     """
     stored = mapping_data["upstream_headers"] or {}
     headers = build_outbound_headers(stored, {}, None, None, None)
@@ -293,17 +301,39 @@ async def probe_http_mapping(app_state, mapping_data: dict) -> dict:
                 "latency_ms": int((time.monotonic() - start) * 1000), "detail": detail}
 
     try:
-        resp = await app_state.http_client.request(method, target, headers=headers,
-                                                   timeout=TEST_PROBE_TIMEOUT)
-    except httpx.TimeoutException as exc:
+        # 流式惯用法（评审修复，与转发管线同规）：client.request() 内部
+        # send(stream=False) 会 aread() 把响应体整体读进内存——此处改
+        # build_request + send(stream=True)，取到 status_code 即 aclose。
+        # wait_for 提供总挂钟期限（httpx 分项超时 connect/read 各自计时，
+        # 叠加可超 TEST_PROBE_TIMEOUT；到点取消由 httpx/httpcore 关闭半开
+        # 连接、不回池），保证 5s 内必有结论。
+        client = app_state.http_client
+        req = client.build_request(method, target, headers=headers)
+        resp = await asyncio.wait_for(client.send(req, stream=True), TEST_PROBE_TIMEOUT)
+    except asyncio.TimeoutError as exc:  # 3.11+ 即内置 TimeoutError（wait_for 总期限）
+        return _result(False, None,
+                       f"上游超时（>{TEST_PROBE_TIMEOUT:.0f}s 总期限）: {type(exc).__name__}")
+    except httpx.TimeoutException as exc:  # 分项超时先到（connect/read/pool）
         return _result(False, None, f"上游超时（>{TEST_PROBE_TIMEOUT:.0f}s）: {type(exc).__name__}")
     except httpx.HTTPError as exc:
         return _result(False, None, f"上游不可达: {type(exc).__name__}: {exc}")
     status_code = resp.status_code
     await resp.aclose()
     if strict:
-        ok = expect is not None and status_code == int(expect)
-        detail = "状态码匹配" if ok else f"预期状态码 {expect}，实际 {status_code}"
+        ok = False
+        if expect is None:
+            # 严格模式语义（schemas._require_method_path 同步注明）：缺失判失败
+            detail = "严格模式未提供 expect_status，无法判定（判失败）"
+        else:
+            try:
+                expect_int = int(expect)
+            except (TypeError, ValueError):
+                # schema 已在注册时校验 100-599 int；兜底直写 DB 等绕过 schema
+                # 的畸形历史数据——判失败而非抛 500
+                detail = f"expect_status 配置无效: {expect!r}"
+            else:
+                ok = status_code == expect_int
+                detail = "状态码匹配" if ok else f"预期状态码 {expect_int}，实际 {status_code}"
     else:
         ok = True
         detail = f"可达（status={status_code}，base URL 状态码仅作参考）"

@@ -7,9 +7,20 @@ from pydantic import BaseModel, Field, field_validator
 
 
 def _require_method_path(v: dict | None) -> dict | None:
-    """共享校验：test_request 必须包含 method/path（Create/Update 共用，保持不变量）。"""
-    if v is not None and not {"method", "path"} <= set(v.keys()):
-        raise ValueError("test_request 需包含 method/path")
+    """共享校验（Create/Update 共用，保持不变量）：
+
+    - test_request 必须包含 method/path；
+    - 含 expect_status 时必须是 100-599 的整数（bool 除外）——注册时即拒绝畸形值，
+      不留 /test 500 隐患（评审修复）。严格模式缺失 expect_status 的语义：
+      /test 一律判失败（见 probe_http_mapping docstring），不当作「任意状态码皆可」。
+    """
+    if v is not None:
+        if not {"method", "path"} <= set(v.keys()):
+            raise ValueError("test_request 需包含 method/path")
+        expect = v.get("expect_status")
+        if expect is not None and (isinstance(expect, bool) or not isinstance(expect, int)
+                                   or not 100 <= expect <= 599):
+            raise ValueError("test_request.expect_status 必须为 100-599 的整数")
     return v
 
 

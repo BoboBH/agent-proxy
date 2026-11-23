@@ -8,8 +8,6 @@ import json
 
 from tests.utils import make_token
 
-AUTH = {"Authorization": f"Bearer {make_token('u888')}"}
-
 
 async def _register(client, user="u888", **overrides):
     payload = {"type": "http", "upstream_url": "http://127.0.0.1:9901/api/v1",
@@ -108,3 +106,39 @@ async def test_test_endpoint_audited_as_test_mapping(client):
     assert mine and mine[0]["action"] == "test_mapping"
     assert mine[0]["mapping_id"] == created["mapping_id"]
     assert "sk-real-12345678" not in json.dumps(mine[0])  # 审计不含 header 值（§6.6）
+
+
+# ---------- 评审修复：expect_status 校验 / 严格模式语义 / probe 路径安全 ----------
+
+
+async def test_register_rejects_malformed_expect_status(client):
+    """expect_status 非法（非 100-599 int）在注册时拒绝（400 INVALID_PARAM），不留 500 隐患。"""
+    resp = await client.post(
+        "/api/v1/mappings",
+        json={"type": "http", "upstream_url": "http://127.0.0.1:9901/api/v1",
+              "headers": {},
+              "test_request": {"method": "GET", "path": "/status/201",
+                               "expect_status": "abc"}},
+        headers={"Authorization": f"Bearer {make_token('u888')}"})
+    assert resp.status_code == 400 and resp.json()["code"] == "INVALID_PARAM"
+
+
+async def test_strict_mode_without_expect_status_judged_failed(client):
+    """严格模式语义：无 expect_status 时总 ok=false（不当作「任意状态码皆可」）。
+
+    上游实际可达（status_code 回真实值 201），但严格判定无法执行 → 判失败。
+    """
+    created = await _register(client, test_request={"method": "GET", "path": "/status/201"})
+    resp = await _test(client, created["mapping_id"])
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is False and body["status_code"] == 201
+    assert "expect_status" in body["detail"]
+
+
+async def test_probe_dot_segment_path_400(client):
+    """probe 的 test_request.path 走与转发一致的 dot-segment 安全检查 → 400 INVALID_PARAM。"""
+    created = await _register(client, test_request={"method": "GET", "path": "/../x",
+                                                    "expect_status": 200})
+    resp = await _test(client, created["mapping_id"])
+    assert resp.status_code == 400 and resp.json()["code"] == "INVALID_PARAM"
