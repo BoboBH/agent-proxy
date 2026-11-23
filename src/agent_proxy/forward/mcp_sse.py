@@ -156,6 +156,15 @@ async def stream_sse_forward(app_state, mapping_data: dict, request: Request) ->
         content_type=request.headers.get("content-type"),
         content_length=request.headers.get("content-length"),
         content_encoding=request.headers.get("content-encoding"))
+    # SSE 上游连接必须排除出连接池复用（Task 5 断开取消端到端实测发现的挂死缺陷）：
+    # SSE 响应永不「完整结束」，其连接若回流 httpcore 池转 IDLE，上游（uvicorn
+    # keepalive_timeout）可能随后单侧关闭；而 httpcore 的 server_disconnected 过期
+    # 检测依赖 socket is_readable，在 Windows Proactor 事件循环上不可靠——池内该
+    # 死连接被下一次 SSE 初始连接复用时，请求字节写入已关 socket，「等服务端响应头」
+    # 因 read=None（§8.1 第 5 条）变成无限挂起。显式 Connection: close 使本连接在
+    # 流结束后关闭而不回流池，SSE 请求一律新建连接（SSE 连接生命周期=请求生命周期，
+    # 池复用本无收益；http/mcp 非 SSE 路径仍走共享池复用，§8.1 第 11 条不变）。
+    outbound["Connection"] = "close"
 
     def _log_request() -> None:
         trace.log_request(request_id, uid, mapping_id, request.method, target, outbound,

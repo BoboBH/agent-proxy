@@ -6,6 +6,8 @@ session_id）；POST messages 经代理按上游 origin 根还原到达上游（
 保留、出站 header 为存储值、调用方 JWT 不透传）；initialize / tools/list /
 tools/call JSON-RPC 全链路；心跳注释行透传；SSE 读超时不设（§8.1 第 5 条）。
 """
+import asyncio
+import glob
 import json
 import re
 
@@ -268,3 +270,157 @@ async def test_head_registered_endpoint_dispatches_sse_branch():
         r = await c.head(f"{PROXY}/p/{mid}/sse", headers=SSE_HEADERS)
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("text/event-stream")
+
+
+# ---------- 第二批：权限 / 路径安全 / 可观测 / 客户端断开取消（§8.1 第 4 条 / §8.3） ----------
+
+
+async def test_non_owner_mcp_403():
+    """private mcp 映射仅注册者可调（§7/§14.2 语义）。"""
+    created = await _register_mcp(user="u888")
+    mid = created["mapping_id"]
+    async with httpx.AsyncClient() as c:
+        r = await c.get(f"{PROXY}/p/{mid}/sse",
+                        headers={"Authorization": f"Bearer {make_token('u999')}",
+                                 "Accept": "text/event-stream"})
+    assert r.status_code == 403 and r.json()["code"] == "FORBIDDEN"
+
+
+async def test_mcp_unauthenticated_401():
+    created = await _register_mcp()
+    mid = created["mapping_id"]
+    async with httpx.AsyncClient() as c:
+        r = await c.get(f"{PROXY}/p/{mid}/sse", headers={"Accept": "text/event-stream"})
+    assert r.status_code == 401 and r.json()["code"] == "INVALID_TOKEN"
+
+
+async def test_mcp_dot_segment_400():
+    """§8.1 第 8 条：mcp 子路径同样拒绝 dot-segment（含 URL 编码变体）。"""
+    created = await _register_mcp()
+    mid = created["mapping_id"]
+    async with httpx.AsyncClient() as c:
+        r = await c.get(f"{PROXY}/p/{mid}/%2e%2e/etc/passwd",
+                        headers={"Authorization": f"Bearer {make_token('u888')}"})
+    assert r.status_code == 400 and r.json()["code"] == "INVALID_PARAM"
+
+
+async def _sse_active_gauge_http(c) -> float:
+    """经 /metrics 取 ap_sse_active_connections 当前值。
+
+    （计划原稿名 _sse_active_gauge，与本文件第一批已有的文本解析 helper 同名，
+    模块级重定义会遮蔽既有 test_non_sse_upstream_error_plain_passthrough_no_sse_active
+    所用版本——改名并复用既有解析器，语义不变。）
+    """
+    m = await c.get(f"{PROXY}/metrics")
+    return _sse_active_gauge(m.text)
+
+
+async def test_client_disconnect_cancels_upstream_sse():
+    """客户端断开→代理取消上游（§8.1 第 4 条 + §8.3），端到端真实 TCP。
+
+    链路：客户端 FIN → uvicorn 取消 StreamingResponse 生成器 → 代理侧
+    upstream_resp.aclose() → 上游 mock 检测断开（/_connections sse_open 归零）；
+    期间 ap_sse_active_connections 应为 1.0，断开后归 0.0。
+    """
+    created = await _register_mcp()
+    mid = created["mapping_id"]
+    async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as mc:
+        async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+            async with c.stream("GET", f"{PROXY}/p/{mid}/sse", headers=SSE_HEADERS) as resp:
+                endpoint = await read_first_endpoint_event(resp)
+                assert endpoint.startswith(f"/p/{mid}/")
+                assert await _sse_active_gauge_http(mc) == 1.0
+                conns = (await mc.get(f"{UPSTREAM_BASE}/_connections")).json()
+                assert conns["sse_open"] == 1
+            # 退出 stream 上下文 → 客户端断开（真实 TCP FIN）
+        conns = {"sse_open": -1}
+        for _ in range(50):                     # 最多等 5s（取消传播 + mock finally 执行）
+            conns = (await mc.get(f"{UPSTREAM_BASE}/_connections")).json()
+            if conns["sse_open"] == 0:
+                break
+            await asyncio.sleep(0.1)
+        assert conns["sse_open"] == 0, "客户端断开后上游 SSE 连接应被取消（sse_open 归零）"
+        assert await _sse_active_gauge_http(mc) == 0.0
+
+
+async def test_sse_trace_metadata_lines(tmp_path):
+    """metadata 模式：SSE 转发写 request/response 行（url 为上游注册端点，header 指纹化）。"""
+    import json as jsonlib
+    import logging
+
+    from agent_proxy.logging_setup import flush_trace
+
+    created = await _register_mcp()
+    mid = created["mapping_id"]
+    handler_target = tmp_path / "trace.log"
+    logger = logging.getLogger("agent_proxy.trace")
+    saved = logger.handlers
+    logger.handlers = [logging.FileHandler(handler_target, encoding="utf-8")]
+    try:
+        async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+            async with c.stream("GET", f"{PROXY}/p/{mid}/sse", headers=SSE_HEADERS) as resp:
+                await read_first_endpoint_event(resp)
+    finally:
+        logger.handlers = saved
+    flush_trace()
+    recs = [jsonlib.loads(x) for x in
+            handler_target.read_text(encoding="utf-8").splitlines() if x.strip()]
+    mine = [r for r in recs if r.get("mapping_id") == mid]
+    reqs = [r for r in mine if r["phase"] == "request"]
+    # 计划缺陷最小修复：设计 §11.1 的 response 行只有 request_id（无 mapping_id），
+    # 从 mine 筛 response 必得空集——按 request 行的 request_id 关联
+    # （test_proxy_trace.py 已有同款适配注释）
+    req_ids = {r["request_id"] for r in reqs}
+    rsps = [r for r in recs if r["phase"] == "response" and r["request_id"] in req_ids]
+    assert reqs and rsps
+    assert reqs[0]["url"] == "http://127.0.0.1:9902/sse"
+    assert "sk-mcp-12345678" not in jsonlib.dumps(reqs[0])   # header 指纹化
+    assert rsps[0]["status"] == 200                          # 连接建立记录（time-to-headers）
+    assert not [r for r in mine if r["phase"] == "sse_event"], "metadata 模式不记 SSE 事件"
+
+
+async def test_sse_trace_body_mode_endpoint_and_message():
+    """body 模式（§11.1）：endpoint 改写前 + 改写后 + message 事件记录；心跳不记。"""
+    import json as jsonlib
+
+    from agent_proxy import trace as trace_mod
+    from agent_proxy.logging_setup import flush_trace
+
+    created = await _register_mcp()
+    mid = created["mapping_id"]
+    trace_mod.configure("body", 64 * 1024)  # 进程级全局：真实服务器与测试同进程，钉住后恢复
+    try:
+        async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+            async with c.stream("GET", f"{PROXY}/p/{mid}/sse", headers=SSE_HEADERS) as resp:
+                endpoint = await read_first_endpoint_event(resp)
+                r = await c.post(f"{PROXY}{endpoint}",
+                                 json={"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+                                       "params": {"name": "echo", "arguments": {"text": "tr"}}},
+                                 headers=AUTH)
+                assert r.status_code == 202
+                await read_next_message_data(resp)
+    finally:
+        flush_trace()
+        trace_mod.configure("metadata", 64 * 1024)  # 恢复（集成夹具 lifespan 亦会重配）
+    records = []
+    for path in glob.glob("logs-test/trace.log.*"):
+        with open(path, encoding="utf-8") as fh:
+            records.extend(jsonlib.loads(x) for x in fh.read().splitlines() if x.strip())
+    mine = [r for r in records if r.get("mapping_id") == mid]
+    # 计划缺陷最小修复：设计 §11.1 的 response/sse_event 行只有 request_id（无
+    # mapping_id），按 mapping_id 筛 sse_event 必得空集——按 request 行的
+    # request_id 关联（test_proxy_trace.py 已有同款适配注释）
+    req_ids = {r["request_id"] for r in mine if r["phase"] == "request"}
+    mine += [r for r in records if r["phase"] in ("response", "sse_event")
+             and r["request_id"] in req_ids]
+    sse = [r for r in mine if r["phase"] == "sse_event"]
+    events = {r["event"] for r in sse}
+    assert {"endpoint", "endpoint_rewritten", "message"} <= events
+    before = next(r["data"] for r in sse if r["event"] == "endpoint")
+    after = next(r["data"] for r in sse if r["event"] == "endpoint_rewritten")
+    assert before == "/messages?session_id=test123"          # 改写前（上游原值）
+    assert after == f"/p/{mid}/messages?session_id=test123"  # 改写后（代理地址）
+    messages = [r for r in sse if r["event"] == "message"]
+    assert any('"id": 4' in r["data"] for r in messages)     # tools/call 的 JSON-RPC 响应
+    assert not any("ping" in (r.get("data") or "") for r in sse), "心跳注释行不记录"
+    assert "sk-mcp-12345678" not in jsonlib.dumps(mine)      # 敏感头仍指纹化
