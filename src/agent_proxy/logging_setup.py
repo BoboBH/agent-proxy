@@ -128,24 +128,43 @@ def flush_trace() -> None:
         return
     while True:
         try:
-            _trace_listener.handle(_trace_queue.get_nowait())
+            record = _trace_queue.get_nowait()
         except queue.Empty:
             break
+        if record is _trace_listener._sentinel:
+            break  # 取到 listener 停止哨兵即停，不能交给 handle 处理
+        _trace_listener.handle(record)
 
 
 def shutdown_logging() -> None:
+    """排空并停止 trace 监听，摘除三个 logger 的 handler，清空注册表（可重新 setup）。"""
+    global _trace_queue, _trace_listener
     flush_trace()
     if _trace_listener is not None:
         _trace_listener.stop()
+    for name in ("agent_proxy", "agent_proxy.audit", "agent_proxy.trace"):
+        logger = logging.getLogger(name)
+        for handler in list(logger.handlers):
+            logger.removeHandler(handler)
+    with _lock:
+        for handler in _registry.values():
+            handler.close()
+        _registry.clear()
+    _trace_queue = None
+    _trace_listener = None
 
 
 def setup_logging(log_dir: str, level: str = "INFO") -> None:
-    """装配运行 / 审计 / 追踪三个文件的滚动 handler（幂等）。"""
+    """装配运行 / 审计 / 追踪三个文件的滚动 handler（幂等）。
+
+    幂等判断只认本模块的 handler 类型，容忍外来 handler
+    （pytest>=9 会给 propagate=False 的 logger 挂自己的捕获 handler）。
+    """
     os.makedirs(log_dir, exist_ok=True)
     root = logging.getLogger("agent_proxy")
     root.setLevel(getattr(logging, level.upper(), logging.INFO))
     root.propagate = False
-    if not root.handlers:
+    if not any(isinstance(h, DailySizeRotatingHandler) for h in root.handlers):
         handler = _get_file_handler(os.path.join(log_dir, "agent-proxy.log"))
         handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
         root.addHandler(handler)
@@ -153,11 +172,11 @@ def setup_logging(log_dir: str, level: str = "INFO") -> None:
     audit = logging.getLogger("agent_proxy.audit")
     audit.setLevel(logging.INFO)
     audit.propagate = False
-    if not audit.handlers:
+    if not any(isinstance(h, DailySizeRotatingHandler) for h in audit.handlers):
         audit.addHandler(_get_file_handler(os.path.join(log_dir, "audit.log")))
 
     trace = logging.getLogger("agent_proxy.trace")
     trace.setLevel(logging.INFO)
     trace.propagate = False
-    if not trace.handlers:
+    if not any(isinstance(h, logging.handlers.QueueHandler) for h in trace.handlers):
         trace.addHandler(_get_trace_queue_handler(os.path.join(log_dir, "trace.log")))

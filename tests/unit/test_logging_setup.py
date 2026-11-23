@@ -2,6 +2,25 @@ import logging
 import os
 import time
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _logging_hygiene():
+    """每个测试结束后复位全局日志状态，避免 _registry / logger handlers 跨测试污染。"""
+    yield
+    import agent_proxy.logging_setup as ls
+
+    from agent_proxy.logging_setup import shutdown_logging
+
+    shutdown_logging()
+    for name in ("agent_proxy", "agent_proxy.audit", "agent_proxy.trace"):
+        logger = logging.getLogger(name)
+        for handler in list(logger.handlers):
+            logger.removeHandler(handler)
+    ls._registry.clear()
+    logging.getLogger("rotate-test").handlers = []
+
 
 def test_rotate_on_size(tmp_path):
     from agent_proxy.logging_setup import DailySizeRotatingHandler
@@ -16,6 +35,7 @@ def test_rotate_on_size(tmp_path):
         logger.info("x" * 20)
     files = list(tmp_path.glob("t.log.*"))
     assert len(files) >= 2, "超过 max_bytes 应已滚动出多个文件"
+    assert len({f.name for f in files}) == len(files), "同秒滚动生成的文件名不应重复"
     handler.close()
 
 
@@ -44,3 +64,54 @@ def test_setup_logging_creates_three_files(tmp_path):
     assert any("trace.log" in p for p in ls._registry)
     assert logging.getLogger("agent_proxy.audit").handlers
     assert logging.getLogger("agent_proxy.trace").handlers
+
+
+def test_trace_queue_end_to_end(tmp_path):
+    from agent_proxy.logging_setup import flush_trace, setup_logging
+
+    setup_logging(str(tmp_path), "INFO")
+    logging.getLogger("agent_proxy.trace").info('{"k":1}')
+    flush_trace()
+    content = "".join(
+        p.read_text(encoding="utf-8") for p in sorted(tmp_path.glob("trace.log.*"))
+    )
+    assert '{"k":1}' in content, "flush 后 trace.log 应包含写入的行"
+
+
+def test_setup_logging_idempotent(tmp_path):
+    import agent_proxy.logging_setup as ls
+
+    from agent_proxy.logging_setup import DailySizeRotatingHandler, setup_logging
+
+    def own(logger):
+        # pytest>=9 会给 propagate=False 的 logger 挂自己的捕获 handler，只统计本模块的
+        return [
+            h
+            for h in logger.handlers
+            if isinstance(h, (DailySizeRotatingHandler, logging.handlers.QueueHandler))
+        ]
+
+    setup_logging(str(tmp_path), "INFO")
+    setup_logging(str(tmp_path), "INFO")
+    assert len(own(logging.getLogger("agent_proxy"))) == 1
+    assert len(own(logging.getLogger("agent_proxy.audit"))) == 1
+    assert len(own(logging.getLogger("agent_proxy.trace"))) == 1
+    assert len(ls._registry) == 3, "每个日志路径应只注册一个 handler"
+
+
+def test_shutdown_then_setup_recovers(tmp_path):
+    import agent_proxy.logging_setup as ls
+
+    from agent_proxy.logging_setup import flush_trace, setup_logging, shutdown_logging
+
+    setup_logging(str(tmp_path), "INFO")
+    shutdown_logging()
+    assert not ls._registry
+    new_dir = tmp_path / "new"
+    setup_logging(str(new_dir), "INFO")
+    logging.getLogger("agent_proxy.trace").info('{"after":1}')
+    flush_trace()
+    files = list(new_dir.glob("trace.log.*"))
+    assert files and any('{"after":1}' in f.read_text(encoding="utf-8") for f in files), \
+        "shutdown 后重新 setup 到新目录应完全生效"
+    shutdown_logging()
