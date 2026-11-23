@@ -127,12 +127,6 @@ async def test_disabled_mapping_404(client):
     assert resp.status_code == 404 and resp.json()["code"] == "MAPPING_NOT_FOUND"
 
 
-async def test_mcp_mapping_forward_400(client):
-    created = await _register(client, type="mcp", upstream_url="https://mcp.ex.com/sse")
-    resp = await _call(client, created["mapping_id"], "GET", "/sse")
-    assert resp.status_code == 400 and "M3" in resp.json()["message"]
-
-
 async def test_dot_segment_sub_path_400(client):
     created = await _register(client)
     resp = await _call(client, created["mapping_id"], "GET", "/%2e%2e/etc/passwd")

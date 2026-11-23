@@ -11,7 +11,21 @@
 """
 from __future__ import annotations
 
+import logging
+import time
 from urllib.parse import urlparse
+
+import httpx
+from fastapi import Request, Response
+from fastapi.responses import StreamingResponse
+
+from .. import metrics, trace
+from ..errors import AppError
+from ..forward.http_forward import (assert_safe_sub_path, build_forward_target,
+                                    split_sub_path)
+from ..headers import build_outbound_headers, filter_response_headers
+
+log = logging.getLogger("agent_proxy")
 
 
 def registered_endpoint_path(upstream_url: str) -> str:
@@ -111,3 +125,115 @@ class SseEndpointRewriter:
         self._trace_records.append(("endpoint", value.encode("utf-8")))
         self._trace_records.append(("endpoint_rewritten", rewritten.encode("utf-8")))
         return f"data: {rewritten}".encode("utf-8") + ending
+
+
+async def stream_sse_forward(app_state, mapping_data: dict, request: Request) -> Response:
+    """MCP SSE 初始连接转发（设计 §8.3）：GET/HEAD 注册端点 → upstream_url 真流式
+    长连接，endpoint 事件增量改写，其余行字节级透传，每行产出即 yield。
+
+    读超时不设（§8.1 第 5 条，依赖上游心跳保活）；非 200 / 非 text/event-stream
+    响应（上游错误体等）不进入改写管线，原样流式回传且不计 sse_active；
+    客户端断开由 ASGI 取消生成器 → finally 关闭上游连接（§8.1 第 4 条）。
+    本函数不转发请求体（调用方仅 GET/HEAD 分发至此）。
+    """
+    settings = app_state.settings
+    client: httpx.AsyncClient = app_state.http_client
+    mapping_id = mapping_data["mapping_id"]
+    request_id = request.state.request_id
+    uid = request.state.uid
+
+    sub_path = split_sub_path(request.scope["path"], mapping_id)  # 与 api 层同检（双保险）
+    assert_safe_sub_path(sub_path)
+    target = build_forward_target(mapping_data["upstream_url"], "", request.url.query)
+    outbound = build_outbound_headers(
+        mapping_data["upstream_headers"] or {}, dict(request.headers.items()),
+        content_type=request.headers.get("content-type"),
+        content_length=request.headers.get("content-length"),
+        content_encoding=request.headers.get("content-encoding"))
+
+    def _log_request() -> None:
+        trace.log_request(request_id, uid, mapping_id, request.method, target, outbound,
+                          body=b"", body_bytes=0)
+
+    start = time.monotonic()
+    # SSE 长连接：读超时不设（read=None，§8.1 第 5 条超时表），connect/pool 沿用全局
+    timeout = httpx.Timeout(connect=settings.upstream_connect_timeout, read=None,
+                            write=60.0, pool=settings.upstream_pool_timeout)
+    req = client.build_request(request.method, target, headers=outbound, timeout=timeout)
+    try:
+        upstream_resp = await client.send(req, stream=True)
+    except httpx.PoolTimeout as exc:  # 池上限（必须先于 TimeoutException 捕获）
+        metrics.upstream_errors_total.labels(type="mcp", code="pool_exhausted").inc()
+        _log_request()
+        raise AppError(503, "PROXY_BUSY", "上游连接池已满，请稍后重试") from exc
+    except httpx.TimeoutException as exc:
+        metrics.upstream_errors_total.labels(type="mcp", code="timeout").inc()
+        _log_request()
+        raise AppError(504, "UPSTREAM_TIMEOUT", f"上游超时: {exc}") from exc
+    except httpx.HTTPError as exc:
+        metrics.upstream_errors_total.labels(type="mcp", code="connect").inc()
+        _log_request()
+        raise AppError(502, "UPSTREAM_ERROR", f"上游连接失败: {exc}") from exc
+    _log_request()
+
+    status = upstream_resp.status_code
+    resp_ct = next((v for k, v in upstream_resp.headers.items()
+                    if k.lower() == "content-type"), "")  # 大小写不敏感（上游原始大小写）
+    # duration_ms 语义：time-to-headers（trace response 行充当「连接建立」记录）
+    duration_ms = int((time.monotonic() - start) * 1000)
+    metrics.upstream_duration.labels(type="mcp").observe(duration_ms / 1000)
+
+    resp_headers = filter_response_headers(upstream_resp.headers)
+    if not any(k.lower() == "x-accel-buffering" for k in resp_headers):
+        resp_headers["X-Accel-Buffering"] = "no"          # 网关关闭缓冲（§8.1 第 9 条）
+
+    is_sse = status == 200 and "text/event-stream" in resp_ct.lower()
+    trace.log_response(request_id, status, duration_ms)
+
+    if not is_sse:
+        # 非 SSE 响应（上游 4xx/5xx 错误体等）：不改写、不计 sse_active，原样流式回传
+        async def _plain_stream():
+            try:
+                async for chunk in upstream_resp.aiter_bytes():
+                    yield chunk
+            finally:
+                await upstream_resp.aclose()
+        return StreamingResponse(_plain_stream(), status_code=status, headers=resp_headers)
+
+    rewriter = SseEndpointRewriter(mapping_id)
+    metrics.sse_active.inc()
+
+    async def _sse_stream():
+        try:
+            # 计划缺陷最小修复：原稿 aiter_bytes(_SSE_CHUNK=64KB) 不成立——httpx
+            # ByteChunker 按 chunk_size 攒_buf（不足 64KB 时 decode() 返回 []），
+            # 仅 EOF flush() 才吐余量，SSE 永不 EOF → endpoint 事件永不增量下发
+            # （实测挂死直至客户端读超时）。无参 aiter_bytes() 按网络到达块即时
+            # 产出（aiter_lines 内部同款），「每行产出即 yield」的 §8.3 语义成立。
+            async for chunk in upstream_resp.aiter_bytes():
+                lines = rewriter.feed(chunk)
+                for event, data in rewriter.take_trace_records():
+                    trace.log_sse_event(request_id, event, data)   # 仅 body 模式生效
+                for line in lines:
+                    yield line            # 每行立即下发（无整体缓冲，§8.3 实现要点）
+            tail = rewriter.flush()
+            for event, data in rewriter.take_trace_records():
+                trace.log_sse_event(request_id, event, data)
+            for line in tail:
+                yield line
+        except httpx.HTTPError as exc:
+            metrics.upstream_errors_total.labels(type="mcp", code="stream_broken").inc()
+            log.exception("上游 SSE 流中断: %s", exc)
+            raise
+        finally:
+            metrics.sse_active.dec()
+            await upstream_resp.aclose()                  # 客户端断开→取消上游（§8.1 第 4 条）
+            log.info("SSE 连接关闭: request_id=%s mapping_id=%s 总时长=%dms",
+                     request_id, mapping_id, int((time.monotonic() - start) * 1000))
+
+    try:
+        return StreamingResponse(_sse_stream(), status_code=status, headers=resp_headers)
+    except BaseException:
+        metrics.sse_active.dec()                          # 生成器未启动的交棒窗口防泄漏
+        await upstream_resp.aclose()
+        raise

@@ -1,7 +1,10 @@
-"""代理端点 /p/{mapping_id}/{path}（设计 §6.2/§8.2）。
+"""代理端点 /p/{mapping_id}/{path}（设计 §6.2 / §8.2 / §8.3）。
 
 管线：JWT 鉴权 → load_mapping → 可见性（private 仅注册者；public 任意有效身份）→
-status=active 拦截（disabled → 404 隐藏）→ http_forward。
+status=active 拦截（disabled → 404 隐藏）→ 按映射 type 分发：
+- http：前缀拼接流式转发（§8.2）；
+- mcp：GET/HEAD 且命中注册端点路径 → SSE 初始连接（endpoint 事件改写，§8.3 第 1 行）；
+  其余方法/路径按上游 origin 根还原，复用 http 流式管线（§8.3 第 2 行 / §8.5 统一骨架）。
 """
 from __future__ import annotations
 
@@ -10,7 +13,10 @@ from fastapi import APIRouter, Depends, Request, Response
 from ..auth import Identity
 from ..config import Settings, get_settings
 from ..errors import AppError
-from ..forward.http_forward import stream_http_forward
+from ..forward.http_forward import (assert_safe_sub_path, split_sub_path,
+                                    stream_http_forward)
+from ..forward.mcp_sse import (build_origin_target, registered_endpoint_path,
+                               stream_sse_forward)
 from ..services import load_mapping
 from .deps import get_current_identity
 
@@ -29,16 +35,27 @@ async def _handle_proxy(request: Request, mapping_id: str, identity: Identity,
                                   settings.cache_ttl)
     if data is None:
         raise AppError(404, "MAPPING_NOT_FOUND", "映射不存在")
-    # 审计 mapping_id 对后续所有分支生效（含 403/禁用 404/mcp 400，与 mgmt test 接口对齐）
+    # 审计 mapping_id 对后续所有分支生效（含 403/禁用 404）
     request.state.mapping_id = mapping_id
+    # metrics type 标签（§15.2 http/mcp；中间件回读 state）
+    request.state.proxy_type = "mcp" if data["type"] == "mcp" else "http"
     if data["visibility"] == "private" and data["owner_uid"] != identity.user_id:
         raise AppError(403, "FORBIDDEN", "仅注册者可调用该映射")
-    # visibility=public：任意有效身份放行（M6 内置映射场景；M2 数据中不出现 public 用户映射）
+    # visibility=public：任意有效身份放行（M6 内置映射场景；M3 数据中不出现 public 用户映射）
     if data["status"] != "active":
         raise AppError(404, "MAPPING_NOT_FOUND", "映射不存在或已禁用")
-    if data["type"] != "http":
-        # mcp 的 SSE/Streamable 转发随 M3/M4 交付（本计划范围外）
-        raise AppError(400, "INVALID_PARAM", "mcp 类型映射转发随 M3 交付，当前仅支持 http")
+    if data["type"] == "mcp":
+        # 路径分发（§8.3 表）：仅 GET/HEAD 且命中注册端点路径 → SSE 初始连接
+        # （stream_sse_forward 不转发请求体，故非 GET/HEAD 不走此分支）；其余
+        # 路径按上游 origin 根还原后复用 http 流式管线
+        sub_path = split_sub_path(request.scope["path"], mapping_id)
+        assert_safe_sub_path(sub_path)
+        if request.method in ("GET", "HEAD") and \
+                sub_path == registered_endpoint_path(data["upstream_url"]):
+            return await stream_sse_forward(request.app.state, data, request)
+        target = build_origin_target(data["upstream_url"], sub_path, request.url.query)
+        return await stream_http_forward(request.app.state, data, request,
+                                         target_override=target, metrics_type="mcp")
     return await stream_http_forward(request.app.state, data, request)
 
 
@@ -49,9 +66,9 @@ async def proxy_with_path(request: Request, mapping_id: str, path: str,
     return await _handle_proxy(request, mapping_id, identity, settings)
 
 
-# 注（评审 5d 不采纳）：proxy_root 并非死路由——本 venv 实测 `{path:path}` 路由的
-# 正则要求 mapping_id 后必须再有一个 `/`，`/p/{id}`（无尾斜杠）由本路由服务
-# （设计 §6.2「path 可为空」）；删除会导致根路径直达上游 404。
+# 注（M2 评审 5d 不采纳，保留）：proxy_root 并非死路由——`{path:path}` 路由的正则
+# 要求 mapping_id 后必须再有一个 `/`，`/p/{id}`（无尾斜杠）由本路由服务
+# （设计 §6.2「path 可为空」）；mcp 根路径按 origin 根还原直达 origin。
 @router.api_route("/p/{mapping_id}", methods=_PROXY_METHODS)
 async def proxy_root(request: Request, mapping_id: str,
                      identity: Identity = Depends(get_current_identity),

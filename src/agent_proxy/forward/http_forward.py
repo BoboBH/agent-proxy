@@ -76,8 +76,15 @@ def _redirect_method(status: int, method: str) -> str:
     return method
 
 
-async def stream_http_forward(app_state, mapping_data: dict, request: Request) -> Response:
-    """HTTP 前缀流式转发主管线（设计 §8.1 / §8.2）：同源重定向内部跟随、跨源透传。"""
+async def stream_http_forward(app_state, mapping_data: dict, request: Request,
+                              target_override: str | None = None,
+                              metrics_type: str = "http") -> Response:
+    """HTTP 前缀流式转发主管线（设计 §8.1 / §8.2）：同源重定向内部跟随、跨源透传。
+
+    target_override（M3）：mcp 类型「上游 origin 根还原」的转发目标由调用方
+    （api/proxy.py）按 §8.3 预先算好传入；http 前缀映射仍走前缀拼接。
+    metrics_type：metrics 标签 type（§15.2 http/mcp），mcp 调用方传 "mcp"。
+    """
     settings = app_state.settings
     client: httpx.AsyncClient = app_state.http_client
     mapping_id = mapping_data["mapping_id"]
@@ -86,7 +93,8 @@ async def stream_http_forward(app_state, mapping_data: dict, request: Request) -
 
     sub_path = split_sub_path(request.scope["path"], mapping_id)
     assert_safe_sub_path(sub_path)
-    target = build_forward_target(mapping_data["upstream_url"], sub_path, request.url.query)
+    target = (target_override if target_override is not None
+              else build_forward_target(mapping_data["upstream_url"], sub_path, request.url.query))
 
     stored = mapping_data["upstream_headers"] or {}
     outbound = build_outbound_headers(
@@ -134,15 +142,15 @@ async def stream_http_forward(app_state, mapping_data: dict, request: Request) -
         _log_request()
         raise
     except httpx.PoolTimeout as exc:  # 池上限（必须先于 TimeoutException 捕获）
-        metrics.upstream_errors_total.labels(type="http", code="pool_exhausted").inc()
+        metrics.upstream_errors_total.labels(type=metrics_type, code="pool_exhausted").inc()
         _log_request()
         raise AppError(503, "PROXY_BUSY", "上游连接池已满，请稍后重试") from exc
     except httpx.TimeoutException as exc:
-        metrics.upstream_errors_total.labels(type="http", code="timeout").inc()
+        metrics.upstream_errors_total.labels(type=metrics_type, code="timeout").inc()
         _log_request()
         raise AppError(504, "UPSTREAM_TIMEOUT", f"上游超时: {exc}") from exc
     except httpx.HTTPError as exc:
-        metrics.upstream_errors_total.labels(type="http", code="connect").inc()
+        metrics.upstream_errors_total.labels(type=metrics_type, code="connect").inc()
         _log_request()
         raise AppError(502, "UPSTREAM_ERROR", f"上游连接失败: {exc}") from exc
     _log_request()
@@ -193,13 +201,13 @@ async def stream_http_forward(app_state, mapping_data: dict, request: Request) -
             hop_req = client.build_request(method, target, headers=hop_headers)
             upstream_resp = await client.send(hop_req, stream=True)
         except httpx.PoolTimeout as exc:  # 池上限（必须先于 TimeoutException 捕获）
-            metrics.upstream_errors_total.labels(type="http", code="pool_exhausted").inc()
+            metrics.upstream_errors_total.labels(type=metrics_type, code="pool_exhausted").inc()
             raise AppError(503, "PROXY_BUSY", "上游连接池已满，请稍后重试") from exc
         except httpx.TimeoutException as exc:
-            metrics.upstream_errors_total.labels(type="http", code="timeout").inc()
+            metrics.upstream_errors_total.labels(type=metrics_type, code="timeout").inc()
             raise AppError(504, "UPSTREAM_TIMEOUT", f"上游超时: {exc}") from exc
         except httpx.HTTPError as exc:
-            metrics.upstream_errors_total.labels(type="http", code="connect").inc()
+            metrics.upstream_errors_total.labels(type=metrics_type, code="connect").inc()
             raise AppError(502, "UPSTREAM_ERROR", f"上游连接失败: {exc}") from exc
         redirects += 1
 
@@ -222,7 +230,7 @@ async def stream_http_forward(app_state, mapping_data: dict, request: Request) -
     # duration_ms 语义：time-to-headers——上游响应头到达耗时，不含 body 流式传输时长
     # （有重定向时含各跳耗时）
     duration_ms = int((time.monotonic() - start) * 1000)
-    metrics.upstream_duration.labels(type="http").observe(duration_ms / 1000)
+    metrics.upstream_duration.labels(type=metrics_type).observe(duration_ms / 1000)
 
     resp_capture = bytearray()
     stream_broken = False
@@ -238,7 +246,7 @@ async def stream_http_forward(app_state, mapping_data: dict, request: Request) -
             # 流中断可观测（评审 Important 项，设计 §10）：响应头已发出无法改写
             # 状态码，客户端表现为连接截断；计数 + 异常日志留痕
             stream_broken = True
-            metrics.upstream_errors_total.labels(type="http", code="stream_broken").inc()
+            metrics.upstream_errors_total.labels(type=metrics_type, code="stream_broken").inc()
             log.exception("上游响应流中断: %s", exc)
             raise
         finally:

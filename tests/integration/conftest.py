@@ -108,3 +108,42 @@ async def mcp_sse_upstream_server():
     thread.join(timeout=5)
     assert not thread.is_alive(), "MCP SSE 上游未在 15s 内停机"
     loop.close()
+
+
+@pytest_asyncio.fixture(scope="session", autouse=True, loop_scope="session")
+async def real_proxy_app():
+    """被测代理本体：uvicorn 真实监听 127.0.0.1:9910（session 级，独立线程 loop）。
+
+    M3 起必须真实服务器：httpx ASGITransport 把响应体整体积攒到 app 结束才返回
+    （ASGIResponseStream.__aiter__ 一次性 join 全部 body_parts）——SSE 永不结束
+    的流会让 handle_async_request 永不返回，ASGI 直连测试直接挂死。故 SSE 集成
+    一律经真实 TCP 访问本服务；「客户端断开→上游取消」同样只有真实服务器可测。
+    autouse：SSE 测试遍布多个文件，统一随 session 启动（启动成本 ~1s 一次性）。
+    """
+    import os
+
+    from agent_proxy.config import Settings
+    from agent_proxy.main import create_app
+
+    settings = Settings.from_env({**os.environ, "EXTERNAL_BASE": "http://127.0.0.1:9910"})
+    application = create_app(settings)
+    config = uvicorn.Config(application, host="127.0.0.1", port=9910,
+                            log_level="warning", access_log=False,
+                            timeout_graceful_shutdown=5)
+    server = uvicorn.Server(config)
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_until_complete, args=(server.serve(),),
+                              daemon=True, name="agent-proxy-9910")
+    thread.start()
+    for _ in range(200):
+        if server.started or not thread.is_alive():
+            break
+        await asyncio.sleep(0.05)
+    assert server.started, "被测代理启动失败（127.0.0.1:9910 被占用？）"
+    yield application
+    server.should_exit = True
+    thread.join(timeout=10)
+    server.force_exit = True  # 兜底：SSE 长连接下优雅停机可能超时，强制置位防 join 卡死
+    thread.join(timeout=5)
+    assert not thread.is_alive(), "被测代理未在 15s 内停机"
+    loop.close()

@@ -75,7 +75,8 @@ class RequestContextMiddleware:
             duration_ms = int((time.monotonic() - start) * 1000)
             metrics.inflight.dec()
             status = status_holder["status"] or 500
-            t = _type_of(route)
+            # M3：proxy 路由按映射类型细分 http/mcp（§15.2；handler 内写入 request.state）
+            t = scope["state"].get("proxy_type") or _type_of(route)
             metrics.requests_total.labels(route=route, type=t, status=str(status)).inc()
             metrics.request_duration.labels(route=route, type=t).observe(duration_ms / 1000)
             if bytes_in:
