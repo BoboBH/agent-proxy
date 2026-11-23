@@ -1020,7 +1020,8 @@ async def lifespan(app: FastAPI):
     app.state.http_client = httpx.AsyncClient(
         limits=limits,
         timeout=httpx.Timeout(connect=settings.upstream_connect_timeout,
-                              read=settings.upstream_read_timeout, write=60.0, pool=5.0),
+                              read=settings.upstream_read_timeout, write=60.0,
+                              pool=settings.upstream_pool_timeout),
         follow_redirects=False)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -1227,9 +1228,14 @@ async def stream_http_forward(app_state, mapping_data: dict, request: Request) -
                           content_type=request.headers.get("content-type", ""))
 
     start = time.monotonic()
+    # 真流式（评审 Critical 修复）：必须 build_request + send(stream=True)。
+    # client.request 内部 send(stream=False) 会 aread() 把响应体整体读进内存——
+    # 假流式：大文件 OOM、M3 SSE 永不结束的流永远等不到 EOF。流式消费由下方
+    # aiter_bytes 逐块 + finally aclose 负责。
+    req = client.build_request(request.method, target, headers=outbound,
+                               content=_request_stream())
     try:
-        upstream_resp = await client.request(request.method, target,
-                                             headers=outbound, content=_request_stream())
+        upstream_resp = await client.send(req, stream=True)
     except AppError:
         _log_request()
         raise
@@ -1247,31 +1253,53 @@ async def stream_http_forward(app_state, mapping_data: dict, request: Request) -
         raise AppError(502, "UPSTREAM_ERROR", f"上游连接失败: {exc}") from exc
     _log_request()
 
+    # duration_ms 语义：time-to-headers——上游响应头到达耗时，不含 body 流式传输时长
     duration_ms = int((time.monotonic() - start) * 1000)
     metrics.upstream_duration.labels(type="http").observe(duration_ms / 1000)
-    resp_headers = filter_response_headers(upstream_resp.headers)
-    resp_headers["X-Accel-Buffering"] = "no"  # 网关关闭缓冲（设计 §8.1 第 9 条）
 
     resp_capture = bytearray()
+    stream_broken = False
 
     async def _response_stream():
+        nonlocal stream_broken
         try:
             async for chunk in upstream_resp.aiter_bytes(_STREAM_CHUNK):
                 if capture_limit and len(resp_capture) < capture_limit:
                     resp_capture.extend(chunk[: capture_limit - len(resp_capture)])
                 yield chunk
+        except httpx.HTTPError as exc:
+            # 流中断可观测（评审 Important 项，设计 §10）：响应头已发出无法改写
+            # 状态码，客户端表现为连接截断；计数 + 异常日志留痕
+            stream_broken = True
+            metrics.upstream_errors_total.labels(type="http", code="stream_broken").inc()
+            log.exception("上游响应流中断: %s", exc)
+            raise
         finally:
             # 流结束/客户端断开都释放上游连接（设计 §8.1 第 4 条）
             await upstream_resp.aclose()
+            if stream_broken:
+                return  # 中断：不写误导性的 status=200 response 行（log.exception 已留痕）
             if capture_limit:
+                # filter_response_headers 保留上游原始大小写，content-type 按小写不敏感取
+                resp_ct = next((v for k, v in resp_headers.items()
+                                if k.lower() == "content-type"), "")
                 trace.log_response(request_id, upstream_resp.status_code, duration_ms,
                                    headers=dict(resp_headers), body=bytes(resp_capture),
-                                   content_type=resp_headers.get("content-type", ""))
+                                   content_type=resp_ct)
             else:
                 trace.log_response(request_id, upstream_resp.status_code, duration_ms)
 
-    return StreamingResponse(_response_stream(), status_code=upstream_resp.status_code,
-                             headers=resp_headers)
+    # send 成功到 StreamingResponse 交棒之间的小窗口：异常时关闭上游流防泄漏
+    try:
+        resp_headers = filter_response_headers(upstream_resp.headers)
+        # 大小写不敏感判重（评审 Minor）：上游已带该头时不重复注入
+        if not any(k.lower() == "x-accel-buffering" for k in resp_headers):
+            resp_headers["X-Accel-Buffering"] = "no"  # 网关关闭缓冲（设计 §8.1 第 9 条）
+        return StreamingResponse(_response_stream(), status_code=upstream_resp.status_code,
+                                 headers=resp_headers)
+    except BaseException:
+        await upstream_resp.aclose()
+        raise
 ```
 
 - [ ] **Step 4: 运行确认通过 + 全量回归**

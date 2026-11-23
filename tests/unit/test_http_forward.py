@@ -29,7 +29,8 @@ def test_assert_safe_sub_path_rejects_dot_segments(bad):
 
 
 @pytest.mark.parametrize("bad", ["/..%252f", "/%2e%2e%252f", "/a/..%252fb",
-                                 "/..%2f", "/%2e%2e%2fetc"])
+                                 "/..%2f", "/%2e%2e%2fetc",
+                                 "/..%5C", "/%2e%2e%5C"])
 def test_assert_safe_sub_path_rejects_encoded_slash_composites(bad):
     """复合逃逸变体（Task 3 评审携带项）：编码斜杠与 dot 的组合，解码后按组件切分出 `..`。
 

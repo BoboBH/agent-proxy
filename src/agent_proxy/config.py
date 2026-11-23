@@ -49,6 +49,7 @@ class Settings:
     cache_ttl: int = 300
     upstream_connect_timeout: float = 10.0
     upstream_read_timeout: float = 60.0
+    upstream_pool_timeout: float = 5.0
     upstream_max_redirects: int = 3
     upstream_max_connections: int = 200
     shutdown_drain_seconds: int = 10
@@ -79,6 +80,7 @@ class Settings:
             cache_ttl=_to_int("CACHE_TTL", e.get("CACHE_TTL", "300")),
             upstream_connect_timeout=_to_float("UPSTREAM_CONNECT_TIMEOUT", e.get("UPSTREAM_CONNECT_TIMEOUT", "10")),
             upstream_read_timeout=_to_float("UPSTREAM_READ_TIMEOUT", e.get("UPSTREAM_READ_TIMEOUT", "60")),
+            upstream_pool_timeout=_to_float("UPSTREAM_POOL_TIMEOUT", e.get("UPSTREAM_POOL_TIMEOUT", "5")),
             upstream_max_redirects=_to_int("UPSTREAM_MAX_REDIRECTS", e.get("UPSTREAM_MAX_REDIRECTS", "3")),
             upstream_max_connections=_to_int("UPSTREAM_MAX_CONNECTIONS", e.get("UPSTREAM_MAX_CONNECTIONS", "200")),
             shutdown_drain_seconds=_to_int("SHUTDOWN_DRAIN_SECONDS", e.get("SHUTDOWN_DRAIN_SECONDS", "10")),

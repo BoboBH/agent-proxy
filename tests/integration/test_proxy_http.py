@@ -5,6 +5,9 @@
 """
 import re
 
+import httpx
+import pytest
+
 from tests.utils import make_token
 
 UPSTREAM = "http://127.0.0.1:9901/api/v1"
@@ -177,3 +180,105 @@ async def test_proxy_trace_metadata_wired(client, monkeypatch, tmp_path):
     assert re.match(r"http://127\.0\.0\.1:9901/api/v1/orders\?status=", req[0]["url"])
     assert "sk-real-12345678" not in jsonlib.dumps(req[0])  # 指纹化
     assert rsp[0]["status"] == 200
+
+
+# ---------- 评审修复回归（真流式 / 流中断观测） ----------
+
+
+class _RecordingResponse(httpx.Response):
+    """记录 aread() 是否被调用的替身响应（真流式判定：send 后 body 不应被整读）。"""
+
+    def __init__(self, *args, **kw):
+        super().__init__(*args, **kw)
+        self.aread_called = False
+
+    async def aread(self):
+        self.aread_called = True
+        return await super().aread()
+
+
+class _FakeStreamClient:
+    """替身 http_client：记录 send(stream=...) 调用形态（Critical 假流式检测器）。"""
+
+    def __init__(self):
+        self.sent_stream = None
+        self.response = None
+
+    def build_request(self, method, url, headers=None, content=None):
+        return httpx.Request(method, url, headers=headers, content=content)
+
+    async def send(self, request, stream=False):
+        self.sent_stream = stream
+
+        async def _body():
+            yield b"hello-stream"
+
+        # content 必须是 async 迭代器：httpx 禁止对 sync stream 做 async aclose
+        self.response = _RecordingResponse(
+            200, headers={"content-type": "text/plain"}, content=_body())
+        return self.response
+
+    async def aclose(self):
+        pass  # lifespan 停机保险（正常路径在 finally 换回真 client，走不到）
+
+
+async def test_forward_uses_true_streaming_send(client, app):
+    """Critical 回归：必须 send(stream=True)。client.request 内部 send(stream=False)
+    会 aread() 把上游响应体整体读进内存——假流式：大文件 OOM、M3 SSE 永不 EOF；
+    且响应构建完成时 body 未被整读（aread 未调用），body 经流式完整回传。"""
+    created = await _register(client)
+    mid = created["mapping_id"]
+    fake = _FakeStreamClient()
+    real = app.state.http_client
+    app.state.http_client = fake  # 手动换装（不用 monkeypatch：State 存于 _state，
+    try:                          # pytest undo 会 delattr 掉键，致 lifespan 停机 AttributeError）
+        resp = await _call(client, mid, "GET", "/orders")
+    finally:
+        app.state.http_client = real
+    assert resp.status_code == 200
+    assert fake.sent_stream is True              # 真流式：send(stream=True)
+    assert fake.response.aread_called is False   # 响应体未整体读进内存
+    assert b"hello-stream" in resp.content       # body 经 StreamingResponse 完整回传
+
+
+async def test_stream_broken_is_observable(client, app):
+    """流中断可观测（评审 Important 项，设计 §10）：upstream_errors code=stream_broken
+    计数 + log.exception；不写误导性的 status=200 response trace 行。"""
+    from agent_proxy import metrics as metrics_mod
+
+    class _BrokenOnceResponse(httpx.Response):
+        async def aiter_bytes(self, chunk_size=None):
+            yield b"partial-body"
+            raise httpx.ReadError("connection reset mid-stream")
+
+    class _FakeBrokenClient:
+        def build_request(self, method, url, headers=None, content=None):
+            return httpx.Request(method, url, headers=headers, content=content)
+
+        async def send(self, request, stream=False):
+            async def _partial():
+                yield b"seed"  # async 流：aclose 合法（本用例 override 了 aiter_bytes）
+
+            return _BrokenOnceResponse(200, headers={"content-type": "text/plain"},
+                                       content=_partial())
+
+        async def aclose(self):
+            pass  # lifespan 停机保险（正常路径在 finally 换回真 client，走不到）
+
+    before = metrics_mod.upstream_errors_total.labels(
+        type="http", code="stream_broken")._value.get()
+    fake = _FakeBrokenClient()
+    real = app.state.http_client
+    app.state.http_client = fake
+    created = await _register(client)
+    mid = created["mapping_id"]
+    try:
+        # 不对传输层传播语义做断言：ASGITransport 会缓冲整个响应体（异常在
+        # 中间件/传输层被吞，客户端拿到 partial body）；生产 httpcore 真连接下
+        # 表现为连接截断——可观测计数才是本用例重点
+        await _call(client, mid, "GET", "/orders")
+    finally:
+        app.state.http_client = real
+    after = metrics_mod.upstream_errors_total.labels(
+        type="http", code="stream_broken")._value.get()
+    assert after == before + 1
