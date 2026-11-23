@@ -52,7 +52,9 @@ class RequestContextMiddleware:
         async def send_wrapper(message) -> None:
             if message["type"] == "http.response.start":
                 status_holder["status"] = message["status"]
-                message.setdefault("headers", []).append((b"x-request-id", request_id.encode()))
+                headers = message.setdefault("headers", [])
+                if not any(k.lower() == b"x-request-id" for k, _ in headers):
+                    headers.append((b"x-request-id", request_id.encode()))
             await send(message)
 
         try:
@@ -63,8 +65,8 @@ class RequestContextMiddleware:
             status = status_holder["status"] or 500
             t = _type_of(route)
             metrics.requests_total.labels(route=route, type=t, status=str(status)).inc()
-            metrics.request_duration.labels(route=route, type=t).observe(time.monotonic() - start)
-            if method != "OPTIONS":
+            metrics.request_duration.labels(route=route, type=t).observe(duration_ms / 1000)
+            if method != "OPTIONS" and route != "ops":  # 运维端点不记审计（设计 §6.2/§15.2）
                 state = scope["state"]
                 audit.info(json.dumps({
                     "ts": datetime.now(timezone.utc).astimezone().isoformat(timespec="milliseconds"),

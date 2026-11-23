@@ -36,12 +36,12 @@ async def lifespan(app: FastAPI):
     await app.state.redis.ping()
     log.info("agent-proxy 启动: listen=%s external_base=%s", settings.listen, settings.external_base)
     yield
-    shutdown_logging()
     # redis-py 4.x 无 aclose()（5.0 起引入），close() 即异步关闭
     close = getattr(app.state.redis, "aclose", None) or app.state.redis.close
     await close()
     await engine.dispose()
     log.info("agent-proxy 已停止")
+    shutdown_logging()  # 最后一步：关闭过程（redis/engine）异常仍可落盘
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
