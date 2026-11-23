@@ -13,7 +13,7 @@ def validate_headers(headers: dict[str, str]) -> None:
     if len(headers) > MAX_HEADERS:
         raise ValueError(f"header 数量超过上限 {MAX_HEADERS}")
     for key, value in headers.items():
-        if not HEADER_TOKEN_RE.match(key):
+        if not isinstance(key, str) or not HEADER_TOKEN_RE.match(key):
             raise ValueError(f"非法 header 名: {key!r}")
         if not isinstance(value, str):
             raise ValueError(f"header 值必须为字符串: {key!r}")

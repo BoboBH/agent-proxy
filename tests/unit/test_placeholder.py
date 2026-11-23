@@ -24,5 +24,10 @@ def test_validate_rejects_long_value():
         validate_headers({"X-K": "x" * 4097})
 
 
+def test_validate_rejects_non_str_key():
+    with pytest.raises(ValueError):
+        validate_headers({1: "v"})
+
+
 def test_validate_empty_ok():
     validate_headers({})

@@ -12,3 +12,9 @@ def test_shape():
 
 def test_random_enough():
     assert len({new_mapping_id() for _ in range(200)}) > 190
+
+
+def test_re_rejects_trailing_newline():
+    mid = new_mapping_id()
+    assert MAPPING_ID_RE.match(mid)
+    assert not MAPPING_ID_RE.match(mid + "\n")
