@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import functools
 import os
+import re
 from dataclasses import dataclass
 
 
@@ -110,7 +111,7 @@ class Settings:
 
 
 def load_dotenv_file(path: str = ".env") -> None:
-    """极简 .env 加载（KEY=VALUE，# 注释），不覆盖已有环境变量。"""
+    """极简 .env 加载（KEY=VALUE，# 注释，剥离行内注释），不覆盖已有环境变量。"""
     if not os.path.exists(path):
         return
     with open(path, encoding="utf-8") as fh:
@@ -119,6 +120,8 @@ def load_dotenv_file(path: str = ".env") -> None:
             if not line or line.startswith("#") or "=" not in line:
                 continue
             key, _, value = line.partition("=")
+            # 剥离行内注释（仅空格分隔的 #，保住 MASTER_KEY=abc#def 这类值）
+            value = re.sub(r"\s+#.*$", "", value)
             os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 

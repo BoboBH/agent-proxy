@@ -11,7 +11,7 @@ Agent 平台对外 MCP / HTTP 出站代理：真实地址与凭据只存代理�
 D:/Python312/python.exe -m venv .venv
 .venv/Scripts/python.exe -m pip install -e ".[dev]" -i https://pypi.tuna.tsinghua.edu.cn/simple
 cp .env.example .env   # 按环境修改
-python -m agent_proxy  # 读取 .env 启动
+.venv/Scripts/python.exe -m agent_proxy  # 读取 .env 启动
 ````
 
 ## 测试

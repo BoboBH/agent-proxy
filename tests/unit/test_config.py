@@ -1,6 +1,6 @@
 import pytest
 
-from agent_proxy.config import ConfigError, Settings
+from agent_proxy.config import ConfigError, Settings, load_dotenv_file
 
 BASE = {
     "MYSQL_DSN": "mysql+aiomysql://root:123456@127.0.0.1:3306/agent_proxy",
@@ -51,3 +51,36 @@ def test_bad_trace_mode_rejected():
 def test_encrypt_requires_master_key():
     with pytest.raises(ConfigError):
         Settings.from_env({**BASE, "ENCRYPT_AT_REST": "true"})
+
+
+def _write_env(tmp_path, content):
+    p = tmp_path / ".env"
+    p.write_text(content, encoding="utf-8")
+    return str(p)
+
+
+def test_load_dotenv_strips_inline_comment(tmp_path, monkeypatch):
+    monkeypatch.delenv("PX_TRACE_MODE_TEST", raising=False)
+    path = _write_env(tmp_path, "PX_TRACE_MODE_TEST=body   # off | metadata | body\n")
+    load_dotenv_file(path)
+    import os
+
+    assert os.environ["PX_TRACE_MODE_TEST"] == "body"
+
+
+def test_load_dotenv_keeps_hash_without_space(tmp_path, monkeypatch):
+    monkeypatch.delenv("PX_MASTER_KEY_TEST", raising=False)
+    path = _write_env(tmp_path, "PX_MASTER_KEY_TEST=abc#def\n")
+    load_dotenv_file(path)
+    import os
+
+    assert os.environ["PX_MASTER_KEY_TEST"] == "abc#def"
+
+
+def test_load_dotenv_does_not_override_existing(tmp_path, monkeypatch):
+    monkeypatch.setenv("PX_EXISTING_TEST", "from-env")
+    path = _write_env(tmp_path, "PX_EXISTING_TEST=from-file\n")
+    load_dotenv_file(path)
+    import os
+
+    assert os.environ["PX_EXISTING_TEST"] == "from-env"
