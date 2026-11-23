@@ -145,3 +145,15 @@ async def test_unauthorized_401(client):
     bad = {"Authorization": "Bearer garbage"}
     resp = await client.get("/api/v1/mappings", headers=bad)
     assert resp.status_code == 401
+
+
+async def test_list_page_size_over_limit_400(client):
+    resp = await client.get("/api/v1/mappings?page_size=101",
+                            headers={"Authorization": f"Bearer {make_token('u888')}"})
+    assert resp.status_code == 400 and resp.json()["code"] == "INVALID_PARAM"
+
+
+async def test_list_page_size_negative_400(client):
+    resp = await client.get("/api/v1/mappings?page_size=-1",
+                            headers={"Authorization": f"Bearer {make_token('u888')}"})
+    assert resp.status_code == 400 and resp.json()["code"] == "INVALID_PARAM"

@@ -11,11 +11,11 @@ from .. import placeholder
 from ..auth import Identity
 from ..config import Settings, get_settings
 from ..errors import AppError
+from ..mapping_id import MAPPING_ID_RE
 from ..schemas import (ListItemOut, MappingCreate, MappingDetailOut, MappingUpdate,
                        RegisteredOut)
 from ..services import (build_proxy_url, create_mapping, delete_mapping, get_owned,
                         list_mappings, row_to_dict, update_mapping)
-from ..ssrf import UpstreamNotAllowed
 from .deps import get_current_identity, get_db, is_admin
 
 log = logging.getLogger("agent_proxy")
@@ -27,7 +27,7 @@ _PROXY_PATH_RE = re.compile(r"^/p/([A-Za-z0-9]{12})(/.*)?$")
 def parse_proxy_url(raw: str) -> str:
     """proxy_url（URL 编码）或裸 12 位 mapping_id → mapping_id。无法解析 → 400。"""
     value = unquote(raw)
-    if re.fullmatch(r"[A-Za-z0-9]{12}", value):
+    if MAPPING_ID_RE.match(value):
         return value
     path = urlparse(value).path
     matched = _PROXY_PATH_RE.match(path)
@@ -82,9 +82,7 @@ async def create_mapping_route(request: Request, body: MappingCreate,
             type_=body.type, name=body.name, visibility=body.visibility,
             upstream_url=body.upstream_url, headers=body.headers,
             test_request=body.test_request)
-    except ValueError as exc:
-        raise AppError(400, "INVALID_PARAM", str(exc))
-    except UpstreamNotAllowed as exc:
+    except ValueError as exc:  # 含 UpstreamNotAllowed（其子类，header 校验/SSRF 均归 400）
         raise AppError(400, "INVALID_PARAM", str(exc))
     request.state.mapping_id = row.mapping_id
     return _registered_out(settings, row_to_dict(row))
@@ -94,7 +92,7 @@ async def create_mapping_route(request: Request, body: MappingCreate,
 async def list_my_mappings(request: Request,
                            identity: Identity = Depends(get_current_identity),
                            session=Depends(get_db), settings: Settings = Depends(get_settings),
-                           page: int = Query(1, ge=1), page_size: int = Query(20, le=100)):
+                           page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)):
     rows = await list_mappings(session, identity.user_id,
                                limit=page_size, offset=(page - 1) * page_size)
     return [ListItemOut(mapping_id=r.mapping_id, name=r.name, type=r.type,
@@ -130,9 +128,7 @@ async def update_mapping_route(request: Request, mapping_id: str, body: MappingU
     try:
         data = await update_mapping(session, request.app.state.redis, settings,
                                     mapping_id, identity.user_id, **patch)
-    except ValueError as exc:
-        raise AppError(400, "INVALID_PARAM", str(exc))
-    except UpstreamNotAllowed as exc:
+    except ValueError as exc:  # 含 UpstreamNotAllowed（其子类，header 校验/SSRF 均归 400）
         raise AppError(400, "INVALID_PARAM", str(exc))
     if data is None:
         raise AppError(404, "MAPPING_NOT_FOUND", "映射不存在")
