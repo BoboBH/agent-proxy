@@ -142,3 +142,14 @@ async def test_probe_dot_segment_path_400(client):
                                                     "expect_status": 200})
     resp = await _test(client, created["mapping_id"])
     assert resp.status_code == 400 and resp.json()["code"] == "INVALID_PARAM"
+
+
+async def test_register_rejects_illegal_test_method(client):
+    """M2 遗留 Minor 5：test_request.method 白名单（合法 HTTP 动词），TRACE 等注册即拒。"""
+    resp = await client.post(
+        "/api/v1/mappings",
+        json={"type": "http", "upstream_url": "http://127.0.0.1:9901/api/v1",
+              "headers": {},
+              "test_request": {"method": "TRACE", "path": "/orders", "expect_status": 200}},
+        headers={"Authorization": f"Bearer {make_token('u888')}"})
+    assert resp.status_code == 400 and resp.json()["code"] == "INVALID_PARAM"

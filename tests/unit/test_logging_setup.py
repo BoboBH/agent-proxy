@@ -115,3 +115,33 @@ def test_shutdown_then_setup_recovers(tmp_path):
     assert files and any('{"after":1}' in f.read_text(encoding="utf-8") for f in files), \
         "shutdown 后重新 setup 到新目录应完全生效"
     shutdown_logging()
+
+
+def test_flush_trace_second_drain_catches_in_window_enqueue(tmp_path, monkeypatch):
+    """M2 遗留债务 1：第一次排空后、第二次排空前入队的记录不丢。
+
+    受控注入：把 time.sleep 替换为「注入一条迟到记录」的实现——该调用恰好落在
+    flush_trace 两次排空之间（确定性复现竞态窗口），单次 flush_trace 即应捕获。
+    """
+    import json as jsonlib
+
+    from agent_proxy import logging_setup as ls
+    from agent_proxy.logging_setup import setup_logging
+
+    setup_logging(str(tmp_path), "INFO")
+    produced = {"done": False}
+    original_sleep = ls.time.sleep
+
+    def _sleep_then_inject(seconds):
+        original_sleep(seconds)  # 必须调原实现（time.sleep 已被替换，直接调会无限递归）
+        if not produced["done"]:
+            produced["done"] = True
+            logging.getLogger("agent_proxy.trace").info(jsonlib.dumps({"phase": "in-window"}))
+
+    monkeypatch.setattr(ls.time, "sleep", _sleep_then_inject)
+    logging.getLogger("agent_proxy.trace").info(jsonlib.dumps({"phase": "early"}))
+    ls.flush_trace()
+    content = "".join(
+        p.read_text(encoding="utf-8") for p in sorted(tmp_path.glob("trace.log.*")))
+    assert '"phase": "early"' in content
+    assert '"phase": "in-window"' in content, "两次排空之间入队的记录应被第二次排空捕获"

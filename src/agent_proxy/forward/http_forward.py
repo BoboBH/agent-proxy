@@ -183,6 +183,10 @@ async def stream_http_forward(app_state, mapping_data: dict, request: Request) -
         # 已知限制（M2 接受）：首跳 body 已流式消耗，跳间不重放 body（303 已降为 GET）；
         # content-length 随之失效，跟随跳不再携带
         hop_headers = {k: v for k, v in outbound.items() if k.lower() != "content-length"}
+        # M2 遗留债务 3/Minor 2：跳间 URL 写 trace（phase=request，与首跳共用
+        # request_id，可回放整条重定向链）；置于 send 之前——跳间连接失败同样留痕
+        trace.log_request(request_id, uid, mapping_id, method, target, hop_headers,
+                          body=b"", body_bytes=0)
         try:
             # 真流式（评审 Critical）：跟随跳必须 build_request + send(stream=True)，
             # client.request 内部 send(stream=False) 会 aread() 把响应体整体读进内存

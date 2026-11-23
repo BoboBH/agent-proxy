@@ -598,6 +598,7 @@ sequenceDiagram
 | 上游连接失败 | 502 | `UPSTREAM_ERROR` |
 | 上游超时 | 504 | `UPSTREAM_TIMEOUT` |
 | 请求体超限 | 413 | `BODY_TOO_LARGE` |
+| 同源重定向跟随超限（§8.1 第 7 条；M2 实现补充错误码） | 502 | `TOO_MANY_REDIRECTS` |
 | 代理并发 / 连接池超限 | 503 | `PROXY_BUSY` |
 | 上游 4xx / 5xx | 原样透传状态码与响应体 | — |
 

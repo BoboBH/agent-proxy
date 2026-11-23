@@ -6,10 +6,15 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator
 
 
+_TEST_REQUEST_METHODS = ("DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT")
+
+
 def _require_method_path(v: dict | None) -> dict | None:
     """共享校验（Create/Update 共用，保持不变量）：
 
-    - test_request 必须包含 method/path；
+    - test_request 必须包含 method/path；method 必须为合法 HTTP 动词白名单
+      （M2 遗留 Minor 5：拒绝 TRACE/CONNECT 及任意 token，防探测滥用；大小写
+      不敏感接受，probe 侧统一 upper）；
     - 含 expect_status 时必须是 100-599 的整数（bool 除外）——注册时即拒绝畸形值，
       不留 /test 500 隐患（评审修复）。严格模式缺失 expect_status 的语义：
       /test 一律判失败（见 probe_http_mapping docstring），不当作「任意状态码皆可」。
@@ -17,6 +22,10 @@ def _require_method_path(v: dict | None) -> dict | None:
     if v is not None:
         if not {"method", "path"} <= set(v.keys()):
             raise ValueError("test_request 需包含 method/path")
+        method = v.get("method")
+        if not isinstance(method, str) or method.upper() not in _TEST_REQUEST_METHODS:
+            raise ValueError("test_request.method 必须为合法 HTTP 动词"
+                             "（GET/POST/PUT/PATCH/DELETE/HEAD/OPTIONS）")
         expect = v.get("expect_status")
         if expect is not None and (isinstance(expect, bool) or not isinstance(expect, int)
                                    or not 100 <= expect <= 599):

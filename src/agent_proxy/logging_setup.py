@@ -11,6 +11,7 @@ import os
 import queue
 import re
 import threading
+import time
 from datetime import datetime, timedelta
 
 MAX_BYTES = 50 * 1024 * 1024
@@ -123,17 +124,24 @@ def _get_trace_queue_handler(path: str) -> logging.handlers.QueueHandler:
 
 
 def flush_trace() -> None:
-    """同步排空 trace 队列（测试与停机前调用）。"""
+    """同步排空 trace 队列（测试与停机前调用）。
+
+    二次排空（M2 遗留债务 1）：单次排空与「后台 listener 消费中转 + 生产端
+    （响应流 finally 的 trace 写）入队」存在窗口竞态——排空瞬间队列看似空，
+    窗口内仍可能有记录入队。排空后等 10ms 让窗口内生产完成，再排一次。
+    """
     if _trace_queue is None or _trace_listener is None:
         return
-    while True:
-        try:
-            record = _trace_queue.get_nowait()
-        except queue.Empty:
-            break
-        if record is _trace_listener._sentinel:
-            break  # 取到 listener 停止哨兵即停，不能交给 handle 处理
-        _trace_listener.handle(record)
+    for _ in range(2):
+        while True:
+            try:
+                record = _trace_queue.get_nowait()
+            except queue.Empty:
+                break
+            if record is _trace_listener._sentinel:
+                return  # 取到停止哨兵即停，无后续记录
+            _trace_listener.handle(record)
+        time.sleep(0.01)
 
 
 def shutdown_logging() -> None:

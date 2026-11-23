@@ -276,10 +276,15 @@ async def test_forward_redirect_chain_keeps_true_streaming(client, app):
     assert b"hello-stream" in resp.content      # body 经 StreamingResponse 完整回传
 
 
-async def test_stream_broken_is_observable(client, app):
+async def test_stream_broken_is_observable(client, app, tmp_path):
     """流中断可观测（评审 Important 项，设计 §10）：upstream_errors code=stream_broken
-    计数 + log.exception；不写误导性的 status=200 response trace 行。"""
+    计数 + log.exception；trace 行为钉住（M2 遗留债务 2）——request 行在，
+    不写误导性的 status=200 response 行。"""
+    import json as jsonlib
+    import logging
+
     from agent_proxy import metrics as metrics_mod
+    from agent_proxy.logging_setup import flush_trace
 
     class _BrokenOnceResponse(httpx.Response):
         async def aiter_bytes(self, chunk_size=None):
@@ -300,6 +305,10 @@ async def test_stream_broken_is_observable(client, app):
         async def aclose(self):
             pass  # lifespan 停机保险（正常路径在 finally 换回真 client，走不到）
 
+    handler_target = tmp_path / "trace.log"
+    logger = logging.getLogger("agent_proxy.trace")
+    saved = logger.handlers
+    logger.handlers = [logging.FileHandler(handler_target, encoding="utf-8")]
     before = metrics_mod.upstream_errors_total.labels(
         type="http", code="stream_broken")._value.get()
     fake = _FakeBrokenClient()
@@ -314,9 +323,17 @@ async def test_stream_broken_is_observable(client, app):
         await _call(client, mid, "GET", "/orders")
     finally:
         app.state.http_client = real
+        logger.handlers = saved
     after = metrics_mod.upstream_errors_total.labels(
         type="http", code="stream_broken")._value.get()
     assert after == before + 1
+    flush_trace()
+    recs = [jsonlib.loads(x) for x in
+            handler_target.read_text(encoding="utf-8").splitlines() if x.strip()]
+    mine = [r for r in recs if r.get("mapping_id") == mid]
+    assert [r for r in mine if r["phase"] == "request"], "中断的请求应有 request 行"
+    assert not [r for r in mine if r["phase"] == "response"], \
+        "流中断不应写误导性的 status=200 response 行"
 
 
 # ---------- 第二批：重定向 / 大响应流式 / 413 / 连接池 / 502 / 504 ----------
@@ -486,3 +503,74 @@ async def test_pool_exhausted_returns_503():
     busy = [r for r in (r1, r2) if r.status_code == 503]
     assert statuses == [200, 503], f"池耗尽应恰一请求 503: {statuses}"
     assert busy and busy[0].json()["code"] == "PROXY_BUSY"
+
+
+# ---------- M2 终审遗留债务：重定向跳间 trace（债务 3 / Minor 2） ----------
+
+
+async def test_redirect_hops_recorded_in_trace(client, tmp_path):
+    """M2 遗留债务 3：重定向循环每跳 URL 写 trace request 行（同 request_id 可回放整条链）。"""
+    import json as jsonlib
+    import logging
+
+    from agent_proxy.logging_setup import flush_trace
+
+    handler_target = tmp_path / "trace.log"
+    logger = logging.getLogger("agent_proxy.trace")
+    saved = logger.handlers
+    logger.handlers = [logging.FileHandler(handler_target, encoding="utf-8")]
+    try:
+        created = await _register(client)
+        resp = await _call(client, created["mapping_id"], "GET", "/redirect/same-origin")
+        assert resp.status_code == 200
+    finally:
+        logger.handlers = saved
+    flush_trace()
+    recs = [jsonlib.loads(x) for x in
+            handler_target.read_text(encoding="utf-8").splitlines() if x.strip()]
+    mine = [r for r in recs if r.get("mapping_id") == created["mapping_id"]]
+    reqs = [r for r in mine if r["phase"] == "request"]
+    assert len(reqs) == 2, "首跳 + 同源跟随跳应各有一条 request 行"
+    assert reqs[0]["request_id"] == reqs[1]["request_id"]      # 同 request_id 关联
+    assert reqs[0]["url"].endswith("/redirect/same-origin")
+    assert reqs[1]["url"].startswith("http://127.0.0.1:9901/api/v1/final?via=")
+
+
+async def test_redirect_hop_send_failure_traced(client, app, tmp_path):
+    """M2 遗留 Minor 2：跳间 send 失败同样留下跳间 URL 的 request 行（先记后发）。"""
+    import json as jsonlib
+    import logging
+
+    from agent_proxy.logging_setup import flush_trace
+
+    class _FailSecondHopClient(_FakeStreamClient):
+        async def send(self, request, stream=False):
+            if self.sent_urls:  # 第二跳（跟随跳）连接失败
+                raise httpx.ConnectError("hop connection refused", request=request)
+            return await super().send(request, stream=stream)
+
+    handler_target = tmp_path / "trace.log"
+    logger = logging.getLogger("agent_proxy.trace")
+    saved = logger.handlers
+    logger.handlers = [logging.FileHandler(handler_target, encoding="utf-8")]
+    created = await _register(client)
+    mid = created["mapping_id"]
+    fake = _FailSecondHopClient([
+        (302, {"location": "/api/v1/final?via=redirect"}),  # 同源首跳
+        (200, {"content-type": "text/plain"}),
+    ])
+    real = app.state.http_client
+    app.state.http_client = fake
+    try:
+        resp = await _call(client, mid, "GET", "/orders")
+    finally:
+        app.state.http_client = real
+        logger.handlers = saved
+    flush_trace()
+    recs = [jsonlib.loads(x) for x in
+            handler_target.read_text(encoding="utf-8").splitlines() if x.strip()]
+    assert resp.status_code == 502 and resp.json()["code"] == "UPSTREAM_ERROR"
+    mine = [r for r in recs if r.get("mapping_id") == mid]
+    reqs = [r for r in mine if r["phase"] == "request"]
+    assert len(reqs) == 2, "首跳 + 跟随跳（虽 send 失败）应各有一条 request 行"
+    assert reqs[1]["url"].startswith("http://127.0.0.1:9901/api/v1/final")
