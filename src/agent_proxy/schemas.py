@@ -69,3 +69,11 @@ class ListItemOut(BaseModel):
     status: str
     created_at: str | None = None
     updated_at: str | None = None
+
+
+class MappingTestOut(BaseModel):
+    """POST /api/v1/mappings/{id}/test 响应（设计 §6.6）。"""
+    ok: bool
+    status_code: int | None = None
+    latency_ms: int
+    detail: str

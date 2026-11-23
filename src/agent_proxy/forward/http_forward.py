@@ -262,3 +262,49 @@ async def stream_http_forward(app_state, mapping_data: dict, request: Request) -
     except BaseException:
         await upstream_resp.aclose()
         raise
+
+
+TEST_PROBE_TIMEOUT = 5.0  # 设计 §6.6：测试专用短超时
+
+
+async def probe_http_mapping(app_state, mapping_data: dict) -> dict:
+    """http 类型 test（设计 §6.6）：默认 GET upstream_url 判连通（任意 HTTP 响应=可达）；
+    有 test_request 时按 method/path/expect_status 严格验证。
+
+    复用转发管线的 URL 拼接与出站 header 重建（测的即真实路径）；
+    上游失败一律 ok=false + detail，不抛 502/504。审计由调用方记 action=test_mapping。
+    """
+    stored = mapping_data["upstream_headers"] or {}
+    headers = build_outbound_headers(stored, {}, None, None, None)
+    tr = mapping_data.get("test_request") or {}
+    strict = bool(tr)
+    if strict:
+        assert_safe_sub_path(str(tr.get("path", "/")))
+        method = str(tr.get("method", "GET")).upper()
+        target = build_forward_target(mapping_data["upstream_url"], str(tr.get("path", "/")), "")
+        expect = tr.get("expect_status")
+    else:
+        method, target, expect = "GET", mapping_data["upstream_url"], None
+
+    start = time.monotonic()
+
+    def _result(ok: bool, status_code: int | None, detail: str) -> dict:
+        return {"ok": ok, "status_code": status_code,
+                "latency_ms": int((time.monotonic() - start) * 1000), "detail": detail}
+
+    try:
+        resp = await app_state.http_client.request(method, target, headers=headers,
+                                                   timeout=TEST_PROBE_TIMEOUT)
+    except httpx.TimeoutException as exc:
+        return _result(False, None, f"上游超时（>{TEST_PROBE_TIMEOUT:.0f}s）: {type(exc).__name__}")
+    except httpx.HTTPError as exc:
+        return _result(False, None, f"上游不可达: {type(exc).__name__}: {exc}")
+    status_code = resp.status_code
+    await resp.aclose()
+    if strict:
+        ok = expect is not None and status_code == int(expect)
+        detail = "状态码匹配" if ok else f"预期状态码 {expect}，实际 {status_code}"
+    else:
+        ok = True
+        detail = f"可达（status={status_code}，base URL 状态码仅作参考）"
+    return _result(ok, status_code, detail)

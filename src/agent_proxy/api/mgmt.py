@@ -11,9 +11,10 @@ from .. import placeholder
 from ..auth import Identity
 from ..config import Settings, get_settings
 from ..errors import AppError
+from ..forward.http_forward import probe_http_mapping
 from ..mapping_id import MAPPING_ID_RE
-from ..schemas import (ListItemOut, MappingCreate, MappingDetailOut, MappingUpdate,
-                       RegisteredOut)
+from ..schemas import (ListItemOut, MappingCreate, MappingDetailOut, MappingTestOut,
+                       MappingUpdate, RegisteredOut)
 from ..services import (build_proxy_url, create_mapping, delete_mapping, get_owned,
                         list_mappings, row_to_dict, update_mapping)
 from .deps import get_current_identity, get_db, is_admin
@@ -153,3 +154,21 @@ async def delete_mapping_route(request: Request, mapping_id: str,
         raise AppError(404, "MAPPING_NOT_FOUND", "映射不存在")
     request.state.mapping_id = mapping_id
     return Response(status_code=204)
+
+
+@router.post("/{mapping_id}/test", response_model=MappingTestOut)
+async def test_mapping_route(request: Request, mapping_id: str,
+                             identity: Identity = Depends(get_current_identity),
+                             session=Depends(get_db),
+                             settings: Settings = Depends(get_settings)):
+    """配置有效性测试（设计 §6.6）：仅注册者、仅已注册映射（防探测滥用）。"""
+    data = await get_owned(session, request.app.state.redis, mapping_id,
+                           identity.user_id, settings.cache_ttl)
+    if data is None:
+        raise AppError(404, "MAPPING_NOT_FOUND", "映射不存在")
+    request.state.audit_action = "test_mapping"
+    request.state.mapping_id = data["mapping_id"]
+    if data["type"] == "mcp":
+        # M3/M4 补 SSE endpoint / Streamable initialize 语义验证（设计 §16）
+        raise AppError(400, "INVALID_PARAM", "mcp 类型 test 随 M3/M4 交付，当前仅支持 http")
+    return await probe_http_mapping(request.app.state, data)
