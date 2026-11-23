@@ -4,6 +4,12 @@
 不用 ASGI 直连伪造上游。端点能力：全路径回显 / 大响应 / 慢响应 / 状态码 /
 同源重定向 / 跨源重定向（→ 9902 不存在端口）/ 重定向循环 / 307 保方法。
 注意：具体端点必须定义在 /api/v1/{path:path} 回显兜底之前（先注册先匹配）。
+
+回显契约（Task 4 评审携带项）：
+- headers 回显的头名为小写——uvicorn/h11 在 ASGI 边界把头名归一为小写，
+  上游存储侧的大小写在线上不可见，断言应按头名小写不敏感比较；
+- 重复 header / 查询参数经 dict 合并后只保留最后一个值；多值原始对
+  用 headers_multi（[[k, v], ...] 逐行）查看，供重复头行断言使用。
 """
 from __future__ import annotations
 
@@ -58,6 +64,8 @@ def build_echo_app() -> FastAPI:
             "method": request.method,
             "query": dict(request.query_params.multi_items()),
             "headers": dict(request.headers.items()),
+            "headers_multi": [[k.decode("latin-1"), v.decode("latin-1")]
+                              for k, v in request.headers.raw],
             "body": body.decode("utf-8", "replace"),
             "body_bytes": len(body),
         }

@@ -6,7 +6,6 @@ import pymysql
 import pytest
 import pytest_asyncio
 import shutil
-import time
 import uvicorn
 
 from tests.integration.mock_upstream import build_echo_app
@@ -66,12 +65,15 @@ async def real_upstream_server():
                               daemon=True, name="echo-upstream-9901")
     thread.start()
     for _ in range(200):
-        if server.started:
+        # 线程已退出而 started 仍 False（如端口占用崩溃）时提前失败，不必等满 10s
+        if server.started or not thread.is_alive():
             break
         await asyncio.sleep(0.05)
     assert server.started, "echo 上游启动失败（127.0.0.1:9901 被占用？）"
     yield server
     server.should_exit = True
     thread.join(timeout=10)
-    assert not thread.is_alive(), "echo 上游未在 10s 内优雅停机"
+    server.force_exit = True  # 兜底：优雅停机超时则强制置位，防止 join 卡死拖垮会话
+    thread.join(timeout=5)
+    assert not thread.is_alive(), "echo 上游未在 15s 内停机"
     loop.close()
