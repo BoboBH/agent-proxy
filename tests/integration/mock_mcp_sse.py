@@ -12,13 +12,17 @@
 - GET /：裸 origin 注册形态（评审 Issue 2）——根路径即 SSE 端点，行为与 /sse 一致；
 - GET /sse-redirect-same：同源 307（Location 指向本 mock = 注册 upstream origin，
   评审 Issue 1「同源 Location 永不回传」中止用例）；
+- GET /sse2：同源 307 的**根相对 Location** 变体（Location: /sse，现网常见形态，
+  join 解析后同源判定对照面）；
 - GET /sse-redirect-cross：跨源 307（Location 指向 9901 echo 上游，不同端口即不同
   origin，透传对照面）；
 - GET /sse-503：注册端点返回非 SSE 错误体（503 text/html，原样透传/不计 sse_active 用例）；
 - GET /_connections：调试端点，返回当前活跃 SSE 连接数（客户端断开→上游取消
   的端到端验证用）。
 
-模块级 mock_state 供测试直读（received 断言出站 header/query；测试自行清空）。
+模块级 mock_state 供测试直读（received 断言出站 header/query；测试自行清空；
+last_sse_headers 为最近一次 /sse GET 请求头小写键 dict，供 Connection: close 等
+出站语义钉住）。
 """
 from __future__ import annotations
 
@@ -30,7 +34,8 @@ from fastapi.responses import (HTMLResponse, JSONResponse, RedirectResponse,
                                Response, StreamingResponse)
 
 # 模块级状态：测试直接 import 断言
-mock_state: dict = {"sse_open": 0, "received": [], "queues": []}
+mock_state: dict = {"sse_open": 0, "received": [], "queues": [],
+                    "last_sse_headers": {}}  # 最近一次 /sse GET 请求头（小写键）
 
 
 def _result_for(rpc: dict) -> dict:
@@ -55,7 +60,10 @@ def build_mcp_sse_app() -> FastAPI:
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
     @app.api_route("/sse", methods=["GET", "HEAD"])
-    async def sse_endpoint():
+    async def sse_endpoint(request: Request):
+        # 记录最近一次 SSE GET 请求头（小写键）供测试断言出站语义
+        # （如 Task 5 生产修复的 Connection: close 钉住）
+        mock_state["last_sse_headers"] = dict(request.headers.items())
         queue: asyncio.Queue = asyncio.Queue()
         mock_state["queues"].append(queue)
 
@@ -77,14 +85,20 @@ def build_mcp_sse_app() -> FastAPI:
         return StreamingResponse(gen(), media_type="text/event-stream")
 
     @app.api_route("/", methods=["GET", "HEAD"])
-    async def root_sse():
+    async def root_sse(request: Request):
         # 裸 origin 注册形态（评审 Issue 2）：根路径即 SSE 端点，行为与 /sse 一致
-        return await sse_endpoint()
+        return await sse_endpoint(request)
 
     @app.get("/sse-redirect-same")
     async def sse_redirect_same():
         # 同源重定向（评审 Issue 1）：Location 指向本 mock 自身 = 注册 upstream origin
         return RedirectResponse("http://127.0.0.1:9902/sse", status_code=307)
+
+    @app.get("/sse2")
+    async def sse_redirect_same_relative():
+        # 同源重定向的**根相对 Location** 变体（现网服务常见形态）：代理须经
+        # URL join 解析后才能判定同源——判定必须同样命中（评审 Issue 1 覆盖面）
+        return RedirectResponse("/sse", status_code=307)
 
     @app.get("/sse-redirect-cross")
     async def sse_redirect_cross():

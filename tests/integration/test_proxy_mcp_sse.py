@@ -59,6 +59,10 @@ async def test_sse_handshake_endpoint_event_rewritten():
             endpoint = await read_first_endpoint_event(resp)
     assert endpoint == f"/p/{mid}/messages?session_id=test123"
     assert endpoint.startswith(f"/p/{mid}/")            # 改写为代理地址（§8.3）
+    # Task 5 生产修复钉住（评审遗留，不再依赖测试文件顺序）：SSE 初始连接出站必须
+    # 显式 Connection: close——绝不消费/回流 keepalive 池（read=None 请求消费到
+    # 死 IDLE 供体连接时无界挂死）。mock 端 Starlette 请求头键为小写。
+    assert mock_state["last_sse_headers"].get("connection") == "close"
 
 
 async def test_initialize_roundtrip_via_proxy():
@@ -232,6 +236,18 @@ async def test_sse_cross_origin_redirect_passthrough():
         r = await c.get(f"{PROXY}/p/{mid}/sse-redirect-cross", headers=AUTH)
     assert r.status_code == 307
     assert r.headers["location"] == "http://127.0.0.1:9901/echo-target"
+
+
+async def test_sse_relative_location_same_origin_redirect_aborted_502():
+    """根相对 Location 的同源重定向（现网服务常见形态，绝对 URL 的对照面）：
+    SSE 分支经 URL join 解析后同源判定同样命中——502 中止且 Location 不回传。"""
+    created = await _register_mcp(upstream_url=f"{UPSTREAM_BASE}/sse2")
+    mid = created["mapping_id"]
+    async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+        r = await c.get(f"{PROXY}/p/{mid}/sse2", headers=AUTH)
+    assert r.status_code == 502
+    assert r.json()["code"] == "TOO_MANY_REDIRECTS"
+    assert "location" not in r.headers                   # 同源 Location 绝不外泄
 
 
 async def test_non_sse_upstream_error_plain_passthrough_no_sse_active():

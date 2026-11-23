@@ -70,7 +70,9 @@ async def proxy_with_path(request: Request, mapping_id: str, path: str,
 
 # 注（M2 评审 5d 不采纳，保留）：proxy_root 并非死路由——`{path:path}` 路由的正则
 # 要求 mapping_id 后必须再有一个 `/`，`/p/{id}`（无尾斜杠）由本路由服务
-# （设计 §6.2「path 可为空」）；mcp 根路径按 origin 根还原直达 origin。
+# （设计 §6.2「path 可为空」）；mcp 裸 origin 注册（端点路径为 /）时根路径已走
+# SSE 管线（评审 Issue 2：空 sub_path 归一为 / 参与注册端点匹配），非裸 origin
+# 注册的根路径才按 origin 根还原直达 origin。
 @router.api_route("/p/{mapping_id}", methods=_PROXY_METHODS)
 async def proxy_root(request: Request, mapping_id: str,
                      identity: Identity = Depends(get_current_identity),
