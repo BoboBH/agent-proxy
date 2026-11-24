@@ -12,7 +12,7 @@ from ..auth import Identity
 from ..config import Settings, get_settings
 from ..errors import AppError
 from ..forward.http_forward import probe_http_mapping
-from ..forward.mcp_sse import probe_sse_mapping
+from ..forward.mcp_streamable import probe_mcp_mapping
 from ..mapping_id import MAPPING_ID_RE
 from ..schemas import (ListItemOut, MappingCreate, MappingDetailOut, MappingTestOut,
                        MappingUpdate, RegisteredOut)
@@ -170,6 +170,8 @@ async def test_mapping_route(request: Request, mapping_id: str,
     request.state.audit_action = "test_mapping"
     request.state.mapping_id = data["mapping_id"]
     if data["type"] == "mcp":
-        # SSE 握手语义验证（§6.6 / §16 M3）；Streamable initialize 语义验证随 M4（§8.4）
-        return await probe_sse_mapping(request.app.state, data)
+        # mcp test 探测式 auto（M4 定稿，§6.6）：先 Streamable initialize 硬判定，
+        # 端点拒绝 POST（405/404/406）回落 SSE 握手探测（理由见 probe_mcp_mapping
+        # docstring：不新增 transport 字段、不用路径后缀启发式）
+        return await probe_mcp_mapping(request.app.state, data)
     return await probe_http_mapping(request.app.state, data)
