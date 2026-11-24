@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import asyncio
+import gzip
 
 from fastapi import FastAPI, Request
 from fastapi.responses import RedirectResponse, Response
@@ -38,6 +39,17 @@ def build_echo_app() -> FastAPI:
     async def status_code(code: int):
         return Response(content=f"upstream-status-{code}", status_code=code,
                         media_type="text/plain")
+
+    @app.get("/api/v1/gzip-text")
+    async def gzip_text():
+        # M4 前置硬项（accept-encoding 透明性）：上游主动 gzip——httpx 出站默认
+        # accept-encoding: gzip, deflate 下真实上游会压缩响应；代理必须按压缩字节
+        # 透传（aiter_raw）并保真响应头（content-encoding/content-length 为压缩侧值）。
+        # Starlette 按 body 自动设 content-length=压缩长度，与手动声明的
+        # content-encoding 组成「头体一致」的压缩响应。
+        payload = b"gzip-upstream-payload-" * 40
+        return Response(content=gzip.compress(payload), media_type="text/plain",
+                        headers={"content-encoding": "gzip"})
 
     @app.get("/api/v1/redirect/same-origin")
     async def redirect_same_origin():

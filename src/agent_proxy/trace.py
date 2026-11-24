@@ -68,11 +68,14 @@ def _headers_for_log(headers: dict[str, str], body_mode: bool) -> dict[str, str]
     return out
 
 
-def _truncate(body: bytes | str, content_type: str = "") -> dict:
+def _truncate(body: bytes | str, content_type: str = "",
+              content_encoding: str = "") -> dict:
     ct = content_type.lower().split(";")[0].strip()
     # +json 后缀（如 application/vnd.api+json）与 yaml 属文本，不能当二进制丢弃
     is_text = ct.startswith(_TEXT_TYPES) or ct.endswith("+json") or ct == "application/yaml"
-    if content_type and not is_text:
+    # M4：压缩传输编码（gzip/deflate…）下 body 为压缩字节（aiter_raw 透传），
+    # 按文本解码必乱码——一律走二进制路径只记字节数
+    if content_encoding or (content_type and not is_text):
         size = len(body) if isinstance(body, bytes) else len(body.encode("utf-8"))
         return {"body_bytes": size, "body_skipped": "binary"}
     text = body.decode("utf-8", "replace") if isinstance(body, bytes) else body
@@ -108,7 +111,7 @@ def log_request(request_id: str, uid: str, mapping_id: str, method: str, url: st
 
 def log_response(request_id: str, status: int, duration_ms: int,
                  headers: dict[str, str] | None = None, body: bytes = b"",
-                 content_type: str = "") -> None:
+                 content_type: str = "", content_encoding: str = "") -> None:
     if _mode == "off":
         return
     record: dict = {"request_id": request_id, "phase": "response",
@@ -116,7 +119,7 @@ def log_response(request_id: str, status: int, duration_ms: int,
     if headers is not None:
         record["headers"] = _headers_for_log(headers, body_mode=(_mode == "body"))
     if _mode == "body":
-        record.update(_truncate(body, content_type))
+        record.update(_truncate(body, content_type, content_encoding))
     _write(record)
 
 

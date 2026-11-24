@@ -35,6 +35,7 @@ last_sse_headers 为最近一次 /sse GET 请求头小写键 dict，供 Connecti
 from __future__ import annotations
 
 import asyncio
+import gzip
 import json
 
 from fastapi import FastAPI, Request
@@ -117,6 +118,15 @@ def build_mcp_sse_app() -> FastAPI:
     async def sse_503():
         # 非 SSE 错误体（评审 Issue 7）：原样透传、不进改写管线、不计 sse_active
         return HTMLResponse("<html><body>upstream-503-html</body></html>", status_code=503)
+
+    @app.get("/sse-gzip-html")
+    async def sse_gzip_html():
+        # M4 accept-encoding 回归：注册端点路径返回 200 + gzip HTML（非
+        # event-stream）——进 SSE 管线 plain 分支（原样回传），压缩字节透传、
+        # 响应头保真（与 /sse-503 同路径不同编码，plain 分支双覆盖）
+        body = gzip.compress(b"<html><body>upstream-gzip-html</body></html>")
+        return Response(content=body, media_type="text/html",
+                        headers={"content-encoding": "gzip"})
 
     @app.get("/sse-no-endpoint")
     async def sse_no_endpoint():

@@ -21,8 +21,6 @@ from ..headers import build_outbound_headers, filter_response_headers
 
 log = logging.getLogger("agent_proxy")
 
-_STREAM_CHUNK = 64 * 1024
-
 
 def split_sub_path(full_path: str, mapping_id: str) -> str:
     """/p/{id} 之后的子路径（含前导 /；可为空串）。前缀不匹配 → 400。"""
@@ -238,7 +236,13 @@ async def stream_http_forward(app_state, mapping_data: dict, request: Request,
     async def _response_stream():
         nonlocal stream_broken
         try:
-            async for chunk in upstream_resp.aiter_bytes(_STREAM_CHUNK):
+            # M4 accept-encoding 透明性（M3 已知限制 9 定稿修复）：aiter_raw 无参
+            # 透传压缩字节（不解压、按网络到达块即时产出）——响应头按原样回传时
+            # 头体一致（content-encoding/content-length 为压缩侧值），严格客户端
+            # 不再因「解压体 > 声明 content-length」断连。禁用带 chunk_size 的调用：
+            # ByteChunker 攒_buf 不足即不产出，会破坏 SSE 形态响应的增量下发
+            # （M3 已实测同款缺陷）。无 content-encoding 时与 aiter_bytes 等价。
+            async for chunk in upstream_resp.aiter_raw():
                 if capture_limit and len(resp_capture) < capture_limit:
                     resp_capture.extend(chunk[: capture_limit - len(resp_capture)])
                 yield chunk
@@ -258,9 +262,12 @@ async def stream_http_forward(app_state, mapping_data: dict, request: Request,
                 # filter_response_headers 保留上游原始大小写，content-type 按小写不敏感取
                 resp_ct = next((v for k, v in resp_headers.items()
                                 if k.lower() == "content-type"), "")
+                resp_ce = next((v for k, v in resp_headers.items()
+                                if k.lower() == "content-encoding"), "")
+                # 压缩体为压缩字节：trace 走二进制语义只记字节数（M4 配套）
                 trace.log_response(request_id, upstream_resp.status_code, duration_ms,
                                    headers=dict(resp_headers), body=bytes(resp_capture),
-                                   content_type=resp_ct)
+                                   content_type=resp_ct, content_encoding=resp_ce)
             else:
                 trace.log_response(request_id, upstream_resp.status_code, duration_ms)
 

@@ -228,7 +228,8 @@ async def stream_sse_forward(app_state, mapping_data: dict, request: Request) ->
         # 非 SSE 响应（上游 4xx/5xx 错误体等）：不改写、不计 sse_active，原样流式回传
         async def _plain_stream():
             try:
-                async for chunk in upstream_resp.aiter_bytes():
+                # M4：压缩字节透传（见 http_forward._response_stream 注释），无参保持到达粒度
+                async for chunk in upstream_resp.aiter_raw():
                     yield chunk
             except httpx.HTTPError as exc:
                 # 流中断可观测（评审 Issue 3）：与 http 管线 _response_stream 对称
@@ -249,7 +250,8 @@ async def stream_sse_forward(app_state, mapping_data: dict, request: Request) ->
             # 仅 EOF flush() 才吐余量，SSE 永不 EOF → endpoint 事件永不增量下发
             # （实测挂死直至客户端读超时）。无参 aiter_bytes() 按网络到达块即时
             # 产出（aiter_lines 内部同款），「每行产出即 yield」的 §8.3 语义成立。
-            async for chunk in upstream_resp.aiter_bytes():
+            # M4：压缩字节透传（见 http_forward._response_stream 注释），无参保持到达粒度
+            async for chunk in upstream_resp.aiter_raw():
                 lines = rewriter.feed(chunk)
                 for event, data in rewriter.take_trace_records():
                     trace.log_sse_event(request_id, event, data)   # 仅 body 模式生效
@@ -329,7 +331,8 @@ async def probe_sse_mapping(app_state, mapping_data: dict) -> dict:
     async def _first_endpoint() -> str | None:
         buf = b""
         current_event = ""
-        async for chunk in resp.aiter_bytes():
+        # M4：压缩字节透传（见 http_forward._response_stream 注释），无参保持到达粒度
+        async for chunk in resp.aiter_raw():
             buf += chunk
             while b"\n" in buf:
                 line, _, buf = buf.partition(b"\n")

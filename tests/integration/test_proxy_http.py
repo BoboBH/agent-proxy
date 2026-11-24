@@ -281,7 +281,9 @@ async def test_stream_broken_is_observable(client, app, tmp_path):
     from agent_proxy.logging_setup import flush_trace
 
     class _BrokenOnceResponse(httpx.Response):
-        async def aiter_bytes(self, chunk_size=None):
+        # M4 aiter_raw 换装：管线消费点已是 aiter_raw（压缩字节透传），中断桩
+        # 必须钉在同一 seam 上（原 aiter_bytes 不再被转发路径调用）
+        async def aiter_raw(self):
             yield b"partial-body"
             raise httpx.ReadError("connection reset mid-stream")
 
@@ -291,7 +293,7 @@ async def test_stream_broken_is_observable(client, app, tmp_path):
 
         async def send(self, request, stream=False):
             async def _partial():
-                yield b"seed"  # async 流：aclose 合法（本用例 override 了 aiter_bytes）
+                yield b"seed"  # async 流：aclose 合法（本用例 override 了 aiter_raw）
 
             return _BrokenOnceResponse(200, headers={"content-type": "text/plain"},
                                        content=_partial())

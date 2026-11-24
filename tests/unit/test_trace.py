@@ -143,3 +143,16 @@ def test_log_request_redacts_url_query(tmp_path):
     recs = _read(path)
     assert "secret-token-value" not in json.dumps(recs)
     assert "access_token=" in recs[0]["url"]  # 键名保留，值指纹化
+
+
+def test_compressed_body_recorded_as_binary(tmp_path):
+    """M4 accept-encoding 配套：压缩传输编码下的响应体为压缩字节，按文本解码必乱码
+    ——content_encoding 非空时走二进制路径（只记 body_bytes），与既有非文本
+    Content-Type 行为一致。"""
+    path = _capture(tmp_path, "body")
+    trace.log_response("r1", 200, 12, body=b"\x1f\x8b\x08\x00binary",
+                       content_type="application/json", content_encoding="gzip")
+    recs = _read(path)
+    assert recs[0] == {"ts": recs[0]["ts"], "request_id": "r1", "phase": "response",
+                       "status": 200, "duration_ms": 12,
+                       "body_bytes": 10, "body_skipped": "binary"}  # 4B gzip magic + 6B binary = 10（计划原稿误写 8）
