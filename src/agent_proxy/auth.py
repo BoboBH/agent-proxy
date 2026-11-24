@@ -31,9 +31,15 @@ class TokenVerifier(Protocol):
 
 
 class StubVerifier:
-    """开发/测试：本地解码 JWT payload 中段，不验签。claims: user_id(必须)/user_name/role。"""
+    """开发/测试：本地解码 JWT payload 中段，不验签。claims: user_id(必须)/user_name/role。
+
+    纯数字 token 短路（M7 评审指令，仅 stub）：直接作 user_id（`Bearer 12345` →
+    Identity(user_id="12345")）——stub 登录页「输入数字即身份」，免构造信封票据；
+    信封形态（stub.<b64url 载荷>.sig）走下方 JWT 解析，两路径并存。"""
 
     async def verify(self, token: str) -> Identity:
+        if token.isdigit():
+            return Identity(user_id=token)
         try:
             payload = json.loads(_b64url_decode(token.split(".")[1]))
         except Exception as exc:

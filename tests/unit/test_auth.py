@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from agent_proxy.auth import StubVerifier, TokenInvalidError, build_verifier
+from agent_proxy.auth import Identity, StubVerifier, TokenInvalidError, build_verifier
 from tests.utils import make_token
 
 
@@ -28,6 +28,15 @@ async def test_stub_verify_missing_uid():
 async def test_stub_verify_garbage():
     with pytest.raises(TokenInvalidError):
         await StubVerifier().verify("not-a-jwt")
+
+
+async def test_stub_verify_pure_digit_token_shortcut():
+    """纯数字 token 直接作 user_id（M7 stub 登录简化）：`Bearer 12345` →
+    Identity(user_id="12345")（user_name/role 为 None），在 JWT 解析之前短路——
+    stub 登录页输入数字即身份，免构造信封；信封票据路径不受影响（上方既有用例）。"""
+    identity = await StubVerifier().verify("12345")
+    assert identity == Identity(user_id="12345")
+    assert (await StubVerifier().verify("0")).user_id == "0"
 
 
 def test_build_verifier_unknown_impl():
