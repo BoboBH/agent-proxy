@@ -6,9 +6,12 @@ Authorization Server 端点：
 - POST /oauth/register                        DCR（RFC 7591）——记录请求并签发 client
 - GET  /oauth/authorize                       校验 client/redirect_uri/PKCE(S256 必须)
                                               → 签发一次性 code → 302 redirect_uri?code&state
-- POST /oauth/token                           authorization_code（code 一次性 + PKCE 校验 +
-                                              client 认证 basic/post）与 refresh_token
-- POST /oauth/revoke                          RFC 7009（access 吊销连带配对 refresh 作废）
+- POST /oauth/token                           authorization_code（code 一次性 + 绑定签发
+                                              client + PKCE 校验 + client 认证 basic/post）
+                                              与 refresh_token（rt 绑定归属 client_id）
+- POST /oauth/revoke                          RFC 7009（客户端认证门同 token 端点：
+                                              basic/post/none；凭证记入 revocations；
+                                              access 吊销连带配对 refresh 作废）
 
 Resource Server 端点（http 形态注入验证面）：
 - ANY /api[/{path}]                           echo（method/headers/query 原样返回）
@@ -92,6 +95,7 @@ def build_oauth_as_app() -> FastAPI:
         as_state.clear()
         as_state.update(_fresh_state())
         secure_state["valid_tokens"].clear()
+        secure_state["received"].clear()   # 9903 /mcp-secure 记录面一并复位（Task 2 评审携带）
         return {"ok": True}
 
     @app.get("/.well-known/oauth-protected-resource")
@@ -180,25 +184,40 @@ def build_oauth_as_app() -> FastAPI:
                              "expires_in": as_state["expires_in"],
                              "refresh_token": refresh, "scope": scope})
 
-    @app.post("/oauth/token")
-    async def token(request: Request):
-        form = await _form(request)
+    async def _authenticate_client(request: Request, form: dict[str, str]):
+        """token/revoke 共用客户端认证门（RFC 6749 §2.3.1 同构，Task 2 评审携带）：
+        - Basic 头覆盖 form 凭证（与代理 build_token_request 对应）；
+        - client 必须存在；secret 非 None 的客户端必须凭证匹配（basic/post 形态）；
+          secret 为 None（token_endpoint_auth_method=none 公共客户端）仅认 client_id。
+        返回 (client_id, presented_secret, client, client_auth, error_response)：
+        error_response 非 None 即认证失败（401 invalid_client），其余值无意义；
+        client_auth ∈ basic/post/none 为请求实际采用的凭证形态。"""
         client_id = str(form.get("client_id") or "")
         client_secret = form.get("client_secret")
         authz = request.headers.get("authorization", "")
+        client_auth = "post" if client_secret is not None else "none"
         if authz.startswith("Basic "):
-            # RFC 6749 §2.3.1：Basic 覆盖 form 凭证（与代理 build_token_request 对应）
+            client_auth = "basic"
             try:
                 decoded = base64.b64decode(authz[6:].strip()).decode("utf-8")
                 client_id, _, basic_secret = decoded.partition(":")
                 client_secret = basic_secret
             except Exception:
-                return JSONResponse({"error": "invalid_client"}, status_code=401)
+                return (client_id, client_secret, None, client_auth,
+                        JSONResponse({"error": "invalid_client"}, status_code=401))
         client = as_state["clients"].get(client_id)
-        if client is None:
-            return JSONResponse({"error": "invalid_client"}, status_code=401)
-        if client["client_secret"] is not None and client_secret != client["client_secret"]:
-            return JSONResponse({"error": "invalid_client"}, status_code=401)
+        if client is None or (client["client_secret"] is not None
+                              and client_secret != client["client_secret"]):
+            return (client_id, client_secret, None, client_auth,
+                    JSONResponse({"error": "invalid_client"}, status_code=401))
+        return client_id, client_secret, client, client_auth, None
+
+    @app.post("/oauth/token")
+    async def token(request: Request):
+        form = await _form(request)
+        client_id, _, client, _, err = await _authenticate_client(request, form)
+        if err is not None:
+            return err
         grant = form.get("grant_type")
         if grant == "authorization_code":
             code = str(form.get("code") or "")
@@ -228,7 +247,10 @@ def build_oauth_as_app() -> FastAPI:
                 return JSONResponse({"error": "invalid_grant",
                                      "error_description": "refresh scripted to fail"},
                                     status_code=400)
-            if rt not in as_state["refresh_tokens"] or rt in as_state["revoked_refresh"]:
+            # rt 绑定校验（Task 2 评审携带）：rt 必须属于请求 client_id（.get 比对
+            # 同时覆盖不存在与跨客户端盗用两种形态）
+            if (as_state["refresh_tokens"].get(rt) != client_id
+                    or rt in as_state["revoked_refresh"]):
                 return JSONResponse({"error": "invalid_grant"}, status_code=400)
             if as_state["refresh_sleep"]:           # 并发刷新锁用例的竞态窗口
                 await asyncio.sleep(as_state["refresh_sleep"])
@@ -239,9 +261,17 @@ def build_oauth_as_app() -> FastAPI:
     @app.post("/oauth/revoke")
     async def revoke(request: Request):
         form = await _form(request)
+        client_id, client_secret, _, client_auth, err = await _authenticate_client(
+            request, form)
+        if err is not None:
+            return err
         tok = str(form.get("token") or "")
+        # 凭证记入 revocations：Task 5 断言「凭证确实随 revoke 发出」的断言面
         as_state["revocations"].append({"token": tok,
-                                        "hint": form.get("token_type_hint")})
+                                        "hint": form.get("token_type_hint"),
+                                        "client_id": client_id,
+                                        "client_secret": client_secret,
+                                        "client_auth": client_auth})
         secure_state["valid_tokens"].discard(tok)
         # access 吊销连带配对 refresh 作废（按签发记录回查）；直接吊销 rt 形态亦支持
         as_state["refresh_tokens"].pop(tok, None)
