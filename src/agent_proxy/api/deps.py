@@ -29,6 +29,10 @@ async def get_current_identity(request: Request) -> Identity:
     - Bearer 优先：Agent / API 场景语义不变；携带 Bearer 而校验失败 → 401，
       **不回退** Cookie——失效凭证被静默回退掩盖 = 已撤销用户凭残留会话放行；
     - 无 Bearer → Cookie 会话回退（管理页面场景，服务端会话 ap:sess:{sid}）；
+      else 分支语义（评审钉住）：**仅 Bearer 触发「失败不回退」**——Bearer 是
+      明确的凭证出示，失效必须 401；其他 scheme（如 Basic）不构成凭证出示，
+      不遮蔽 Cookie 通道（带 Basic 头 + 有效会话照常放行，
+      test_basic_scheme_with_valid_cookie_uses_session_identity）；
     - 两通道均未命中 → 401 INVALID_TOKEN（既有 401 面同码，仅 message 更新，
       设计 §10 错误码表零变更）。
     """

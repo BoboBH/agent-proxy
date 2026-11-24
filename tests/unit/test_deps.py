@@ -111,6 +111,20 @@ async def test_no_bearer_no_cookie_401():
         await get_current_identity(req)
 
 
+async def test_basic_scheme_with_valid_cookie_uses_session_identity():
+    """Basic+Cookie 语义钉住（Task 2 评审）：非 Bearer 的 Authorization 头不进入
+    「Bearer 失败即 401」通道——else 分支按 Cookie 会话放行。「失败不回退」仅对
+    Bearer 生效（携带 Bearer = 明确出示凭证，失效必须 401 而非静默换通道）；
+    Basic 等其他 scheme 不构成凭证出示，不应遮蔽页面/工具场景的 Cookie 通道。"""
+    sid = "f" * 32
+    redis = _session(sid, user_id="u555", user_name="李四")
+    req = _request([(b"authorization", b"Basic dXNlcjpwYXNz"),
+                    (b"cookie", f"{SESSION_COOKIE}={sid}".encode())], redis=redis)
+    identity = await get_current_identity(req)
+    assert identity.user_id == "u555" and identity.user_name == "李四"
+    assert req.state.uid == "u555"
+
+
 def test_is_admin_matches_role():
     assert is_admin(Identity(user_id="u1", role="admin"), "admin")
 

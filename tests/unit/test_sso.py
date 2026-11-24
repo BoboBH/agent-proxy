@@ -145,14 +145,14 @@ async def test_get_session_rejects_non_32hex_sid_without_redis_access():
     """sid 仅接受 new_sid() 形态（32 位小写 hex）：Cookie 是攻击者可控输入，
     非 128bit-hex 一律按未登录处理（None），不触达 Redis。"""
     for bad in ("junk", "a" * 31, "A" * 32, "g" * 40, f"{'a' * 32}/extra",
-                f"{'a' * 31} "):
+                f"{'a' * 31} ", f"{'a' * 32}\n"):
         r = _RecordingRedis()
         assert await get_session(r, bad) is None
         assert r.calls == []                             # 零 Redis 命令
 
 
 async def test_destroy_session_rejects_non_32hex_sid_without_redis_access():
-    for bad in ("junk", "A" * 32, f"{'b' * 32}/x"):
+    for bad in ("junk", "A" * 32, f"{'b' * 32}/x", f"{'b' * 32}\n"):
         r = _RecordingRedis()
         await destroy_session(r, bad)                    # 短路 no-op
         assert r.calls == []                             # 零 Redis 命令

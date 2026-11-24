@@ -7,6 +7,8 @@ request_id 在全部 audit.log.* 行中过滤定位，不依赖"最后一行属�
 import glob
 import json
 
+from agent_proxy.auth import Identity
+from agent_proxy.sso.session import SESSION_COOKIE, create_session
 from tests.utils import make_token
 
 BODY = {"type": "http", "upstream_url": "http://10.0.0.5/api/v1", "headers": {}}
@@ -47,6 +49,20 @@ async def test_audit_has_identity_and_request_id(client):
     assert entry["user_id"] == "u888" and entry["user_name"] == "张三"
     assert entry["action"] == "mgmt" and entry["status"] == 201
     assert entry["method"] == "POST" and entry["path"] == "/api/v1/mappings"
+
+
+async def test_audit_identity_from_cookie_session(client, app):
+    """Cookie 通道变体（M7 评审补充）：审计 user_id/user_name 同样来自服务端会话
+    （get_current_identity 双通道写 request.state，middleware 落盘）——页面 fetch
+    场景的审计身份贯通与 Bearer 通道一致。"""
+    sid = await create_session(app.state.redis,
+                               Identity(user_id="u777", user_name="李四"), 600)
+    resp = await client.post("/api/v1/mappings", json=BODY,
+                             headers={"Cookie": f"{SESSION_COOKIE}={sid}"})
+    assert resp.status_code == 201
+    entry = _find_audit_entry(resp.headers["x-request-id"])
+    assert entry["user_id"] == "u777" and entry["user_name"] == "李四"
+    assert entry["action"] == "mgmt" and entry["status"] == 201
 
 
 async def test_view_credentials_audited(client):

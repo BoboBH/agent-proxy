@@ -23,12 +23,16 @@ log = logging.getLogger("agent_proxy")
 SESSION_COOKIE = "ap_sess"
 SESSION_KEY_PREFIX = "ap:sess:"
 
-_SID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
+_SID_PATTERN = re.compile(r"[0-9a-f]{32}")
 
 
 def _valid_sid(sid: str) -> bool:
-    """sid 仅接受 new_sid() 的产物形态：32 位小写 hex（128bit）。"""
-    return bool(_SID_PATTERN.match(sid))
+    """sid 仅接受 new_sid() 的产物形态：32 位小写 hex（128bit）。
+
+    用 fullmatch 而非 ``^...$`` + match（Task 2 评审加固）：``$`` 在尾部换行前
+    也匹配，``match`` 形态会放行 ``"a"*32 + "\\n"``——fullmatch 严格全串匹配，
+    无锚点歧义。"""
+    return bool(_SID_PATTERN.fullmatch(sid))
 
 
 def session_key(sid: str) -> str:
