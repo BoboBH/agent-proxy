@@ -106,5 +106,5 @@ request_id 下应能看到：
 |---|---|
 | Connect 后 401 | Custom Header 未配置或拼写错误（stub token 不验签、不过期） |
 | 注册 400（内网/SSRF 拒绝） | `.env` 未设 `SSRF_ALLOW_PRIVATE=true` |
-| 9902 被占用 | 结束遗留进程：`netstat -ano \| findstr :9902` 查到 PID，`taskkill /PID <pid> /F`；或改用 `.venv/Scripts/python.exe scripts/mock_mcp_sse_server.py --port 9903` 启动（注册的 upstream_url 端口同步改） |
+| 9902 被占用 | 结束遗留进程：`netstat -ano \| findstr :9902` 查到 PID，`taskkill //PID <pid> //F`（Git Bash 下双斜杠，避免被路径转换）；或改用 `.venv/Scripts/python.exe scripts/mock_mcp_sse_server.py --port 9903` 启动（注册的 upstream_url 端口同步改） |
 | Inspector UI 字段对不上 | 以当前版本 UI 为准，关键字段为 Transport Type=SSE、URL、Custom Header |
