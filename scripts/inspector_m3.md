@@ -6,8 +6,17 @@ tools/list 与 tools/call。本页为人工验收清单；协议级自动化验�
 
 ## 0. 前置
 
+> 以下命令均在 Git Bash 下执行（路径为 Windows 的 `.venv/Scripts/` 形态）。
+
 - venv 已建且依赖已装（`D:/Python312/python.exe -m venv .venv` + `pip install -e ".[dev]"`）
 - 本机 MySQL(3306) / Redis(6379) 可用；Node/npx 可用
+- MySQL 需已建库 `agent_proxy`（应用启动只建表不建库，全新 MySQL 直接启动会报
+  Unknown database 1049）——先在 MySQL 执行：
+
+  ```sql
+  CREATE DATABASE IF NOT EXISTS agent_proxy DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+  ```
+
 - 仓库根 `.env` 至少包含：
 
 ```
@@ -97,5 +106,5 @@ request_id 下应能看到：
 |---|---|
 | Connect 后 401 | Custom Header 未配置或拼写错误（stub token 不验签、不过期） |
 | 注册 400（内网/SSRF 拒绝） | `.env` 未设 `SSRF_ALLOW_PRIVATE=true` |
-| 9902 被占用 | 结束遗留的 mock 进程（终端 2 Ctrl+C）后重启 |
+| 9902 被占用 | 结束遗留进程：`netstat -ano \| findstr :9902` 查到 PID，`taskkill /PID <pid> /F`；或改用 `.venv/Scripts/python.exe scripts/mock_mcp_sse_server.py --port 9903` 启动（注册的 upstream_url 端口同步改） |
 | Inspector UI 字段对不上 | 以当前版本 UI 为准，关键字段为 Transport Type=SSE、URL、Custom Header |
