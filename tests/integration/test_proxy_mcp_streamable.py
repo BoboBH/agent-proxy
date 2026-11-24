@@ -262,7 +262,7 @@ async def test_streamable_push_stream_trace_body_mode_records_message_events():
             async with c.stream("GET", f"{PROXY}/p/{mid}/mcp",
                                 headers={**AUTH, **SESSION}) as resp:
                 assert resp.status_code == 200
-                push = await read_next_message_data(resp)   # 首条推送事件读到即断开
+                await read_next_message_data(resp)   # 首条推送事件读到即断开
     finally:
         flush_trace()
         trace_mod.configure("metadata", 64 * 1024)          # 恢复（集成夹具 lifespan 亦会重配）
