@@ -9,6 +9,7 @@ import shutil
 import uvicorn
 
 from tests.integration.mock_mcp_sse import build_mcp_sse_app
+from tests.integration.mock_mcp_streamable import build_mcp_streamable_app
 from tests.integration.mock_upstream import build_echo_app
 
 
@@ -107,6 +108,35 @@ async def mcp_sse_upstream_server():
     server.force_exit = True  # 兜底：SSE 长连接下优雅停机可能超时，强制置位防 join 卡死
     thread.join(timeout=5)
     assert not thread.is_alive(), "MCP SSE 上游未在 15s 内停机"
+    loop.close()
+
+
+@pytest_asyncio.fixture(scope="session", autouse=True, loop_scope="session")
+async def mcp_streamable_upstream_server():
+    """真实 MCP Streamable 上游：uvicorn 真实监听 127.0.0.1:9903（session 级，独立线程 loop）。
+
+    启动/停机模式与 echo(9901)/SSE(9902) 夹具一致：uvicorn.serve() 挂独立线程
+    独立 loop，测试用例经真实 TCP 访问（跨 loop 只过网络，无共享 asyncio 对象）。
+    autouse 统一随 session 启动（启动成本 ~1s 一次性）。
+    """
+    config = uvicorn.Config(build_mcp_streamable_app(), host="127.0.0.1", port=9903,
+                            log_level="warning", access_log=False)
+    server = uvicorn.Server(config)
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_until_complete, args=(server.serve(),),
+                              daemon=True, name="mcp-streamable-upstream-9903")
+    thread.start()
+    for _ in range(200):
+        if server.started or not thread.is_alive():
+            break
+        await asyncio.sleep(0.05)
+    assert server.started, "MCP Streamable 上游启动失败（127.0.0.1:9903 被占用？）"
+    yield server
+    server.should_exit = True
+    thread.join(timeout=10)
+    server.force_exit = True  # 兜底：长连接下优雅停机可能超时，强制置位防 join 卡死
+    thread.join(timeout=5)
+    assert not thread.is_alive(), "MCP Streamable 上游未在 15s 内停机"
     loop.close()
 
 
