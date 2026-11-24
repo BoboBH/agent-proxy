@@ -195,7 +195,7 @@ HTTP 201
 CREATE TABLE proxy_mapping (
   id               BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   mapping_id       VARCHAR(16)  NOT NULL COMMENT '对外路由标识，随机 base62',
-  owner_uid        VARCHAR(64)  NOT NULL COMMENT '注册者 uid，来自第三方解码的 Identity.user_id',
+  owner_uid        BIGINT       NOT NULL COMMENT '注册者 uid——内部系统 user_id 为整数，来自第三方解码的 Identity.user_id',
   name             VARCHAR(128) NULL COMMENT '显示名（公共映射由管理员填写）',
   type             ENUM('http','mcp') NOT NULL,
   visibility       ENUM('private','public') NOT NULL DEFAULT 'private' COMMENT 'private 仅注册者可调；public 内置映射，任意有效用户可调（见第14章）',
@@ -254,7 +254,7 @@ CREATE TABLE proxy_oauth_client (
 CREATE TABLE proxy_oauth_credential (
   id            BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   mapping_id    VARCHAR(16) NOT NULL,
-  uid           VARCHAR(64) NOT NULL,
+  uid           BIGINT      NOT NULL COMMENT '内部系统 user_id 为整数',
   access_token  TEXT NOT NULL COMMENT '强制加密存储（MASTER_KEY）',
   refresh_token TEXT NULL COMMENT '加密存储',
   expires_at    DATETIME NULL,
@@ -412,7 +412,7 @@ HTTP 200
 ```python
 @dataclass(frozen=True)
 class Identity:
-    user_id: str            # 必须，全局唯一；即映射归属 owner_uid 的来源（下文 uid ≡ user_id）
+    user_id: int            # 必须，全局唯一（内部系统 user_id 为整数）；即映射归属 owner_uid 的来源（下文 uid ≡ user_id）
     user_name: str | None   # 显示名，仅用于审计
     role: str | None        # 角色；== ADMIN_ROLE（默认 "admin"）时为管理员（见 14.2）
 
