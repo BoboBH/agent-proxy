@@ -918,6 +918,8 @@ sequenceDiagram
 | 公共映射管理（仅 admin） | visibility=public 映射 CRUD + test + OAuth client（手动模式）配置 |
 | 会话 | 退出登录（删除本地会话） |
 
+> **代理实现注记（M7）**：会话 Cookie 名 `ap_sess`，属性 `HttpOnly + SameSite=Lax + Path=/`；`Secure` 由 `SESSION_COOKIE_SECURE` 配置（默认 false）——本地开发与集成测试为纯 http，Secure Cookie 在 http 下浏览器与 httpx 均不回传、无法联调与自动化验证；`EXTERNAL_BASE` 为 https 的部署必须置 true。`return_to` 仅接受站内相对路径（`/` 开头且非 `//`，防开放重定向；Location 组装前 quote 防 CRLF 头注入）；stub 登录页在浏览器侧按 StubVerifier 同格式（`stub.<base64url(JSON)>.sig`）构造票据提交 `/admin/auth/callback`，与公司 SSO「回跳携带票据」时序同构，`company_sso` Provider 接入后登录页自然旁路（`login_url` 指向外部地址）。会话 TTL 创建时定（`ADMIN_SESSION_TTL`，默认 28800s），不做滑动续期；退出登录删除 Redis 键。页面身份上下文（user_name / is_admin）由模板服务端注入；权限边界仍在 `/api/v1` 既有矩阵（页面不做越权捷径：入口隐藏 + API 403/404 兜底）。
+
 ### 15.2 Prometheus 指标
 
 `GET /metrics`（prometheus-client；无鉴权、仅内网可达，与 `/healthz`、`/readyz` 一致不记审计）。
