@@ -59,7 +59,12 @@ def decode_state_payload(raw: str | bytes) -> dict:
     except (ValueError, TypeError) as exc:
         raise AppError(400, "OAUTH_STATE_INVALID", "state 载荷非法") from exc
     required = ("uid", "mapping_id", "code_verifier", "front_redirect")
-    if not isinstance(payload, dict) or not all(k in payload for k in required):
+    # 类型守卫：uid/mapping_id 必须为 str（拼缓存键 / 落库 / 鉴权决策的输入，
+    # 数字/None/容器等畸形类型一律 OAUTH_STATE_INVALID）。
+    if (not isinstance(payload, dict)
+            or not all(k in payload for k in required)
+            or not isinstance(payload["uid"], str)
+            or not isinstance(payload["mapping_id"], str)):
         raise AppError(400, "OAUTH_STATE_INVALID", "state 载荷非法")
     return payload
 

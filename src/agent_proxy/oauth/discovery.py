@@ -16,12 +16,9 @@
 """
 from __future__ import annotations
 
-import logging
 from urllib.parse import urlparse
 
 import httpx
-
-log = logging.getLogger("agent_proxy")
 
 DISCOVERY_TIMEOUT = 10.0
 
@@ -36,11 +33,18 @@ def upstream_origin(upstream_url: str) -> str:
 
 
 def parse_protected_resource(payload, origin: str) -> str:
-    """RFC 9728 → AS base（authorization_servers[0]；缺省/空/非 dict 回退 origin）。"""
+    """RFC 9728 → AS base（authorization_servers[0]；缺省/空/非 dict/非 http(s)
+    scheme/urlparse 解析失败（如畸形 IPv6）回退 origin——畸形值不进入第二跳
+    URL 构造）。"""
     servers = payload.get("authorization_servers") if isinstance(payload, dict) else None
-    if (isinstance(servers, list) and servers
-            and isinstance(servers[0], str) and servers[0].strip()):
-        return servers[0].strip().rstrip("/")
+    if isinstance(servers, list) and servers and isinstance(servers[0], str):
+        candidate = servers[0].strip()
+        try:
+            scheme_ok = urlparse(candidate).scheme in ("http", "https")
+        except ValueError:
+            scheme_ok = False
+        if candidate and scheme_ok:
+            return candidate.rstrip("/")
     return origin.rstrip("/")
 
 
@@ -56,9 +60,12 @@ def parse_as_metadata(payload) -> dict:
 
 
 async def _get_json(client: httpx.AsyncClient, url: str) -> dict:
+    # InvalidURL 直继承 Exception（非 HTTPError）：畸形 URL（如元数据指向非法
+    # host/port）在请求构造期抛出——不捕获会逃逸成 500 而非 502
+    # OAUTH_CLIENT_SETUP_FAILED，故与 HTTPError 一并归一。
     try:
         resp = await client.get(url, timeout=DISCOVERY_TIMEOUT)
-    except httpx.HTTPError as exc:
+    except (httpx.HTTPError, httpx.InvalidURL) as exc:
         raise DiscoveryError(f"探测失败 {url}: {type(exc).__name__}") from exc
     if resp.status_code != 200:
         raise DiscoveryError(f"探测 {url} 非 200（status={resp.status_code}）")

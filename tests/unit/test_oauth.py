@@ -3,7 +3,9 @@ state 载荷、authorization_url / redirect_uri 组装、token_auth 三形态请
 DCR 注册载荷、AS 元数据解析、front_redirect 域白名单。"""
 import base64
 import hashlib
+import json
 
+import httpx
 import pytest
 
 from agent_proxy.errors import AppError
@@ -13,9 +15,11 @@ from agent_proxy.oauth.client import (build_authorization_url, build_dcr_payload
                                       encode_state_payload, new_code_verifier,
                                       new_state, normalize_token_auth,
                                       state_key, validate_front_redirect)
-from agent_proxy.oauth.credential import encrypt_text, decrypt_text, is_expired
-from agent_proxy.oauth.discovery import (DiscoveryError, parse_as_metadata,
-                                         parse_protected_resource, upstream_origin)
+from agent_proxy.oauth.credential import (encrypt_text, decrypt_text,
+                                          expires_at_from, is_expired)
+from agent_proxy.oauth.discovery import (DiscoveryError, discover_authorization_server,
+                                         parse_as_metadata, parse_protected_resource,
+                                         upstream_origin)
 
 MASTER = "test-master-key"
 
@@ -49,12 +53,33 @@ def test_decrypt_wrong_key_maps_to_internal_error():
 
 
 def test_is_expired_none_means_never_and_skew_60s():
-    from datetime import datetime, timedelta
+    from datetime import datetime, timedelta, timezone
     assert is_expired(None) is False                   # 无 expires_at = 永不过期
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)                   # aware UTC（utcnow 已弃用）
     assert is_expired(now + timedelta(seconds=30), now=now) is True    # 60s 提前量内
     assert is_expired(now + timedelta(seconds=120), now=now) is False
     assert is_expired(now - timedelta(seconds=1), now=now) is True
+
+
+def test_is_expired_normalizes_naive_db_datetime_against_aware_now():
+    """DB DateTime 列回读 naive → 按 UTC 语义归一（写侧 expires_at_from 同为 UTC），
+    与 aware now 比较不抛 TypeError（模块内时间形态一致化）。"""
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    naive_past = (now - timedelta(seconds=1)).replace(tzinfo=None)
+    assert is_expired(naive_past, now=now) is True
+    naive_future = (now + timedelta(seconds=120)).replace(tzinfo=None)
+    assert is_expired(naive_future, now=now) is False
+
+
+def test_expires_at_from_returns_aware_utc_and_rejects_bad_input():
+    from datetime import datetime, timezone
+    out = expires_at_from(3600)
+    assert out is not None and out.tzinfo is timezone.utc          # aware UTC（不再 utcnow）
+    assert abs((out - datetime.now(timezone.utc)).total_seconds() - 3600) < 5
+    assert expires_at_from(None) is None
+    assert expires_at_from("not-a-number") is None
+    assert expires_at_from(0) is None and expires_at_from(-30) is None
 
 
 # ---------- PKCE（RFC 7636 S256 必须） ----------
@@ -89,6 +114,18 @@ def test_state_payload_missing_fields_rejected():
     assert ei.value.code == "OAUTH_STATE_INVALID"
     with pytest.raises(AppError):
         decode_state_payload("not-json")
+
+
+def test_state_payload_uid_and_mapping_id_must_be_str():
+    """类型守卫：uid/mapping_id 非字符串（数字/None/容器）→ OAUTH_STATE_INVALID，
+    不让畸形类型流入鉴权决策（uid 拼缓存键/落库）。"""
+    base = {"code_verifier": "v" * 43, "front_redirect": "http://t/c"}
+    for bad in ({"uid": 123, "mapping_id": "m1", **base},
+                {"uid": "u888", "mapping_id": None, **base},
+                {"uid": ["u888"], "mapping_id": "m1", **base}):
+        with pytest.raises(AppError) as ei:
+            decode_state_payload(json.dumps(bad))
+        assert ei.value.code == "OAUTH_STATE_INVALID"
 
 
 # ---------- URL / redirect_uri / DCR 载荷 ----------
@@ -168,6 +205,23 @@ def test_discovery_parse_protected_resource_prefers_first_as_server():
     assert parse_protected_resource("not-a-dict", origin) == origin
 
 
+def test_discovery_parse_protected_resource_requires_http_scheme():
+    """authorization_servers[0] 非 http(s) scheme（file/gopher/空壳）或 urlparse
+    本身解析失败（畸形 IPv6 抛 ValueError）→ 回退 origin，不让畸形值进入第二跳
+    URL 构造。"""
+    origin = "http://127.0.0.1:9904"
+    assert parse_protected_resource({"authorization_servers": ["file:///etc/passwd"]},
+                                    origin) == origin
+    assert parse_protected_resource({"authorization_servers": ["gopher://x"]},
+                                    origin) == origin
+    assert parse_protected_resource({"authorization_servers": ["   "]}, origin) == origin
+    assert parse_protected_resource({"authorization_servers": ["http://[::1"]},
+                                    origin) == origin    # urlparse ValueError → 回退
+    assert parse_protected_resource(
+        {"authorization_servers": ["https://as.ex.com"]},
+        origin) == "https://as.ex.com"                               # https 合法保留
+
+
 def test_discovery_parse_as_metadata_ok_and_missing():
     meta = parse_as_metadata({"authorization_endpoint": "http://a/auth",
                               "token_endpoint": "http://a/token",
@@ -181,6 +235,41 @@ def test_discovery_parse_as_metadata_ok_and_missing():
 
 def test_discovery_upstream_origin_helper():
     assert upstream_origin("https://mcp.ex.com/sse?a=1") == "https://mcp.ex.com"
+
+
+# ---------- discovery 探测函数（MockTransport，非 200 / 非 JSON / InvalidURL 归一） ----------
+
+def _mock_client(handler) -> httpx.AsyncClient:
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+async def test_discovery_probe_non_200_raises_discovery_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"error": "boom"})
+    async with _mock_client(handler) as c:
+        with pytest.raises(DiscoveryError):
+            await discover_authorization_server(c, "http://up.example")
+
+
+async def test_discovery_probe_non_json_raises_discovery_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="<html>not-json</html>")
+    async with _mock_client(handler) as c:
+        with pytest.raises(DiscoveryError):
+            await discover_authorization_server(c, "http://up.example")
+
+
+async def test_discovery_malformed_metadata_url_invalidurl_raises_discovery_error():
+    """畸形元数据 URL：authorization_servers 指向非法 port（scheme 合法可过解析校验，
+    请求构造期抛 httpx.InvalidURL——直继承 Exception、非 HTTPError，不会被原 except
+    捕获）——必须归一 DiscoveryError（映射 502 OAUTH_CLIENT_SETUP_FAILED），否则
+    逃逸成 500。"""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"authorization_servers": [
+            "http://as.ex.com:notaport"]})
+    async with _mock_client(handler) as c:
+        with pytest.raises(DiscoveryError):
+            await discover_authorization_server(c, "http://up.example")
 
 
 # ---------- front_redirect 域白名单（§14.6 防开放重定向） ----------

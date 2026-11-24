@@ -19,10 +19,11 @@ import base64
 import hashlib
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from cryptography.fernet import Fernet, InvalidToken
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..errors import AppError
@@ -71,23 +72,36 @@ def refresh_lock_key(mapping_id: str, uid: str) -> str:
     return f"ap:lock:refresh:{mapping_id}:{uid}"
 
 
+def _utcnow() -> datetime:
+    """aware UTC 当前时间（datetime.utcnow() 已弃用，Python 3.12 起告警）。"""
+    return datetime.now(timezone.utc)
+
+
+def _as_aware_utc(dt: datetime) -> datetime:
+    """naive 视为 UTC（DB DateTime 列回读形态；写侧 wall time 同为 UTC）→ aware。"""
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
 def is_expired(expires_at: datetime | None, now: datetime | None = None,
                skew: int = REFRESH_SKEW_SECONDS) -> bool:
     """§14.5：expires_at - skew <= now 视为过期；None 视为永不过期（AS 未下发
-    expires_in）。时间统一 naive UTC（写读两侧均为本模块 datetime.utcnow）。"""
+    expires_in）。时间统一 aware UTC（写读两侧均本模块 _utcnow；DB 回读的 naive
+    值按 UTC 语义归一后比较）。"""
     if expires_at is None:
         return False
-    now = now or datetime.utcnow()
-    return expires_at <= now + timedelta(seconds=skew)
+    current = _as_aware_utc(now) if now is not None else _utcnow()
+    return _as_aware_utc(expires_at) <= current + timedelta(seconds=skew)
 
 
 def expires_at_from(expires_in) -> datetime | None:
-    """AS 响应 expires_in（秒）→ naive UTC expires_at；缺失/非法/非正数 → None。"""
+    """AS 响应 expires_in（秒）→ aware UTC expires_at（落库时 MySQL DATETIME 按
+    wall time 存 UTC，回读 naive 经 _as_aware_utc 归一，语义闭环）；
+    缺失/非法/非正数 → None。"""
     try:
         seconds = int(expires_in)
     except (TypeError, ValueError):
         return None
-    return datetime.utcnow() + timedelta(seconds=seconds) if seconds > 0 else None
+    return _utcnow() + timedelta(seconds=seconds) if seconds > 0 else None
 
 
 def _row_to_cred(row: OAuthCredential) -> dict:
@@ -148,24 +162,34 @@ async def save_credential(session: AsyncSession, r, mapping_id: str, uid: str, *
                           expires_at: datetime | None, scope: str | None,
                           master_key: str) -> None:
     """uk(mapping_id, uid) upsert：重复授权覆盖旧凭证并复位 active（§14.4 状态机
-    invalid → 重新授权 → bound）。密文由调用方以 encrypt_text 产出后传入。"""
-    row = (await session.execute(
-        select(OAuthCredential).where(OAuthCredential.mapping_id == mapping_id,
-                                      OAuthCredential.uid == uid)
-    )).scalar_one_or_none()
-    if row is None:
-        row = OAuthCredential(mapping_id=mapping_id, uid=uid,
-                              access_token=access_token_ct,
-                              refresh_token=refresh_token_ct, expires_at=expires_at,
-                              scope=scope, status="active")
+    invalid → 重新授权 → bound）。密文由调用方以 encrypt_text 产出后传入。
+
+    并发竞态：两个请求同 (mapping_id, uid) 同时授权，双方 SELECT 均无行 → 双
+    INSERT → 一侧 commit 撞 uk IntegrityError（若不捕获会 500）——回滚后按 uk
+    重读重试为 UPDATE（覆盖并发方已提交行），达成真原子 upsert 语义。"""
+    new_values = {"access_token": access_token_ct, "refresh_token": refresh_token_ct,
+                  "expires_at": expires_at, "scope": scope, "status": "active"}
+    for attempt in range(2):
+        row = (await session.execute(
+            select(OAuthCredential).where(OAuthCredential.mapping_id == mapping_id,
+                                          OAuthCredential.uid == uid)
+        )).scalar_one_or_none()
+        if row is not None:
+            for k, v in new_values.items():
+                setattr(row, k, v)
+            await session.commit()
+            break
+        row = OAuthCredential(mapping_id=mapping_id, uid=uid, **new_values)
         session.add(row)
-    else:
-        row.access_token = access_token_ct
-        row.refresh_token = refresh_token_ct
-        row.expires_at = expires_at
-        row.scope = scope
-        row.status = "active"
-    await session.commit()
+        try:
+            await session.commit()
+            break
+        except IntegrityError:
+            # 另一并发请求已插入同 uk 并提交：回滚后第二轮循环按 uk 重试为 UPDATE；
+            # 第二轮再撞 uk（理论上不可达）则原样抛出。
+            await session.rollback()
+            if attempt == 1:
+                raise
     await invalidate_credential(r, mapping_id, uid)
 
 
@@ -183,12 +207,15 @@ async def mark_credential_invalid(session: AsyncSession, r, mapping_id: str,
 
 
 async def delete_credential(session: AsyncSession, r, mapping_id: str, uid: str) -> bool:
-    """解绑：删除本地凭证（revoke 由 api 层在删除前取 token 后 best-effort 调用）。"""
+    """解绑：删除本地凭证（revoke 由 api 层在删除前取 token 后 best-effort 调用）。
+    行已不存在（重复解绑/并发删除）时同样失效 cred 缓存——过期缓存比消失的行
+    更危险（缓存残留 → 已解绑用户仍被注入旧 token）。"""
     row = (await session.execute(
         select(OAuthCredential).where(OAuthCredential.mapping_id == mapping_id,
                                       OAuthCredential.uid == uid)
     )).scalar_one_or_none()
     if row is None:
+        await invalidate_credential(r, mapping_id, uid)
         return False
     await session.delete(row)
     await session.commit()
