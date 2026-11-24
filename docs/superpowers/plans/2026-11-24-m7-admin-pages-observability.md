@@ -1677,7 +1677,7 @@ async def test_real_tcp_admin_page_and_cookie_channel(real_proxy_app):
 .venv/Scripts/python.exe -m pytest tests/integration/test_admin_browser_flow.py -q
 ```
 
-Expected: 4 passed（真实 TCP 用例依赖 9901 echo / 9904 mock AS / 9910 被测代理夹具；如端口被占用先按约定等待重试）。
+Expected: 3 passed（本文件 3 个用例；Task 4 原稿笔误 4——实测修正。真实 TCP 用例依赖 9901 echo / 9904 mock AS / 9910 被测代理夹具；如端口被占用先按约定等待重试）。
 
 - [ ] **Step 3: Commit**
 
