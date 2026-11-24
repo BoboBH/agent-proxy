@@ -212,3 +212,29 @@ async def test_row_to_dict_serializable(app):
         json.dumps(data, ensure_ascii=False)
         # 明文形态（owner 查看真实值语义不变），owner_uid int（整数化）
         assert data["owner_uid"] == 888 and data["upstream_headers"] == {}
+
+
+async def test_stale_plaintext_cache_fail_closed_then_self_heals(app):
+    """评审 Important 2 配套：迁移前旧明文 dict 形态的缓存残留（headers 为 dict）
+    → plain_headers 非密文串守卫 fail-closed（None→404），且缓存坏键即时失效——
+    下一请求回源 DB（密文形态健康）自动恢复，不粘性 404。"""
+    async with app.state.sessionmaker() as session:
+        row = await create_mapping(session, app.state.redis, app.state.settings,
+                                   888, type_="http", name=None, visibility="private",
+                                   upstream_url="http://10.0.0.5/api",
+                                   headers={"Authorization": "Bearer sk-real-key"},
+                                   test_request=None)
+        mid = row.mapping_id
+        await load_mapping(session, app.state.redis, mid, 300, MASTER)
+        # 模拟迁移前旧形态缓存：headers 为明文 dict 而非密文串
+        stale = {"mapping_id": mid, "owner_uid": 888, "visibility": "private",
+                 "type": "http", "upstream_url": "http://10.0.0.5/api",
+                 "upstream_headers": {"Authorization": "Bearer sk-real-key"}}
+        await app.state.redis.set(f"ap:mapping:{mid}", json.dumps(stale))
+        assert await load_mapping(session, app.state.redis, mid, 300, MASTER) is None
+        # 坏键已被即时失效：下一请求回源 DB 自愈（明文形态返回 + 密文形态回填）
+        again = await load_mapping(session, app.state.redis, mid, 300, MASTER)
+        assert again is not None
+        assert again["upstream_headers"] == {"Authorization": "Bearer sk-real-key"}
+        cached_raw = json.loads(await app.state.redis.get(f"ap:mapping:{mid}"))
+        assert cached_raw["upstream_headers"].startswith("gAAAA")

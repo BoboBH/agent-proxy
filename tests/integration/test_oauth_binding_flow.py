@@ -160,6 +160,36 @@ async def test_builtin_list_items_binding_and_masked_headers(client):
     assert items999[oauth_mid]["binding"] == "unbound"   # 按调用者视角
 
 
+async def test_builtin_list_skips_corrupt_headers_row_with_warning(client, app, caplog):
+    """评审 Important 1b：内置列表逐行解密兜底——一行损坏降级跳过 + WARN（健康行
+    照常返回），不再 500 整个列表；不产出明文，该行详情/调用路径各自 fail-closed。"""
+    import logging
+
+    from agent_proxy.models import ProxyMapping
+
+    healthy_mid = (await client.post("/api/v1/mappings", json={
+        "type": "http", "visibility": "public", "auth_mode": "static",
+        "upstream_url": "http://10.0.0.5/api/v1",
+        "headers": {"Authorization": "Bearer sk-ok-12345678"}}, headers=ADMIN)).json()["mapping_id"]
+    corrupt_mid = (await client.post("/api/v1/mappings", json={
+        "type": "http", "visibility": "public", "auth_mode": "static",
+        "upstream_url": "http://10.0.0.5/api/v2",
+        "headers": {"X-Token": "t-corrupt"}}, headers=ADMIN)).json()["mapping_id"]
+    async with app.state.sessionmaker() as session:
+        from sqlalchemy import update
+        await session.execute(update(ProxyMapping)
+                              .where(ProxyMapping.mapping_id == corrupt_mid)
+                              .values(upstream_headers="gAAAAbroken-not-fernet"))
+        await session.commit()
+    with caplog.at_level(logging.WARNING, logger="agent_proxy"):
+        resp = await client.get("/api/v1/builtin-mappings", headers=ADMIN)
+    assert resp.status_code == 200                       # 非 500：单行损坏不拖垮列表
+    ids = {x["mapping_id"] for x in resp.json()}
+    assert healthy_mid in ids and corrupt_mid not in ids  # 损坏行降级跳过
+    assert any(r.levelno == logging.WARNING and "列表降级跳过" in r.getMessage()
+               and corrupt_mid in r.getMessage() for r in caplog.records)
+
+
 async def test_state_replay_rejected_400(client):
     mid = await _setup(client)
     r = await _authorize(client, mid)

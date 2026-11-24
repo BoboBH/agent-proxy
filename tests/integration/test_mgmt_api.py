@@ -107,6 +107,63 @@ async def test_put_updates_and_returns_masked(client):
     assert resp.json()["headers"]["Authorization"] == "Bearer sk-new-key"
 
 
+async def _corrupt_row_headers(app, mapping_id: str) -> None:
+    """直写 DB 行 headers 为不可解密文（模拟 MASTER_KEY 变更/行损坏）；PUT 路径
+    直读 DB 行不经缓存，无需清缓存。"""
+    from sqlalchemy import update
+    from agent_proxy.models import ProxyMapping
+    async with app.state.sessionmaker() as session:
+        await session.execute(update(ProxyMapping)
+                              .where(ProxyMapping.mapping_id == mapping_id)
+                              .values(upstream_headers="gAAAAbroken-not-fernet"))
+        await session.commit()
+
+
+async def test_put_corrupt_headers_untouched_succeeds_and_disables(client, app):
+    """评审 Important 1a：headers 密文损坏的映射，patch 未触及 headers（停用类
+    应急处置）→ 更新照常生效（非 500/非 409），回显占位符降级空表 + WARN；
+    真实值读取路径（详情）仍 fail-closed 404。"""
+    mid = (await _create(client)).json()["mapping_id"]
+    await _corrupt_row_headers(app, mid)
+    resp = await client.put(f"/api/v1/mappings/{mid}", json={"status": "disabled"},
+                            headers={"Authorization": f"Bearer {make_token(888)}"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "disabled"
+    assert data["headers"] == {}                       # 占位符降级（键名不可得，无明文产出）
+    async with app.state.sessionmaker() as session:
+        from sqlalchemy import select
+        from agent_proxy.models import ProxyMapping
+        row = (await session.execute(
+            select(ProxyMapping).where(ProxyMapping.mapping_id == mid))).scalar_one()
+        assert row.status == "disabled"
+        assert row.upstream_headers == "gAAAAbroken-not-fernet"   # 损坏行未被触碰
+    resp = await client.get(f"/api/v1/mappings/{mid}",
+                            headers={"Authorization": f"Bearer {make_token(888)}"})
+    assert resp.status_code == 404                     # 读取路径 fail-closed 不变
+
+
+async def test_put_corrupt_headers_touched_409_not_500(client, app):
+    """评审 Important 1a：patch 触及 headers → 显式 409 CREDENTIAL_CORRUPT（覆盖即
+    无声销毁损坏现场；修复路径=恢复 MASTER_KEY 或 DELETE 重注册），非 500 且行原状。"""
+    mid = (await _create(client)).json()["mapping_id"]
+    await _corrupt_row_headers(app, mid)
+    resp = await client.put(f"/api/v1/mappings/{mid}",
+                            json={"headers": {"Authorization": "Bearer sk-new"},
+                                  "status": "disabled"},
+                            headers={"Authorization": f"Bearer {make_token(888)}"})
+    assert resp.status_code == 409
+    assert resp.json()["code"] == "CREDENTIAL_CORRUPT"
+    assert "DELETE" in resp.json()["message"]
+    async with app.state.sessionmaker() as session:
+        from sqlalchemy import select
+        from agent_proxy.models import ProxyMapping
+        row = (await session.execute(
+            select(ProxyMapping).where(ProxyMapping.mapping_id == mid))).scalar_one()
+        assert row.upstream_headers == "gAAAAbroken-not-fernet"   # 更新未执行（原子失败）
+        assert row.status == "active"
+
+
 async def test_put_non_owner_404(client):
     created = (await _create(client)).json()
     resp = await client.put(f"/api/v1/mappings/{created['mapping_id']}",

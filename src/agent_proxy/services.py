@@ -32,11 +32,20 @@ def encrypt_headers(headers: dict[str, str], master_key: str) -> str:
 
 
 def plain_headers(stored_ct: str | None, master_key: str) -> dict[str, str]:
-    """密文 → 明文 dict；损坏密文（不可解 / 非 JSON object）抛 AppError——由
-    load_mapping 捕获转「映射不可用」，不返回部分明文（fail-closed）。"""
-    if not stored_ct:
+    """密文 → 明文 dict；损坏密文（不可解 / 非 JSON object / 非 str 形态——如迁移前
+    旧明文缓存残留）抛 AppError——由调用方按 fail-closed 语义处理（读取路径转
+    「映射不可用」，不返回部分明文）。"""
+    if stored_ct is None or stored_ct == "":
         return {}
-    raw = decrypt_text(stored_ct, master_key)
+    if not isinstance(stored_ct, str):
+        # 旧明文缓存残留（迁移窗口）/畸形形态：同 fail-closed，绝不当作明文使用
+        raise AppError(500, "INTERNAL_ERROR", "映射 headers 存储形态非法（非密文串）")
+    try:
+        raw = decrypt_text(stored_ct, master_key)
+    except AppError as exc:
+        # decrypt_text 文案是 OAuth 凭证语境（Minor 评审）：headers 路径重抛带上下文
+        raise AppError(500, "INTERNAL_ERROR",
+                       "映射 headers 解密失败（MASTER_KEY 变更？请恢复密钥或联系管理员）") from exc
     try:
         data = json.loads(raw)
     except ValueError as exc:
@@ -47,12 +56,32 @@ def plain_headers(stored_ct: str | None, master_key: str) -> dict[str, str]:
 
 
 def row_to_dict(row: ProxyMapping, master_key: str) -> dict:
-    """行 → dict（明文 headers 形态，管理输出/详情语义；缓存形态见 _row_cache_dict）。"""
+    """行 → dict（明文 headers 形态，管理输出/详情语义；缓存形态见 _row_cache_dict）。
+    密文损坏时抛 AppError（详情/resolve 经 load_mapping 已 fail-closed 404；PUT 触及
+    headers 的守卫转 409 CREDENTIAL_CORRUPT，见 update_mapping）。"""
+    return _row_dict(row, master_key, corrupt_ok=False)
+
+
+def row_to_dict_degraded_headers(row: ProxyMapping, master_key: str) -> dict:
+    """PUT 未触及 headers 的回显专用：旧密文损坏**不阻塞更新生效**（停用/改名等
+    照常），占位符键名不可得 → 降级空表 + WARN（不产生明文，真实值读取路径仍 404）。"""
+    return _row_dict(row, master_key, corrupt_ok=True)
+
+
+def _row_dict(row: ProxyMapping, master_key: str, *, corrupt_ok: bool) -> dict:
+    headers: dict[str, str] = {}
+    if row.upstream_headers:
+        try:
+            headers = plain_headers(row.upstream_headers, master_key)
+        except AppError:
+            if not corrupt_ok:
+                raise
+            headers = {}
     return {
         "id": row.id, "mapping_id": row.mapping_id, "owner_uid": row.owner_uid,
         "name": row.name, "type": row.type, "visibility": row.visibility,
         "auth_mode": row.auth_mode, "upstream_url": row.upstream_url,
-        "upstream_headers": plain_headers(row.upstream_headers, master_key),
+        "upstream_headers": headers,
         "test_request": row.test_request,
         "status": row.status,
         "created_at": row.created_at.isoformat() if row.created_at else None,
@@ -97,18 +126,26 @@ async def load_mapping(session: AsyncSession, r, mapping_id: str, ttl: int,
                        master_key: str) -> dict | None:
     """cache-aside：Redis → MySQL 回填。Redis 缓存存密文形态（headers 密文字符串，
     与 ap:cred:* 先例一致）；返回给调用方的恒为解密后的明文 dict 或 None。
-    损坏密文（缓存命中或回源）→ WARN + None（视为映射不可用，404 语义）。"""
+    损坏密文（缓存命中或回源）→ WARN + None（视为映射不可用，404 语义），且：
+    - 缓存侧坏键（旧明文残留/损坏密文）即时失效 → 下一请求回源自愈，不粘性 404；
+    - 回源解密失败的行**不落缓存**（坏行不扩散；修复后自动恢复）。"""
     cached = await cache.get_mapping(r, mapping_id)
     if cached is not None:
-        return _decrypt_or_none(cached, master_key)
+        plain = _decrypt_or_none(cached, master_key)
+        if plain is None:
+            await cache.invalidate(r, mapping_id)
+        return plain
     row = (await session.execute(
         select(ProxyMapping).where(ProxyMapping.mapping_id == mapping_id)
     )).scalar_one_or_none()
     if row is None:
         return None
     data = _row_cache_dict(row)
+    plain = _decrypt_or_none(data, master_key)
+    if plain is None:
+        return None
     await cache.set_mapping(r, mapping_id, data, ttl)
-    return _decrypt_or_none(data, master_key)
+    return plain
 
 
 async def get_owned(session: AsyncSession, r, mapping_id: str, uid: int, ttl: int,
@@ -168,7 +205,13 @@ async def update_mapping(session: AsyncSession, r, settings: Settings, mapping_i
                          **patch: Any) -> dict | None:
     """更新；返回 row_to_dict（明文 headers）或 None（不存在/无权限）。
     M6（§14.2）：admin_override 时任意 admin 可改 public 映射；
-    auth_mode 变更后仍须满足 oauth⇒public（违规 ValueError → api 层 400）。"""
+    auth_mode 变更后仍须满足 oauth⇒public（违规 ValueError → api 层 400）。
+
+    损坏密文语义一致性（评审 Important 1）：旧 headers 密文不可解时——
+    - patch 未触及 headers（status/name/... 停用类更新）→ 照常更新生效，回显占位符
+      降级空表 + WARN（不阻塞应急处置，也绝不产出明文）；
+    - patch 触及 headers → 更新前显式 409 CREDENTIAL_CORRUPT（覆盖即无声销毁损坏
+      现场，owner/admin 须知悉旧凭据已不可恢复；修复路径=恢复密钥或 DELETE 重注册）。"""
     row = (await session.execute(
         select(ProxyMapping).where(ProxyMapping.mapping_id == mapping_id)
     )).scalar_one_or_none()
@@ -176,12 +219,21 @@ async def update_mapping(session: AsyncSession, r, settings: Settings, mapping_i
         return None
     if row.owner_uid != owner_uid and not (admin_override and row.visibility == "public"):
         return None
+    headers_patched = patch.get("headers") is not None
     new_visibility = patch.get("visibility") or row.visibility
     new_auth_mode = patch.get("auth_mode") or row.auth_mode
     if new_auth_mode == "oauth" and new_visibility != "public":
         raise ValueError("auth_mode=oauth 仅允许 public 映射")
-    if patch.get("headers") is not None:
+    if headers_patched:
         placeholder.validate_headers(patch["headers"])
+        if row.upstream_headers:
+            try:
+                plain_headers(row.upstream_headers, settings.master_key)
+            except AppError as exc:
+                raise AppError(409, "CREDENTIAL_CORRUPT",
+                               "映射 headers 密文不可解（MASTER_KEY 变更或行损坏）："
+                               "本次更新未执行；如需保留配置请先恢复 MASTER_KEY，"
+                               "否则仅可 DELETE 后重新注册或联系管理员") from exc
         row.upstream_headers = encrypt_headers(patch["headers"], settings.master_key)
     if patch.get("upstream_url"):
         row.upstream_url = await async_validate_upstream_url(
@@ -192,7 +244,10 @@ async def update_mapping(session: AsyncSession, r, settings: Settings, mapping_i
     await session.commit()
     await session.refresh(row)  # 回填 server 端 updated_at，避免 row_to_dict 触发异步下不支持的懒加载
     await cache.invalidate(r, mapping_id)
-    return row_to_dict(row, settings.master_key)
+    if headers_patched:
+        # 新密文本请求刚写入（同 key 可解），回显必成功
+        return row_to_dict(row, settings.master_key)
+    return row_to_dict_degraded_headers(row, settings.master_key)
 
 
 async def delete_mapping(session: AsyncSession, r, mapping_id: str, owner_uid: int,

@@ -18,6 +18,10 @@ def _require_method_path(v: dict | None) -> dict | None:
     - 含 expect_status 时必须是 100-599 的整数（bool 除外）——注册时即拒绝畸形值，
       不留 /test 500 隐患（评审修复）。严格模式缺失 expect_status 的语义：
       /test 一律判失败（见 probe_http_mapping docstring），不当作「任意状态码皆可」。
+    - 已知限制（评审 Minor，部署批次安全评审钉住）：method/path/expect_status 之外
+      的多余键**原样入库并在详情回显**，probe 不消费——若未来 probe 演进为消费额外
+      键（如 body/header），须先补白名单；部署评审需确认多余键无注入面/无敏感值明文
+      落 trace 的暴露路径。
     """
     if v is not None:
         if not {"method", "path"} <= set(v.keys()):
