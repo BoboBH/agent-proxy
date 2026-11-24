@@ -2090,3 +2090,7 @@ git commit -m "docs(M7): README 管理页面快速开始/接口速览/指标清�
 - **端口簿**：9901 echo、9902 SSE mock、9903 Streamable mock（+`/mcp-multiline-data`）、9904 mock OAuth AS、9909 死端口、9910 被测代理——与 conftest/脚本/README 一致，无新增端口。
 - **范围纪律**：Docker/部署交付、company_sso 对接、CSRF、前端增强全部入债务节；M5 四项仅 a/b 落地（c/d 核对勾选），不夹带其他重构。
 - **预期计数**：417 → 约 458（Task1 +13 / Task2 +10 / Task3 +9 / Task4 +4 / Task5 +2 / Task6 +3）。
+
+## 收尾批次（用户指令 2026-11-24，M7 任务全部完成后执行）
+
+**user_id 整数化迁移**：内部系统 user_id 为整数——`proxy_mapping.owner_uid` 与 `proxy_oauth_credential.uid` 由 VARCHAR(64) 迁移为 BIGINT（设计 §5.1/§5.3 已按 BIGINT 定型，fc5046a），`Identity.user_id: str → int`，StubVerifier 数字 token 返回 int，全链路（services/deps/session/审计/schemas/make_token 测试工具/既有库 ALTER）统一适配。执行前需与在途编辑无冲突（M7 各任务完成后进行）。
