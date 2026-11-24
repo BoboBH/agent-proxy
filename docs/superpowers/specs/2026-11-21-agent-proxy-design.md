@@ -215,7 +215,7 @@ CREATE TABLE proxy_mapping (
 说明：
 
 - `mapping_id` 由 `secrets` 模块生成（base62，12 位），冲突时重试；
-- `upstream_headers` 存真实 header 键值对；当 `ENCRYPT_AT_REST=on` 时整体 AES-GCM（Fernet）加密后存入（密钥经环境变量 `MASTER_KEY` 注入）；
+- `upstream_headers` 存真实 header 键值对；**敏感字段统一强制加密（收尾批次执行，用户确认 2026-11-24）**：整体 Fernet 加密后以 TEXT 存密文（密钥 `MASTER_KEY`），Redis 缓存同存密文；`ENCRYPT_AT_REST` 可选开关废止；
 - `auth_mode='oauth'` 仅允许 public 映射；转发时按调用者注入其 OAuth 凭证（见 14.5）；
 - `test_request` 供 test 接口对 http 映射做严格验证（见 6.6）；
 - 内置列表按 `visibility` 过滤（`idx_visibility`）。
@@ -582,7 +582,7 @@ sequenceDiagram
 | 3 | SSRF 防护 | 注册时校验 scheme（仅 http/https）；解析域名并拒绝私网 / 环回 / 链路本地地址段（`10/8`、`172.16/12`、`192.168/16`、`127/8`、`169.254/16`、`::1` 等）；可用 `SSRF_ALLOW_PRIVATE=true` 放开（内联调环境） |
 | 4 | 参数加固 | header 键名合法性校验、数量与长度上限、请求体大小上限（流式按字节计数，超限断开返回 413）；代理子路径拒绝 `.` / `..` 段（含 URL 编码变体），防止逃逸注册前缀（见 8.1 第 8 条） |
 | 5 | 审计日志 | 记录 user_id、user_name、mapping_id、request_id、method、path、status、耗时、上下行字节数、client_ip；**不含任何 header 值** |
-| 6 | 落库加密 | `ENCRYPT_AT_REST=on` 时 upstream_headers 以 AES-GCM 加密存储（`MASTER_KEY` 环境变量；开启时列以 TEXT 存密文） |
+| 6 | 落库加密 | upstream_headers 与 OAuth 凭证/client_secret **一律强制加密**（Fernet/MASTER_KEY；upstream_headers 密文化在收尾批次执行，见 M7 计划收尾批次） |
 | 7 | TLS | 由网关 / 负载均衡终结，代理服务部署在内网；上游侧 TLS 证书强校验（8.1 第 10 条） |
 | 8 | CORS | 管理接口供浏览器配置页直连时需跨域：`CORS_ALLOWED_ORIGINS` 配置平台页面域名白名单（仅管理域开启）；`/p/*` 默认不开 CORS（Agent 运行时为服务端直连，如需浏览器直连再单独开启） |
 | 9 | 重定向 | 同源重定向内部跟随、`Location` 永不回传；跨源原样透传（见 8.1 第 7 条） |
@@ -749,7 +749,7 @@ agent-proxy/
 | `SSRF_ALLOW_PRIVATE` | 允许内网上游（联调用） | `false` |
 | `OAUTH_STATE_TTL` | 授权 state 有效期（秒） | `600` |
 | `ADMIN_ROLE` | 管理员角色值（`Identity.role` 与之相等即为管理员） | `admin` |
-| `ENCRYPT_AT_REST` / `MASTER_KEY` | 落库加密 | `false` / 必填(当开启) |
+| `MASTER_KEY` | 敏感字段加密密钥（强制，upstream_headers 密文化收尾批次执行；OAuth 凭证已强制） | 必填 |
 | `LOG_DIR` / `LOG_LEVEL` | 日志目录 / 级别 | `logs` / `INFO` |
 | `TRACE_MODE` | 追踪日志粒度：`off` / `metadata`（默认）/ `body` | `metadata` |
 | `TRACE_BODY_MAX_SIZE` | body 记录截断上限 | `64KB` |
