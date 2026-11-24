@@ -74,8 +74,10 @@ def _truncate(body: bytes | str, content_type: str = "",
     # +json 后缀（如 application/vnd.api+json）与 yaml 属文本，不能当二进制丢弃
     is_text = ct.startswith(_TEXT_TYPES) or ct.endswith("+json") or ct == "application/yaml"
     # M4：压缩传输编码（gzip/deflate…）下 body 为压缩字节（aiter_raw 透传），
-    # 按文本解码必乱码——一律走二进制路径只记字节数
-    if content_encoding or (content_type and not is_text):
+    # 按文本解码必乱码——一律走二进制路径只记字节数；identity = 无压缩（RFC 9110），
+    # body 仍为明文，按文本处理
+    ce = (content_encoding or "").lower()
+    if (ce and ce != "identity") or (content_type and not is_text):
         size = len(body) if isinstance(body, bytes) else len(body.encode("utf-8"))
         return {"body_bytes": size, "body_skipped": "binary"}
     text = body.decode("utf-8", "replace") if isinstance(body, bytes) else body
@@ -94,7 +96,8 @@ def _write(record: dict) -> None:
 
 def log_request(request_id: str, uid: str, mapping_id: str, method: str, url: str,
                 headers: dict[str, str], body: bytes = b"",
-                body_bytes: int | None = None, content_type: str = "") -> None:
+                body_bytes: int | None = None, content_type: str = "",
+                content_encoding: str = "") -> None:
     if _mode == "off":
         return
     record: dict = {
@@ -105,7 +108,7 @@ def log_request(request_id: str, uid: str, mapping_id: str, method: str, url: st
         "body_bytes": len(body) if body_bytes is None else body_bytes,
     }
     if _mode == "body":
-        record.update(_truncate(body, content_type))
+        record.update(_truncate(body, content_type, content_encoding))
     _write(record)
 
 

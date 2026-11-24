@@ -125,7 +125,8 @@ async def stream_http_forward(app_state, mapping_data: dict, request: Request,
     def _log_request() -> None:
         trace.log_request(request_id, uid, mapping_id, request.method, target, outbound,
                           body=bytes(req_capture), body_bytes=body_size,
-                          content_type=request.headers.get("content-type", ""))
+                          content_type=request.headers.get("content-type", ""),
+                          content_encoding=request.headers.get("content-encoding", ""))
 
     start = time.monotonic()
     # 真流式（评审 Critical 修复）：必须 build_request + send(stream=True)。

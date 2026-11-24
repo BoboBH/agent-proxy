@@ -8,6 +8,7 @@ tools/call JSON-RPC 全链路；心跳注释行透传；SSE 读超时不设（§
 """
 import asyncio
 import glob
+import gzip
 import json
 import re
 
@@ -440,3 +441,65 @@ async def test_sse_trace_body_mode_endpoint_and_message():
     assert any('"id": 4' in r["data"] for r in messages)     # tools/call 的 JSON-RPC 响应
     assert not any("ping" in (r.get("data") or "") for r in sse), "心跳注释行不记录"
     assert "sk-mcp-12345678" not in jsonlib.dumps(mine)      # 敏感头仍指纹化
+
+
+async def test_sse_same_origin_abort_writes_no_response_trace_row(tmp_path):
+    """M3 遗留 Minor（M4 落地）：同源 30x 中止（502）不写 trace response 行——
+    该 30x 从未下发给客户端，与 http 管线 TOO_MANY_REDIRECTS 中止语义统一
+    （仅 request 行留痕，502 由错误体与审计表达）。"""
+    import json as jsonlib
+    import logging
+
+    from agent_proxy.logging_setup import flush_trace
+
+    created = await _register_mcp(upstream_url=f"{UPSTREAM_BASE}/sse-redirect-same")
+    mid = created["mapping_id"]
+    handler_target = tmp_path / "trace.log"
+    logger = logging.getLogger("agent_proxy.trace")
+    saved = logger.handlers
+    logger.handlers = [logging.FileHandler(handler_target, encoding="utf-8")]
+    try:
+        async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+            r = await c.get(f"{PROXY}/p/{mid}/sse-redirect-same", headers=AUTH)
+    finally:
+        logger.handlers = saved
+    assert r.status_code == 502
+    flush_trace()
+    recs = [jsonlib.loads(x) for x in
+            handler_target.read_text(encoding="utf-8").splitlines() if x.strip()]
+    ids = {r["request_id"] for r in recs if r.get("mapping_id") == mid}
+    rows = [r for r in recs if r["request_id"] in ids]
+    assert [r for r in rows if r["phase"] == "request"], "中止路径仍应留 request 行"
+    assert not [r for r in rows if r["phase"] == "response"], "中止（502）不写 response 行"
+
+
+async def test_gzip_sse_upstream_plain_passthrough_no_rewrite_no_sse_active():
+    """M4 评审携带项（gzip SSE 防御）：上游对 event-stream 也压缩（非空
+    content-encoding）——aiter_raw 透传压缩字节，rewriter 无法在压缩体上解析改写
+    且会污染 trace，必须降级 plain 分支原样透传：字节/头保真、无改写、流保持打开
+    期间不计 sse_active（调用方以 accept-encoding: gzip 显式协商，白名单透传至
+    上游；长驻流让 gauge 采样免于单发短流的完成竞态）。"""
+    import zlib as zlib_mod
+
+    created = await _register_mcp(upstream_url=f"{UPSTREAM_BASE}/sse-gzip-stream")
+    mid = created["mapping_id"]
+    async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as mc:
+        async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+            async with c.stream("GET", f"{PROXY}/p/{mid}/sse-gzip-stream",
+                                headers={**AUTH, "Accept-Encoding": "gzip"}) as resp:
+                assert resp.status_code == 200
+                assert resp.headers["content-type"].startswith("text/event-stream")
+                assert resp.headers["content-encoding"] == "gzip"    # 头保真（不剥不改）
+                # 流保持打开期间采样 gauge：SSE 改写分支计 sse_active（=1.0），
+                # plain 透传分支不计数（=0.0）——分支选择的确定性观测点
+                m = await mc.get(f"{PROXY}/metrics")
+                assert _sse_active_gauge(m.text) == 0.0, \
+                    "压缩 SSE 应降级 plain 分支透传（不计 sse_active）"
+                dec = zlib_mod.decompressobj(16 + zlib_mod.MAX_WBITS)
+                plain = b""
+                async for chunk in resp.aiter_raw():
+                    plain += dec.decompress(chunk)
+                    if b"data:" in plain and b"\"ok\"" in plain:
+                        break                # 首 endpoint+message 事件解压完成即断开
+        assert "data: /messages?session_id=gzipstream" in plain.decode("utf-8")
+        assert f"/p/{mid}/" not in plain.decode("utf-8")             # 压缩体上无改写

@@ -49,6 +49,21 @@ def test_hop_by_hop_stripped_from_both_sides():
     assert is_hop_by_hop("Proxy-Foo")       # Proxy-* 前缀兜底
 
 
+def test_accept_encoding_whitelisted_caller_negotiation_passthrough():
+    """M4 评审携带项（白名单决策记录）：accept-encoding 加入协议白名单——调用方
+    与上游的响应编码协商透明（identity / gzip 均原样传达）。与转发管线 aiter_raw
+    压缩字节透传组合一致：调用方协商 identity 则上游不压缩、返回明文；调用方协商
+    gzip 且上游压缩则压缩字节透传（头体一致），代理两侧都不改协商结果。"""
+    out = build_outbound_headers(
+        {}, {"Accept-Encoding": "identity", "Accept": "application/json"},
+        content_type=None, content_length=None, content_encoding=None)
+    assert out["accept-encoding"] == "identity"
+    out_gzip = build_outbound_headers(
+        {}, {"accept-encoding": "gzip"}, content_type=None, content_length=None,
+        content_encoding=None)
+    assert out_gzip["accept-encoding"] == "gzip"
+
+
 # ---------- 评审修复：出站 key 小写归一（防重复头上线） ----------
 
 

@@ -29,6 +29,11 @@ from ..headers import build_outbound_headers, filter_response_headers
 
 log = logging.getLogger("agent_proxy")
 
+# 单行缓冲上限（M3 遗留 Minor）：无换行超长行降级透传，防无界累积。SSE 正常
+# 行（endpoint 值 / JSON-RPC data 行）远小于该值；超限即冲出已缓冲字节并持续
+# 原样透传至行尾，行尾后恢复正常解析（字节级保真，仅放弃改写）
+MAX_LINE_BYTES = 1024 * 1024
+
 
 def registered_endpoint_path(upstream_url: str) -> str:
     """注册 upstream_url 的路径（§8.3 路径分发第 1 行的匹配目标）；无路径按根 `/`。"""
@@ -64,6 +69,7 @@ class SseEndpointRewriter:
         self._mapping_id = mapping_id
         self._buffer = b""
         self._current_event = ""
+        self._overflow = False  # 无换行超长行的降级透传模式
         self._trace_records: list[tuple[str, bytes]] = []
 
     def feed(self, chunk: bytes) -> list[bytes]:
@@ -72,16 +78,33 @@ class SseEndpointRewriter:
         while True:
             idx = self._buffer.find(b"\n")
             if idx < 0:
+                if len(self._buffer) > MAX_LINE_BYTES:
+                    # 无换行超长行：冲出已缓冲字节原样透传，直至行尾持续透传
+                    # （内存有界；事件名复位——该行不可能再参与改写）
+                    lines.append(self._buffer)
+                    self._buffer = b""
+                    self._overflow = True
+                    self._current_event = ""
                 break
             line = self._buffer[: idx + 1]           # 含行尾 \n
             self._buffer = self._buffer[idx + 1:]
+            if self._overflow:
+                lines.append(line)                   # 超长行残余：原样透传至行尾
+                self._overflow = False               # 行尾之后恢复正常解析
+                continue
             lines.append(self._handle_line(line))
         return lines
 
     def flush(self) -> list[bytes]:
-        """流结束时冲出无行尾的残留末行（SSE 允许最后一行无换行）。"""
+        """流结束时冲出无行尾的残留末行（SSE 允许最后一行无换行）；透传模式下
+        残余属超长行末段，原样透传。"""
         rest, self._buffer = self._buffer, b""
-        return [self._handle_line(rest)] if rest else []
+        if not rest:
+            return []
+        if self._overflow:
+            self._overflow = False
+            return [rest]
+        return [self._handle_line(rest)]
 
     def take_trace_records(self) -> list[tuple[str, bytes]]:
         records, self._trace_records = self._trace_records, []
@@ -167,7 +190,9 @@ async def stream_sse_forward(app_state, mapping_data: dict, request: Request) ->
     # 上限 → 无界挂死。显式 Connection: close 使本请求独占新建连接、结束后不回流
     # 池（SSE 连接生命周期=请求生命周期，池复用本无收益；http/mcp 非 SSE 路径仍
     # 走共享池复用，§8.1 第 11 条不变）。
-    outbound["Connection"] = "close"
+    # 键与 build_outbound_headers 小写归一一致（M3 Minor，无行为差异——httpx 头
+    # 大小写不敏感，仅一致化；存储侧 Connection 本就被 hop-by-hop 剥离，不会并存）
+    outbound["connection"] = "close"
 
     def _log_request() -> None:
         trace.log_request(request_id, uid, mapping_id, request.method, target, outbound,
@@ -205,8 +230,13 @@ async def stream_sse_forward(app_state, mapping_data: dict, request: Request) ->
     if not any(k.lower() == "x-accel-buffering" for k in resp_headers):
         resp_headers["X-Accel-Buffering"] = "no"          # 网关关闭缓冲（§8.1 第 9 条）
 
-    is_sse = status == 200 and "text/event-stream" in resp_ct.lower()
-    trace.log_response(request_id, status, duration_ms)
+    resp_ce = next((v for k, v in upstream_resp.headers.items()
+                    if k.lower() == "content-encoding"), "")
+    # M4 评审携带项（gzip SSE 防御）：非空 content-encoding 的「SSE 形态」响应
+    # 降级 plain 分支——aiter_raw 透传压缩字节，rewriter 无法在压缩体上按行解析
+    # （不可能改写）且会把压缩噪声记进 trace；原样透传头体一致，压缩流照常增量下发
+    is_sse = (status == 200 and "text/event-stream" in resp_ct.lower()
+              and not resp_ce)
 
     if not is_sse:
         # 同源重定向防护（§8.1 第 7 条「同源 Location 永不回传」，评审 Issue 1）：
@@ -223,9 +253,16 @@ async def stream_sse_forward(app_state, mapping_data: dict, request: Request) ->
                 still_same_origin = False  # 畸形 Location 无 origin 可判，按透传交下游自行处理
             if still_same_origin:
                 await upstream_resp.aclose()
+                # trace 中止语义统一（M3 Minor → M4 落地）：中止路径不写 response 行
+                # ——该 30x 从未下发给客户端，502 由错误体/审计表达（log_request 已
+                # 留痕）；与 http 管线 TOO_MANY_REDIRECTS 中止行为完全一致
                 raise AppError(502, "TOO_MANY_REDIRECTS",
                                "上游返回同源重定向，已中止转发（Location 不回传）")
-        # 非 SSE 响应（上游 4xx/5xx 错误体等）：不改写、不计 sse_active，原样流式回传
+        # 非 SSE 响应（上游 4xx/5xx 错误体、跨源 30x、gzip 压缩的 event-stream 等）：
+        # 不改写、不计 sse_active，原样流式回传；response 行在确认真实回传时写
+        # （time-to-headers）
+        trace.log_response(request_id, status, duration_ms)
+
         async def _plain_stream():
             try:
                 # M4：压缩字节透传（见 http_forward._response_stream 注释），无参保持到达粒度
@@ -239,6 +276,10 @@ async def stream_sse_forward(app_state, mapping_data: dict, request: Request) ->
             finally:
                 await upstream_resp.aclose()
         return StreamingResponse(_plain_stream(), status_code=status, headers=resp_headers)
+
+    # SSE 握手成立：response 行 = 连接建立记录（time-to-headers；原在分支前统一写，
+    # M4 中止语义统一后移至此处——中止路径不再产生误导性的 30x response 行）
+    trace.log_response(request_id, status, duration_ms)
 
     rewriter = SseEndpointRewriter(mapping_id)
     metrics.sse_active.inc()
@@ -289,17 +330,26 @@ async def probe_sse_mapping(app_state, mapping_data: dict) -> dict:
     （session_id 不落日志明文，与 trace query 脱敏同规）。
     OAuth 绑定用户（M6）以本人凭证走同一规则：注入 Authorization 后复用本函数。
 
-    超时语义注记（评审 Minor 3，M4 接入 Streamable initialize 探测前需定稿）：
-    TEST_PROBE_TIMEOUT 为**分阶段**期限——send（响应头到达）与读流（首个 endpoint
-    事件）各享 5s，两阶段不共享总 deadline，最坏总挂钟 ~10s。定稿候选策略：共享
-    start 起算剩余时间，或明文保留分阶段语义并修正文档/前端提示。
+    超时语义（M4 定稿，替换原「分阶段 5s×2」注记）：TEST_PROBE_TIMEOUT 为**总
+    挂钟期限**——send（响应头到达）与读流（首个 endpoint 事件）共享同一 deadline
+    （读流仅享剩余量），最坏总挂钟 5s；分项超时先到仍按 httpx 异常映射。
+    probe_http_mapping（http probe）同为 wait_for 总期限（单阶段，headers 即决）。
+
+    探测出站钉 accept-encoding: identity（M4 评审携带项）：转发管线 aiter_raw
+    不解压，上游若按协商压缩 SSE，probe 读到压缩体无法解析 endpoint 事件（误报
+    ok=false）；probe 是唯一要解析响应体的路径，钉 identity 读明文即「测的即真实
+    路径」——与转发侧压缩字节透传（不解析载荷）不冲突。
     """
     stored = mapping_data["upstream_headers"] or {}
     headers = build_outbound_headers(stored, {"Accept": "text/event-stream"},
                                      None, None, None)
+    # 探测需解析响应体：钉 identity 读明文（httpx 默认 gzip 协商 + aiter_raw 会
+    # 拿到压缩字节无法解析；转发管线不解析载荷不受影响）
+    headers["accept-encoding"] = "identity"
     # 与 Task 5 转发管线同规：读到首事件即 aclose 的 SSE 连接绝不回流 keepalive 池
-    # （read=None 请求消费死 IDLE 供体 → sweep/send 竞态无界挂死，见 stream_sse_forward）
-    headers["Connection"] = "close"
+    # （read=None 请求消费死 IDLE 供体 → sweep/send 竞态无界挂死，见 stream_sse_forward）。
+    # 键与 build_outbound_headers 小写归一一致（M3 Minor，无行为差异）
+    headers["connection"] = "close"
     target = mapping_data["upstream_url"]
     start = time.monotonic()
 
@@ -348,12 +398,15 @@ async def probe_sse_mapping(app_state, mapping_data: dict) -> dict:
                     current_event = ""
         return None
 
+    # 总挂钟期限（M4 定稿）：读流阶段只享总 deadline 的剩余量——send 与读流共享
+    # TEST_PROBE_TIMEOUT，最坏总挂钟 5s（原分阶段语义最坏 ~10s）
+    remaining = max(TEST_PROBE_TIMEOUT - (time.monotonic() - start), 0.05)
     try:
-        endpoint_value = await asyncio.wait_for(_first_endpoint(), TEST_PROBE_TIMEOUT)
+        endpoint_value = await asyncio.wait_for(_first_endpoint(), remaining)
     except asyncio.TimeoutError:
         await resp.aclose()
         return _result(False, status_code,
-                       f"未在 {TEST_PROBE_TIMEOUT:.0f}s 内收到 endpoint 事件（非 MCP SSE 端点？）")
+                       f"未在 {TEST_PROBE_TIMEOUT:.0f}s 总期限内收到 endpoint 事件（非 MCP SSE 端点？）")
     except httpx.HTTPError as exc:
         # 评审 Important 1a：读阶段流断（上游头后 RST / gzip 坏流等）必须兜底——
         # 原实现穿透到全局 handler 变 500，且 resp 永不 aclose（连接以 ACTIVE

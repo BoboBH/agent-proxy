@@ -1,8 +1,8 @@
 """mcp_sse 纯逻辑单测：路径分发辅助（§8.3 路径分发表）+ SseEndpointRewriter
 增量行解析器（§8.3 实现要点——保留行尾、跟踪 event 名、endpoint data 行改写、
 其余行字节级透传、跨 chunk 半行缓冲、空行复位事件名）。"""
-from agent_proxy.forward.mcp_sse import (SseEndpointRewriter, build_origin_target,
-                                         registered_endpoint_path)
+from agent_proxy.forward.mcp_sse import (MAX_LINE_BYTES, SseEndpointRewriter,
+                                         build_origin_target, registered_endpoint_path)
 
 
 def _feed_all(rewriter, chunks):
@@ -143,3 +143,45 @@ def test_rewriter_trace_records_endpoint_pair_and_message_not_heartbeat():
                     ("endpoint_rewritten", b"/p/m1m2m3m4m5m6/messages?session_id=abcdef123456"),
                     ("message", b"{\"ok\":1}")]
     assert rw.take_trace_records() == []                # 取过即清空
+
+
+# ---------- M3 遗留 Minor（M4 落地）：单行缓冲上限——无换行超长行降级透传 ----------
+
+
+def test_rewriter_overlong_no_newline_line_degrades_to_passthrough():
+    """无换行超长行（> MAX_LINE_BYTES 上限）：降级原样透传已缓冲字节并进入透传
+    模式——内存有界、字节级保真，且不产 trace 记录（降级行不改写）。
+    （计划原稿把含 `\\n` 的 `event: endpoint\\ndata: ` 整段当「半行」——首行实际
+    已完整可解析，此处按行解析语义拆开喂入，断言意图不变。）"""
+    rw = SseEndpointRewriter("m1m2m3m4m5m6")
+    assert rw.feed(b"event: endpoint\n") == [b"event: endpoint\n"]  # 完整行正常解析
+    assert rw.feed(b"data: ") == []                             # 半行缓冲
+    blob = b"x" * (MAX_LINE_BYTES + 16)
+    out = rw.feed(blob)                                          # 无换行且超上限
+    assert out == [b"data: " + blob]                             # 已缓冲字节原样冲出
+    assert rw.take_trace_records() == []
+
+
+def test_rewriter_overflow_mode_resumes_normal_parsing_after_line_end():
+    """透传模式持续到行尾：超长行的残余字节原样透传，行尾之后恢复正常解析
+    （后续 endpoint 事件照常改写）。"""
+    rw = SseEndpointRewriter("m1m2m3m4m5m6")
+    blob = b"x" * (MAX_LINE_BYTES + 16)
+    produced = []
+    produced += rw.feed(b"event: endpoint\n")    # 完整行正常解析（见上注）
+    produced += rw.feed(b"data: ")               # 半行缓冲
+    produced += rw.feed(blob)                    # 超限：冲出 data:+blob，进入透传模式
+    produced += rw.feed(b"\n")                   # 超长行行尾：残余原样透传，模式复位
+    produced += rw.feed(b"event: endpoint\ndata: /messages?sid=1\n\n")
+    produced += rw.flush()
+    assert produced == [b"event: endpoint\n", b"data: " + blob, b"\n",
+                        b"event: endpoint\n",
+                        b"data: /p/m1m2m3m4m5m6/messages?sid=1\n", b"\n"]
+
+
+def test_rewriter_flush_after_overflow_passthrough_remaining():
+    """透传模式下流结束：EOF 残余（超长行末段）原样透传。"""
+    rw = SseEndpointRewriter("m1m2m3m4m5m6")
+    rw.feed(b"y" * (MAX_LINE_BYTES + 4))         # 超限冲出 + 进入透传模式
+    assert rw.feed(b"tail-no-newline") == []
+    assert rw.flush() == [b"tail-no-newline"]

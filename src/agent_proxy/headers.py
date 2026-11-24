@@ -1,8 +1,9 @@
 """出站 header 重建（安全核心）与响应 header 过滤（设计 §8.1 第 1/3 条）。
 
-出站 = 存储 upstream_headers 全量 + 协议白名单（Accept / Content-* / Content-Encoding /
-MCP 三头，从 caller 提取）；调用方其余 header（JWT / 占位 header / 浏览器指纹）一律不透传；
-hop-by-hop 双向剥离。响应 header 剥离 hop-by-hop 后原样回传，绝不含存储的真实 header。
+出站 = 存储 upstream_headers 全量 + 协议白名单（Accept / Accept-Encoding /
+Content-* / Content-Encoding / MCP 三头，从 caller 提取）；调用方其余 header（JWT /
+占位 header / 浏览器指纹）一律不透传；hop-by-hop 双向剥离。响应 header 剥离
+hop-by-hop 后原样回传，绝不含存储的真实 header。
 出站 key 统一小写归一（HTTP 头名大小写不敏感；防同名不同大小写发重复头行）。
 """
 from __future__ import annotations
@@ -16,9 +17,14 @@ HOP_BY_HOP_HEADERS = {
     "te", "trailer", "transfer-encoding", "upgrade",
 }
 
-# 协议必要白名单：http body/Accept 透传必需 + MCP 会话/流/版本头（M3/M4 使用，白名单现在建全）
+# 协议必要白名单：http body/Accept 透传必需 + MCP 会话/流/版本头（M3/M4 使用，白名单现在建全）。
+# accept-encoding（M4 评审携带项，白名单决策记录）：调用方与上游的响应编码协商
+# 透明（identity / gzip 原样传达）。与转发管线 aiter_raw 压缩字节透传组合一致：
+# 调用方协商 identity 则上游不压缩、代理透传明文；调用方协商 gzip 且上游压缩则
+# 压缩字节透传（响应头保真 → 头体一致）——代理两侧都不改协商结果。SSE 管线
+# 上游真压缩了 event-stream 时由 gzip SSE 防御降级 plain 透传（见 mcp_sse）。
 PROTOCOL_ALLOWED_HEADERS = {
-    "accept", "content-type", "content-length", "content-encoding",
+    "accept", "accept-encoding", "content-type", "content-length", "content-encoding",
     "mcp-session-id", "last-event-id", "mcp-protocol-version",
 }
 

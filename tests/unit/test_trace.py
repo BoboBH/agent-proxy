@@ -156,3 +156,28 @@ def test_compressed_body_recorded_as_binary(tmp_path):
     assert recs[0] == {"ts": recs[0]["ts"], "request_id": "r1", "phase": "response",
                        "status": 200, "duration_ms": 12,
                        "body_bytes": 10, "body_skipped": "binary"}  # 4B gzip magic + 6B binary = 10（计划原稿误写 8）
+
+
+def test_request_side_compressed_body_recorded_as_binary(tmp_path):
+    """M4 评审携带项：request 侧同样有压缩传输编码（调用方 POST gzip body）——
+    log_request 传 content_encoding 走二进制路径，trace 不记乱码。"""
+    path = _capture(tmp_path, "body")
+    trace.log_request("r1", "u1", "m1", "POST", "http://x", {},
+                      body=b"\x1f\x8b\x08\x00req", content_type="application/json",
+                      content_encoding="gzip")
+    recs = _read(path)
+    assert recs[0]["body_bytes"] == 7 and "body" not in recs[0]
+
+
+def test_identity_content_encoding_treated_as_text(tmp_path):
+    """M4 评审携带项：identity = 无压缩（RFC 9110），请求/响应体为明文——
+    不得按二进制丢弃，仍按文本记录。"""
+    path = _capture(tmp_path, "body")
+    trace.log_request("r1", "u1", "m1", "POST", "http://x", {},
+                      body=b'{"q":1}', content_type="application/json",
+                      content_encoding="identity")
+    trace.log_response("r1", 200, 5, body=b'{"ok":true}', content_type="application/json",
+                       content_encoding="identity")
+    recs = _read(path)
+    assert recs[0]["body"] == '{"q":1}' and recs[0]["body_truncated"] is False
+    assert recs[1]["body"] == '{"ok":true}' and recs[1]["body_truncated"] is False

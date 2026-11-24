@@ -208,6 +208,38 @@ async def test_mcp_sse_probe_stream_eof_no_endpoint_ok_false(client, mcp_sse_ups
     assert "流结束仍未收到 endpoint 事件" in body["detail"]
 
 
+async def test_mcp_sse_probe_gzip_upstream_identity_negotiation_ok(client, mcp_sse_upstream_server):
+    """M4 评审携带项：gzip SSE 上游（协商式压缩）——probe 必须钉出站
+    accept-encoding: identity 读明文（probe 是唯一要解析响应体的路径，aiter_raw
+    不解压；identity 钉是「测的即真实路径」原则）。修复前默认 gzip 协商使
+    probe 读到压缩体、解析不出 endpoint 事件而误报 ok=false。"""
+    created = await _register(client, type="mcp",
+                              upstream_url="http://127.0.0.1:9902/sse-gzip-stream")
+    resp = await _test(client, created["mapping_id"])
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True and body["status_code"] == 200
+    assert "SSE 握手成功" in body["detail"]
+    assert "session_id=" in body["detail"]
+
+
+async def test_mcp_sse_probe_total_deadline_shared_across_phases(client, mcp_sse_upstream_server):
+    """probe 总挂钟期限定稿（M3 Minor 3 → M4 落地）：send（响应头 3s 到达）与读流
+    （endpoint 再 3s）共享 5s deadline——旧分阶段语义（各 5s）会 ~6s 返回 ok=true，
+    总期限语义必须 ~5s 即 ok=false。"""
+    import time as time_mod
+
+    created = await _register(client, type="mcp",
+                              upstream_url="http://127.0.0.1:9902/sse-slow-hello")
+    t0 = time_mod.monotonic()
+    resp = await _test(client, created["mapping_id"])
+    elapsed = time_mod.monotonic() - t0
+    body = resp.json()
+    assert body["ok"] is False and body["status_code"] == 200
+    assert "总期限" in body["detail"]
+    assert elapsed < 5.8, f"probe 应在总期限 ~5s 内返回，实际 {elapsed:.1f}s"
+
+
 async def test_test_endpoint_audited_as_test_mapping(client):
     created = await _register(client)
     resp = await _test(client, created["mapping_id"])

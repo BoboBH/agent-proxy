@@ -25,6 +25,11 @@
 - GET /sse-redirect-cross：跨源 307（Location 指向 9901 echo 上游，不同端口即不同
   origin，透传对照面）；
 - GET /sse-503：注册端点返回非 SSE 错误体（503 text/html，原样透传/不计 sse_active 用例）；
+- GET /sse-gzip-stream：协商式 gzip SSE 上游——请求 accept-encoding 含 gzip 时
+  返回压缩的**长驻** event-stream（content-encoding: gzip，zlib 同步 flush 逐块
+  压缩；probe identity 钉 / gzip SSE 防御透传用例），否则明文长驻 event-stream；
+- GET /sse-slow-hello：响应头迟到 3s + endpoint 事件再迟 3s（probe 总挂钟期限
+  定稿用例：分阶段语义 ~6s 误报 ok=true，总期限语义 ~5s 即决 ok=false）；
 - GET /_connections：调试端点，返回当前活跃 SSE 连接数（客户端断开→上游取消
   的端到端验证用）。
 
@@ -37,6 +42,7 @@ from __future__ import annotations
 import asyncio
 import gzip
 import json
+import zlib
 
 from fastapi import FastAPI, Request
 from fastapi.responses import (HTMLResponse, JSONResponse, RedirectResponse,
@@ -128,6 +134,39 @@ def build_mcp_sse_app() -> FastAPI:
         return Response(content=body, media_type="text/html",
                         headers={"content-encoding": "gzip"})
 
+    @app.get("/sse-gzip-stream")
+    async def sse_gzip_stream(request: Request):
+        # M4 评审携带项（gzip SSE 防御/probe identity 钉）：协商式压缩上游——
+        # 调用方 accept-encoding 含 gzip 时对 event-stream 也压缩（真实上游形态），
+        # identity / 无协商时返回明文。长驻形态（首块 endpoint+message 事件，随后
+        # 心跳）：防御用例需在流保持打开期间采样 sse_active gauge（压缩体上
+        # rewriter 分支会 +1，plain 透传分支不计数），单发短流采样必竞态。
+        # zlib 同步 flush：每 yield 产出可独立解压的前缀（客户端可增量解压断言）。
+        first = (b"event: endpoint\ndata: /messages?session_id=gzipstream\n\n"
+                 b"event: message\ndata: {\"ok\":1}\n\n")
+        if "gzip" in request.headers.get("accept-encoding", "").lower():
+            compressor = zlib.compressobj(9, zlib.DEFLATED, 16 + zlib.MAX_WBITS)
+
+            def comp(data: bytes) -> bytes:
+                return compressor.compress(data) + compressor.flush(zlib.Z_SYNC_FLUSH)
+
+            async def gen():
+                yield comp(first)
+                while True:
+                    yield comp(b": ping\n\n")
+                    await asyncio.sleep(0.2)
+
+            return StreamingResponse(gen(), media_type="text/event-stream",
+                                     headers={"content-encoding": "gzip"})
+
+        async def gen_plain():
+            yield first
+            while True:
+                yield b": ping\n\n"
+                await asyncio.sleep(0.2)
+
+        return StreamingResponse(gen_plain(), media_type="text/event-stream")
+
     @app.get("/sse-no-endpoint")
     async def sse_no_endpoint():
         async def gen():
@@ -177,6 +216,26 @@ def build_mcp_sse_app() -> FastAPI:
         # probe 读到 EOF 判失败（区别于 5s 超时路径的 /sse-no-endpoint）
         async def gen():
             yield b"event: message\ndata: {\"x\":1}\n\n"
+
+        return StreamingResponse(gen(), media_type="text/event-stream")
+
+    @app.get("/sse-slow-hello")
+    async def sse_slow_hello():
+        # M4 probe 总期限定稿用例：响应头迟到 3s（handler 内 sleep，send 阶段耗时）
+        # + endpoint 事件再迟 3s（读流阶段耗时）= 总 6s > 5s 总期限。旧「分阶段
+        # 5s×2」语义会 ok=true（~6s 返回）；总期限语义必 ok=false（~5s 即决）。
+        # 头后立即发一条注释行证明流已启动（区别于上游整体无响应的 /slow 路径）。
+        # 注意 sleep 必须在 handler 返回 StreamingResponse 之前——Starlette 对
+        # StreamingResponse 先发响应头再迭代生成器，生成器内首 yield 前的 sleep
+        # 只延迟首块、不延迟响应头（计划原稿误置于 gen 内，send 阶段不再耗时）。
+        await asyncio.sleep(3)
+
+        async def gen():
+            yield b": stream started\n\n"
+            await asyncio.sleep(3)
+            yield b"event: endpoint\ndata: /messages?session_id=slow\n\n"
+            await asyncio.sleep(3)
+            yield b"event: message\ndata: {}\n\n"
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 

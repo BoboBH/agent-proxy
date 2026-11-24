@@ -392,7 +392,7 @@ HTTP 200
 | http（严格，可选） | 注册参数 `test_request`（method / path / expect_status） | 实际状态码 == expect_status |
 | OAuth 绑定用户 | 以本人凭证执行对应 mcp 验证 | 同 mcp 规则；凭证失效提示重新授权 |
 
-**返回**：`{ok, status_code, latency_ms, detail}`；测试专用短超时 5s；上游失败反映为 `ok=false` + `detail` 说明，不产生代理自身的 502/504 错误响应。
+**返回**：`{ok, status_code, latency_ms, detail}`；测试专用短超时 5s（**总挂钟期限**：连接建立与读流 / 读响应各阶段共享同一 deadline，后继阶段仅享剩余时间，最坏 5s 内必有结论）；上游失败反映为 `ok=false` + `detail` 说明，不产生代理自身的 502/504 错误响应。
 
 **安全边界**：仅能对**已注册映射**发起（不接受任意 URL，防探测滥用）；无凭证用户对 OAuth 型公共映射发起 → `OAUTH_BINDING_REQUIRED`；审计记 `action=test_mapping`，不含 header 值。
 
@@ -436,7 +436,7 @@ class TokenVerifier(Protocol):
 
 ### 8.1 通用规则
 
-1. **出站 header 重建**（安全核心）：出站请求 header = **存储的 upstream_headers 全量** + 协议必要 header（`Accept`、`Content-Type`、`Content-Length`、`Content-Encoding`（gzip 等请求体透传必需），MCP 的 `Mcp-Session-Id` / `Last-Event-ID` / `MCP-Protocol-Version` 白名单透传）。调用方请求中的其余 header（含其 JWT、占位 header）**一律不透传**；hop-by-hop header（`Connection`、`Keep-Alive`、`Transfer-Encoding`、`TE`、`Trailer`、`Proxy-*`、`Upgrade`）排除。
+1. **出站 header 重建**（安全核心）：出站请求 header = **存储的 upstream_headers 全量** + 协议必要 header（`Accept`、`Accept-Encoding`（M4：调用方响应编码协商透明——协商结果原样传达上游，代理按 aiter_raw 压缩字节透传、不改协商结果）、`Content-Type`、`Content-Length`、`Content-Encoding`（gzip 等请求体透传必需），MCP 的 `Mcp-Session-Id` / `Last-Event-ID` / `MCP-Protocol-Version` 白名单透传）。调用方请求中的其余 header（含其 JWT、占位 header）**一律不透传**；hop-by-hop header（`Connection`、`Keep-Alive`、`Transfer-Encoding`、`TE`、`Trailer`、`Proxy-*`、`Upgrade`）排除。
 2. **流式**：请求 body 与响应 body 均以异步流转发（httpx stream），不落盘、不整体驻留内存；响应不限大小，请求体默认上限 10MB（可配），流式读取按字节计数、超限立即断开并返回 413。**响应体不解析、不改写**（已知限制见 9.10）。
 3. **响应 header 过滤**：剥离 hop-by-hop 后原样回传（`Content-Type` 等），绝不含存储的真实 header；`Location` 头处理见第 7 条。
 4. **客户端断开**：立即取消上游流并释放连接。
@@ -449,7 +449,7 @@ class TokenVerifier(Protocol):
 | Streamable 流式响应 | 10s | 不设 |
 
 6. **重试**：一期不自动重试（避免非幂等请求重复触发）。
-7. **重定向**（防真实地址泄露）：**同源**（注册上游 origin 内）重定向由代理**内部跟随**（默认 ≤3 跳，`UPSTREAM_MAX_REDIRECTS`），存储 header 每跳重放，方法语义按 HTTP 规范（303→GET，307/308 保方法）；**跨源**重定向不跟随，响应原样透传（`Location` 指向第三方属上游自身行为）。同源 `Location` 永不回传给 Agent。
+7. **重定向**（防真实地址泄露）：**同源**（注册上游 origin 内）重定向由代理**内部跟随**（默认 ≤3 跳，`UPSTREAM_MAX_REDIRECTS`），存储 header 每跳重放，方法语义按 HTTP 规范（303→GET，307/308 保方法）；**跨源**重定向不跟随，响应原样透传（`Location` 指向第三方属上游自身行为）。同源 `Location` 永不回传给 Agent。SSE 初始连接分支一律不跟随（同源 30x 中止 502，`Location` 不回传），见 §8.3 注记。
 8. **路径安全**：`/p/{id}` 子路径拒绝 `.` / `..` 段及 URL 编码变体（`%2e` 等）→ 400，防止拼接后逃逸注册前缀；其余子路径按原文拼接，不做规范化。
 9. **缓冲与网关**：SSE / 流式响应使用 `StreamingResponse` 并发送 `X-Accel-Buffering: no`；前置 nginx 等网关需 `proxy_buffering off`，且网关读超时必须大于上游心跳间隔，否则长连接会被网关切断。
 10. **上游 TLS**：证书默认强校验，不提供跳过校验的开关。
@@ -514,7 +514,9 @@ sequenceDiagram
 
 限制说明：仅支持根相对路径形式的 endpoint 事件（官方 Python / TypeScript SDK 均为此形式）；客户端断开即取消上游连接。代理不保存会话状态，session_id 由上游通过 URL 自持。
 
-**SSE 改写实现要点**：以增量**行解析器**实现——按行读取上游流（保留原始行尾 `\r\n` / `\n`），跟踪当前 `event:` 名；当事件名为 `endpoint` 时改写其 `data:` 行，其余行（含 `message` 事件、`retry:` 行、`:` 心跳注释行）字节级原样透传，每行读取后立即 flush，不做整体缓冲。
+**SSE 改写实现要点**：以增量**行解析器**实现——按行读取上游流（保留原始行尾 `\r\n` / `\n`），跟踪当前 `event:` 名；当事件名为 `endpoint` 时改写其 `data:` 行，其余行（含 `message` 事件、`retry:` 行、`:` 心跳注释行）字节级原样透传，每行读取后立即 flush，不做整体缓冲。解析器对单行设缓冲上限（1MB）：无换行超长行降级为原样透传（超限即冲出已缓冲字节并持续透传至行尾，行尾后恢复正常解析），字节级保真且内存有界。
+
+**SSE 分支重定向策略（M3 落地回写）**：SSE 初始连接不跟随重定向——非 SSE 的 30x 若 `Location` 与注册上游同源，代理中止回 502 `TOO_MANY_REDIRECTS`（同源 `Location` 永不回传 Agent，§8.1 第 7 条）；跨源 30x 属上游自身行为，原样透传。trace 语义：中止路径不写 response 行（该上游响应从未下发给客户端），由 502 错误体与审计日志表达。
 
 ### 8.4 MCP — Streamable HTTP
 
