@@ -18,6 +18,8 @@ Resource Server 端点（http 形态注入验证面）：
 
 脚本化行为（模块级 as_state，测试直读/直写）：
 - expires_in / token_sleep / refresh_sleep / fail_refresh 可控（过期刷新与并发锁用例）；
+  refresh_status >0 → 刷新返回该状态码、refresh_payload 非 None → 刷新返回该载荷
+  （评审 Important 2 / Minor c：瞬时失败与畸形响应分级用例）；
 - registrations / issued / refresh_events / revocations 记录断言面；
 - preset 客户端 manual-cl / manual-cs-123456（手动模式用例）：redirect_uris 未注册
   （None），按回调前缀白名单放行——同一 9904 被 ASGI（testserver）与真实 TCP（9910）
@@ -81,6 +83,8 @@ def _fresh_state() -> dict:
         "token_sleep": 0.0,
         "refresh_sleep": 0.0,
         "fail_refresh": False,
+        "refresh_status": 0,      # 评审 Important 2：>0 → 刷新返回该状态码（503/429 瞬时失败）
+        "refresh_payload": None,  # 评审 Minor c：非 None → 刷新返回该载荷（非 dict JSON 畸形）
     }
 
 
@@ -141,7 +145,9 @@ def build_oauth_as_app() -> FastAPI:
         if secret:
             out["client_secret"] = secret
             out["client_secret_expires_at"] = 0
-        return out
+        # RFC 7591 §3.2.1：注册成功 = 201 Created（评审 Critical 1：钉住真实提供方
+        # 行为——Keycloak/Okta/Auth0 均回 201；代理兼容 200/201 两态）
+        return JSONResponse(out, status_code=201)
 
     @app.get("/oauth/authorize")
     async def authorize(client_id: str = "", redirect_uri: str = "",
@@ -252,6 +258,11 @@ def build_oauth_as_app() -> FastAPI:
             if (as_state["refresh_tokens"].get(rt) != client_id
                     or rt in as_state["revoked_refresh"]):
                 return JSONResponse({"error": "invalid_grant"}, status_code=400)
+            if as_state["refresh_status"]:          # 脚本化瞬时失败（评审 Important 2）
+                return JSONResponse({"error": "temporarily_unavailable"},
+                                    status_code=as_state["refresh_status"])
+            if as_state["refresh_payload"] is not None:  # 脚本化畸形响应（评审 Minor c）
+                return JSONResponse(as_state["refresh_payload"], status_code=200)
             if as_state["refresh_sleep"]:           # 并发刷新锁用例的竞态窗口
                 await asyncio.sleep(as_state["refresh_sleep"])
             as_state["refresh_events"].append({"refresh_token": rt, "client_id": client_id})
@@ -274,10 +285,13 @@ def build_oauth_as_app() -> FastAPI:
                                         "client_auth": client_auth})
         secure_state["valid_tokens"].discard(tok)
         # access 吊销连带配对 refresh 作废（按签发记录回查）；直接吊销 rt 形态亦支持
+        # （RFC 7009 §2.1：吊销任一 token 连带同对另一枚作废）
         as_state["refresh_tokens"].pop(tok, None)
         for item in as_state["issued"]:
             if item["access_token"] == tok:
                 as_state["revoked_refresh"].append(item["refresh_token"])
+            if item["refresh_token"] == tok:
+                secure_state["valid_tokens"].discard(item["access_token"])
         return Response(status_code=200)
 
     @app.api_route("/api", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])

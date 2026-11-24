@@ -307,7 +307,12 @@ async def get_callable_credential(session: AsyncSession, r, app_state,
     if cred is None or cred.get("status") != "active":
         raise binding_required(mapping_id)
     if not is_expired(_parse_expires(cred.get("expires_at"))):
-        return decrypt_text(cred["access_token"], master_key)
+        try:
+            return decrypt_text(cred["access_token"], master_key)
+        except AppError as exc:
+            # 密文不可解（MASTER_KEY 变更 / 行损坏）→ 401 重授权引导而非 500
+            # （评审 Minor c；fail-closed 语义不变，仅错误面收敛到 OAuth 引导）
+            raise binding_required(mapping_id) from exc
     refreshed = await refresh_credential(session, r, app_state, mapping_data, uid,
                                          master_key, request_id)
     if refreshed is None:
@@ -361,20 +366,30 @@ async def _wait_for_others_refresh(session: AsyncSession, r, mapping_id: str,
     return None
 
 
+class _RefreshRejected(Exception):
+    """AS 业务性拒绝（refresh_token 已失效/客户端认证失败）——凭证确定性不可用，
+    标 invalid 引导重新授权（评审 Important 2 分级之一）。"""
+
+
 class _RefreshFailed(Exception):
-    """token 端点业务失败（非 200 / 缺 access_token）。"""
+    """非破坏性失败（网络 / discovery / token 端点 5xx·429 / 响应畸形）——凭证
+    保持原状，本请求 401，下一请求原样重试（评审 Important 2 分级之二：
+    well-known 超时 / 5xx 抖动属提供方瞬时故障，标 invalid 会强迫用户重新授权）。"""
 
 
 async def _do_refresh(session: AsyncSession, r, app_state, mapping_data: dict,
                       uid: str, master_key: str, request_id: str = "") -> str | None:
-    """持锁刷新：refresh_token 换新 → upsert 落库 + 失效缓存 + metrics/审计；
-    失败 → mark_credential_invalid + {action="fail"} → None。"""
+    """持锁刷新：refresh_token 换新 → upsert 落库 + 失效缓存 + metrics/审计。
+    失败分级（评审 Important 2）：AS 业务拒绝（400/401/403）→ invalid；
+    网络/discovery/5xx/响应畸形 → 凭证原状保留（不 destroy），两态均 metrics
+    {action="fail"} + 审计 ok=false → 本请求 401。"""
     from .client import build_token_request, load_client_row, _row_to_client
     from .discovery import DiscoveryError, discover_authorization_server, upstream_origin
 
     mapping_id = mapping_data["mapping_id"]
     cred = await load_credential(session, r, mapping_id, uid)
     if cred is None or not cred.get("refresh_token"):
+        # 无 refresh_token：凭证注定无法续期 → invalid（页面引导重新授权）
         await mark_credential_invalid(session, r, mapping_id, uid)
         metrics.oauth_actions_total.labels(action="fail").inc()
         return None
@@ -395,17 +410,32 @@ async def _do_refresh(session: AsyncSession, r, app_state, mapping_data: dict,
                    "refresh_token": decrypt_text(cred["refresh_token"], master_key)})
         resp = await app_state.http_client.post(token_url, data=form,
                                                 headers=headers, timeout=15.0)
+        if resp.status_code in (400, 401, 403):
+            # AS 明确拒绝：invalid_grant / invalid_client——refresh_token 已不可用
+            raise _RefreshRejected(f"status={resp.status_code}")
         if resp.status_code != 200:
+            # 404/429/5xx 等：端点瞬时不可用或限流——凭证保持原状，下轮重试
             raise _RefreshFailed(f"status={resp.status_code}")
         tokens = resp.json()
+        if not isinstance(tokens, dict):
+            # 200 但响应非 JSON object（数组/字符串）——提供方契约异常，不破坏凭证
+            raise _RefreshFailed("响应非 JSON object")
         access = tokens.get("access_token")
         if not access:
             raise _RefreshFailed("响应缺少 access_token")
-    except (httpx.HTTPError, ValueError, DiscoveryError, _RefreshFailed) as exc:
+    except _RefreshRejected as exc:
         await mark_credential_invalid(session, r, mapping_id, uid)
         metrics.oauth_actions_total.labels(action="fail").inc()
         # 日志只记 mapping/uid/异常类型——token 不入任何日志（§14.6）
-        log.warning("OAuth 刷新失败 (%s/%s): %s", mapping_id, uid, type(exc).__name__)
+        log.warning("OAuth 刷新被 AS 拒绝 (%s/%s): %s", mapping_id, uid, type(exc).__name__)
+        _audit_refresh(request_id, mapping_id, uid, ok=False)
+        return None
+    except (httpx.HTTPError, ValueError, DiscoveryError, AppError,
+            _RefreshFailed) as exc:
+        # 非破坏性：凭证原状保留（AppError=密文不可解/加密配置异常，同不清行——
+        # 配置恢复后原凭证仍可用），本请求经 binding_required 401 重授权引导
+        metrics.oauth_actions_total.labels(action="fail").inc()
+        log.warning("OAuth 刷新瞬时失败 (%s/%s): %s", mapping_id, uid, type(exc).__name__)
         _audit_refresh(request_id, mapping_id, uid, ok=False)
         return None
     expires_at = expires_at_from(tokens.get("expires_in"))
@@ -416,7 +446,8 @@ async def _do_refresh(session: AsyncSession, r, app_state, mapping_data: dict,
     await save_credential(session, r, mapping_id, uid,
                           access_token_ct=encrypt_text(access, master_key),
                           refresh_token_ct=refresh_ct, expires_at=expires_at,
-                          scope=tokens.get("scope"), master_key=master_key)
+                          scope=(tokens.get("scope") or cred.get("scope")),
+                          master_key=master_key)
     metrics.oauth_actions_total.labels(action="refresh").inc()
     _audit_refresh(request_id, mapping_id, uid, ok=True)
     return access

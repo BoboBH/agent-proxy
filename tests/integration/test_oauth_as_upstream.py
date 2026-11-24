@@ -23,7 +23,8 @@ async def _register(c, **overrides) -> dict:
                "grant_types": ["authorization_code", "refresh_token"],
                "token_endpoint_auth_method": "client_secret_post", **overrides}
     resp = await c.post(f"{BASE}/oauth/register", json=payload)
-    assert resp.status_code == 200, resp.text
+    # 评审 Critical 1：RFC 7591 §3.2.1 注册成功 = 201 Created（mock 钉住真实提供方行为）
+    assert resp.status_code == 201, resp.text
     return resp.json()
 
 

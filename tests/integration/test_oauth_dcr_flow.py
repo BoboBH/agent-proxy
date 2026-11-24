@@ -111,6 +111,13 @@ async def test_unbind_revokes_and_401_afterwards(app):
     mid = await _create_oauth_http()
     await _complete_binding(await _authorize(mid))
     token = await _cred_token(app, mid)
+    # 评审修复（Important 3）：refresh token 同批 revoke——本地删除后 RT 明文已
+    # 无处可寻，这是吊销它的最后机会
+    async with app.state.sessionmaker() as session:
+        row = (await session.execute(select(OAuthCredential).where(
+            OAuthCredential.mapping_id == mid,
+            OAuthCredential.uid == "u888"))).scalar_one()
+    refresh = decrypt_text(row.refresh_token, MASTER)
     async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
         r = await c.delete(f"{PROXY}/api/v1/builtin-mappings/{mid}/binding", headers=U888)
     assert r.status_code == 204
@@ -119,7 +126,20 @@ async def test_unbind_revokes_and_401_afterwards(app):
         rows = (await session.execute(select(OAuthCredential).where(
             OAuthCredential.mapping_id == mid))).scalars().all()
     assert rows == []
-    assert any(x["token"] == token for x in as_state["revocations"])
+    assert any(x["token"] == token and x["hint"] == "access_token"
+               for x in as_state["revocations"])
+    assert any(x["token"] == refresh and x["hint"] == "refresh_token"
+               for x in as_state["revocations"])
+    # refresh token 已在 AS 侧作废：拿 RT（DCR 客户端凭证）换新 → invalid_grant
+    async with app.state.sessionmaker() as session:
+        cl = (await session.execute(select(OAuthClient).where(
+            OAuthClient.mapping_id == mid))).scalar_one()
+    async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+        rt = await c.post(f"{AS}/oauth/token", data={
+            "grant_type": "refresh_token", "refresh_token": refresh,
+            "client_id": cl.client_id,
+            "client_secret": decrypt_text(cl.client_secret, MASTER)})
+    assert rt.status_code == 400 and rt.json()["error"] == "invalid_grant"
     # 解绑后调用 → 401；binding 状态回 unbound
     r = await _proxy_call(mid, "orders", U888)
     assert r.status_code == 401 and r.json()["code"] == "OAUTH_BINDING_REQUIRED"

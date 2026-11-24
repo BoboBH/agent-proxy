@@ -264,7 +264,9 @@ async def ensure_client(session: AsyncSession, app_state, mapping_data: dict,
     except httpx.HTTPError as exc:
         raise AppError(502, "OAUTH_CLIENT_SETUP_FAILED",
                        f"DCR 注册请求失败（{type(exc).__name__}），请改用手动配置") from exc
-    if resp.status_code != 200:
+    if resp.status_code not in (200, 201):
+        # RFC 7591 §3.2.1：注册成功 = 201 Created（Keycloak/Okta/Auth0 均如此）；
+        # 200 兼容宽松实现（评审 Critical 1：原稿只认 200，真实提供方全部 502）
         raise AppError(502, "OAUTH_CLIENT_SETUP_FAILED",
                        f"DCR 注册被拒（status={resp.status_code}），请改用手动配置")
     try:

@@ -219,6 +219,63 @@ async def test_refresh_failure_marks_invalid_and_reauth_recovers(app):
     assert r2.status_code == 200
 
 
+async def test_refresh_transient_5xx_keeps_credential_and_retries(app):
+    """评审修复（Important 2）：瞬时失败（token 端点 503/网络/discovery 抖动）不
+    破坏凭证——保持 active，本请求 401，下一请求原样重试刷新成功（scope 保留）。"""
+    as_state["expires_in"] = 2
+    mid = await _setup_manual(f"{AS}/api")                # 手动 client（scopes=read）→ 绑定凭证带 scope
+    await _bind(mid)
+    as_state["expires_in"] = 3600
+    await asyncio.sleep(2.3)
+    as_state["refresh_status"] = 503
+    async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+        r = await c.get(f"{PROXY}/p/{mid}/orders", headers=U888)
+    assert r.status_code == 401 and r.json()["code"] == "OAUTH_BINDING_REQUIRED"
+    row = await _cred_row(app, mid)
+    assert row.status == "active"                         # 瞬时失败不标 invalid
+    assert len(as_state["refresh_events"]) == 0           # 未产生刷新事件
+    as_state["refresh_status"] = 0                        # AS 恢复
+    async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+        r2 = await c.get(f"{PROXY}/p/{mid}/orders", headers=U888)
+    assert r2.status_code == 200                          # 下一请求重试刷新成功
+    assert len(as_state["refresh_events"]) == 1
+    row = await _cred_row(app, mid)
+    assert row.status == "active" and row.scope == "read"  # scope 保留（RFC 6749 §6）
+
+
+async def test_refresh_malformed_body_keeps_credential(app):
+    """评审修复（Minor c）：token 端点 200 但响应非 JSON object（如数组/字符串）
+    → 本请求 401，凭证保持原状——绝不 500，也不破坏性标 invalid。"""
+    as_state["expires_in"] = 2
+    mid = await _create_oauth(f"{AS}/api")
+    await _bind(mid)
+    as_state["expires_in"] = 3600
+    await asyncio.sleep(2.3)
+    as_state["refresh_payload"] = ["unexpected-shape"]
+    async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+        r = await c.get(f"{PROXY}/p/{mid}/orders", headers=U888)
+    assert r.status_code == 401 and r.json()["code"] == "OAUTH_BINDING_REQUIRED"
+    row = await _cred_row(app, mid)
+    assert row.status == "active"
+
+
+async def test_unreadable_ciphertext_401_reauth_guidance(app):
+    """评审修复（Minor c）：凭证密文不可解（MASTER_KEY 变更/行损坏）→ 401
+    OAUTH_BINDING_REQUIRED 重授权引导——绝不 500 INTERNAL_ERROR。"""
+    mid = await _create_oauth(f"{AS}/api")
+    await _bind(mid)
+    async with app.state.sessionmaker() as session:
+        row = (await session.execute(select(OAuthCredential).where(
+            OAuthCredential.mapping_id == mid,
+            OAuthCredential.uid == "u888"))).scalar_one()
+        row.access_token = "not-a-fernet-payload"
+        await session.commit()
+    await invalidate_credential(app.state.redis, mid, "u888")
+    async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+        r = await c.get(f"{PROXY}/p/{mid}/orders", headers=U888)
+    assert r.status_code == 401 and r.json()["code"] == "OAUTH_BINDING_REQUIRED"
+
+
 async def test_builtin_test_bound_user_uses_own_credential(app):
     """§6.6：已绑定用户 test = 本人凭证执行对应 mcp 验证；uk 每用户一份互不串用。"""
     mid = await _setup_manual("http://127.0.0.1:9903/mcp-secure", type_="mcp")

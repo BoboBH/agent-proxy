@@ -221,23 +221,36 @@ async def unbind_mapping(request: Request, mapping_id: str,
     if cred is None:
         raise AppError(404, "MAPPING_NOT_FOUND", "尚未绑定，无需解绑")
     access_plain = decrypt_text(cred["access_token"], settings.master_key)
+    refresh_plain = (decrypt_text(cred["refresh_token"], settings.master_key)
+                     if cred.get("refresh_token") else None)
     deleted = await delete_credential(session, r, mapping_id, identity.user_id)
-    assert deleted                                        # 上一行已确认存在
-    # revoke best-effort（凭证已在本地删除，失败不回滚——本地删除是不可回退语义）
+    if not deleted:
+        # 并发解绑窗口（load 与 delete 之间被并发请求删行）：显式 404——assert
+        # 会被 python -O 剥离（评审 Minor a）
+        raise AppError(404, "MAPPING_NOT_FOUND", "尚未绑定，无需解绑")
+    # revoke best-effort ×2（access + refresh，评审 Important 3）：本地删除后
+    # refresh token 明文已无处可寻，这是吊销它的最后机会；两者皆失败仅 WARN，
+    # 不影响本地解绑（本地删除是不可回退语义）
     try:
         client = await ensure_client(session, request.app.state, data,
                                      settings.master_key,
                                      build_redirect_uri(settings.external_base, mapping_id))
         rev = client.get("revocation_endpoint")
         if rev:
-            headers, form = build_token_request(
-                client["token_auth"], client_id=client["client_id"],
-                client_secret=client["client_secret"],
-                extra={"token": access_plain, "token_type_hint": "access_token"})
-            resp = await request.app.state.http_client.post(rev, data=form,
-                                                            headers=headers, timeout=10.0)
-            if resp.status_code != 200:
-                log.warning("revoke 非 200: status=%s（本地凭证已删除）", resp.status_code)
+            revocations = [(access_plain, "access_token")]
+            if refresh_plain:
+                revocations.append((refresh_plain, "refresh_token"))
+            for token_plain, hint in revocations:
+                headers, form = build_token_request(
+                    client["token_auth"], client_id=client["client_id"],
+                    client_secret=client["client_secret"],
+                    extra={"token": token_plain, "token_type_hint": hint})
+                resp = await request.app.state.http_client.post(rev, data=form,
+                                                                headers=headers,
+                                                                timeout=10.0)
+                if resp.status_code != 200:
+                    log.warning("revoke 非 200: hint=%s status=%s（本地凭证已删除）",
+                                hint, resp.status_code)
     except AppError as exc:
         log.warning("revoke 前置（discovery/ensure_client）失败（忽略）: %s", exc.message)
     except httpx.HTTPError as exc:
@@ -294,9 +307,11 @@ async def _exchange_token(client, token_url: str, headers: dict,
         log.warning("token 端点非 200: status=%s", resp.status_code)
         return None
     try:
-        return resp.json()
+        payload = resp.json()
     except ValueError:
         return None
+    # 非 JSON object（数组/字符串）：按换 token 失败处理——裸 .get 会 500（评审 Minor c）
+    return payload if isinstance(payload, dict) else None
 
 
 @callback_router.get("/oauth/callback/{mapping_id}")
