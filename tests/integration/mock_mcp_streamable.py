@@ -23,6 +23,12 @@
 
 模块级 streamable_state 供测试直读（received / deletes / last_get_headers /
 last_delete_headers / get_open；测试自行清空；headers dict 为 Starlette 小写键）。
+
+M6 增补：POST /mcp-secure —— 仅接受 mock OAuth AS（9904，mock_oauth_as.py）签发且
+未吊销的 access token（secure_state["valid_tokens"] 登记/移除）；缺失/失配回 401
+（OAuth 凭证失效面：probe 非 2xx 短路 + 「重新授权」提示用例）。initialize 结果
+serverInfo.caller 回告到达上游的 Authorization（「本人凭证到达上游」断言面；
+mock 测试值，非真实凭据）。
 """
 from __future__ import annotations
 
@@ -38,6 +44,9 @@ SESSION_ID = "sess-m4"
 streamable_state: dict = {"received": [], "deletes": [],
                           "last_get_headers": {}, "last_delete_headers": {},
                           "get_open": 0}
+
+# M6 OAuth e2e：mock AS（9904）签发时登记、吊销时移除；/mcp-secure 据此校验
+secure_state: dict = {"valid_tokens": set(), "received": []}
 
 
 def _result_for(rpc: dict) -> dict:
@@ -97,6 +106,25 @@ def build_mcp_streamable_app() -> FastAPI:
     async def mcp_post_sse_form(request: Request):
         # 路径别名：SSE 形态（probe 用例的 upstream_url 走路径别名，不带 query）
         return await _handle_rpc(request, sse_form=True)
+
+    @app.post("/mcp-secure")
+    async def mcp_secure(request: Request):
+        # M6（§14.5）：仅接受 mock AS 签发且未吊销的 token；401 = 凭证失效面。
+        # serverInfo.caller 回告到达上游的 Authorization——「本人凭证到达上游」断言面。
+        authz = request.headers.get("authorization", "")
+        rpc = json.loads(await request.body())
+        secure_state["received"].append({"rpc": rpc,
+                                         "headers": dict(request.headers.items())})
+        if authz not in secure_state["valid_tokens"]:
+            return JSONResponse({"error": "invalid_token"}, status_code=401)
+        params = rpc.get("params") or {}
+        return JSONResponse({"jsonrpc": "2.0", "id": rpc.get("id"),
+                             "result": {"protocolVersion":
+                                        params.get("protocolVersion", "2025-06-18"),
+                                        "capabilities": {"tools": {}},
+                                        "serverInfo": {"name": "secure-mcp",
+                                                       "version": "0",
+                                                       "caller": authz}}})
 
     @app.post("/mcp-no-serverinfo")
     async def mcp_post_no_serverinfo():

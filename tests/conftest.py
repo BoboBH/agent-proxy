@@ -16,6 +16,7 @@ os.environ.update({
     "REDIS_URL": "redis://127.0.0.1:6379/9",
     "SSRF_ALLOW_PRIVATE": "true",
     "MAX_BODY_SIZE": "1MB",
+    "CORS_ALLOWED_ORIGINS": "http://127.0.0.1:9910,http://testserver",
     "ENCRYPT_AT_REST": "false",
     "MASTER_KEY": "test-master-key",
     "TRACE_MODE": "metadata",

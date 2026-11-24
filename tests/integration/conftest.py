@@ -2,6 +2,7 @@
 import asyncio
 import threading
 
+import httpx
 import pymysql
 import pytest
 import pytest_asyncio
@@ -10,6 +11,7 @@ import uvicorn
 
 from tests.integration.mock_mcp_sse import build_mcp_sse_app
 from tests.integration.mock_mcp_streamable import build_mcp_streamable_app
+from tests.integration.mock_oauth_as import build_oauth_as_app
 from tests.integration.mock_upstream import build_echo_app
 
 
@@ -138,6 +140,47 @@ async def mcp_streamable_upstream_server():
     thread.join(timeout=5)
     assert not thread.is_alive(), "MCP Streamable 上游未在 15s 内停机"
     loop.close()
+
+
+@pytest_asyncio.fixture(scope="session", autouse=True, loop_scope="session")
+async def mock_oauth_as_server():
+    """mock OAuth2 AS+RS：uvicorn 真实监听 127.0.0.1:9904（session 级，独立线程 loop）。
+
+    启动/停机模式与 9901/9902/9903 夹具一致：uvicorn.serve() 挂独立线程独立 loop，
+    测试用例经真实 TCP 访问（跨 loop 只过网络，无共享 asyncio 对象）。
+    autouse 统一随 session 启动（启动成本 ~1s 一次性）。
+    """
+    config = uvicorn.Config(build_oauth_as_app(), host="127.0.0.1", port=9904,
+                            log_level="warning", access_log=False)
+    server = uvicorn.Server(config)
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_until_complete, args=(server.serve(),),
+                              daemon=True, name="mock-oauth-as-9904")
+    thread.start()
+    for _ in range(200):
+        if server.started or not thread.is_alive():
+            break
+        await asyncio.sleep(0.05)
+    assert server.started, "mock OAuth AS 启动失败（127.0.0.1:9904 被占用？）"
+    yield server
+    server.should_exit = True
+    thread.join(timeout=10)
+    server.force_exit = True  # 兜底：优雅停机超时则强制置位，防止 join 卡死拖垮会话
+    thread.join(timeout=5)
+    assert not thread.is_alive(), "mock OAuth AS 未在 15s 内停机"
+    loop.close()
+
+
+@pytest.fixture(autouse=True)
+async def _reset_oauth_as(mock_oauth_as_server):
+    """每个集成测试前重置 mock AS 动态状态（签发登记一并清空）——9904 为进程内
+    全局单例，不清则用例间 codes/issued/refresh 计数互相污染（非密封）。"""
+    try:
+        async with httpx.AsyncClient() as c:
+            await c.post("http://127.0.0.1:9904/_test/reset")
+    except Exception:
+        pass  # 非致命：session 夹具已断言启动成功；此处不阻塞其他用例
+    yield
 
 
 @pytest_asyncio.fixture(scope="session", autouse=True, loop_scope="session")
