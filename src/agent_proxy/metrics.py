@@ -1,4 +1,23 @@
-"""Prometheus 指标定义（标签仅低基数维度，不放 user_id/mapping_id）。"""
+"""Prometheus 指标定义（§15.2 八项；标签仅低基数维度，不放 user_id/mapping_id）。
+
+§15.2 对照（M7 完善核对，接线位置）：
+- ap_requests_total            Counter   route/type/status  请求计数（middleware；
+                                                    route ∈ mgmt/proxy/builtin/admin/ops/other，
+                                                    admin 为 M7 管理页面流量）
+- ap_request_duration_seconds  Histogram route/type         端到端延迟（middleware）
+- ap_upstream_duration_seconds Histogram type             上游耗时（转发管线内观测：
+                                                    http_forward/mcp_sse，剔除代理自身开销）
+- ap_upstream_errors_total     Counter   type/code         上游连接失败/超时（code ∈
+                                                    pool_exhausted/timeout/connect/stream_broken）
+- ap_bytes_total               Counter   direction(in/out) 上下行字节（middleware 分片累计）
+- ap_sse_active_connections    Gauge     —                 SSE 活跃长连接（mcp_sse；含
+                                                    Streamable GET 推送流，M4 语义钉住）
+- ap_inflight_requests         Gauge     —                 在途请求（middleware）
+- ap_oauth_actions_total       Counter   action            OAuth 凭证事件（M6；action ∈
+                                                    bind/unbind/refresh/fail/transient）
+基数控制：标签仅 route/type/status/code/direction/action/le——不放 mapping_id/user_id
+（映射可删、用户量大，防时间序列爆炸）；按映射/用户排查走审计日志 + request_id 关联。
+"""
 from prometheus_client import Counter, Gauge, Histogram
 
 # 直方图桶（终审债务）：prometheus 默认桶对亚毫秒与长耗时（SSE/慢上游）分辨率不足，
