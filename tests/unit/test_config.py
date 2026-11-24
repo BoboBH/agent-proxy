@@ -94,3 +94,12 @@ def test_load_dotenv_does_not_override_existing(tmp_path, monkeypatch):
     import os
 
     assert os.environ["PX_EXISTING_TEST"] == "from-env"
+
+
+def test_session_cookie_secure_default_false_and_env_on():
+    # M7（§15.1 注记）：Secure 在纯 http 的开发/测试环境使浏览器不回传 Cookie，
+    # 故配置化——默认 false；https 部署必须显式置 true
+    assert Settings.from_env(BASE).session_cookie_secure is False
+    assert Settings.from_env(BASE).admin_session_ttl == 28800
+    s = Settings.from_env({**BASE, "SESSION_COOKIE_SECURE": "true"})
+    assert s.session_cookie_secure is True

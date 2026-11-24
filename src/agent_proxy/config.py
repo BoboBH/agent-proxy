@@ -58,6 +58,7 @@ class Settings:
     cors_allowed_origins: tuple[str, ...] = ()
     oauth_state_ttl: int = 600
     admin_session_ttl: int = 28800
+    session_cookie_secure: bool = False
     encrypt_at_rest: bool = False
     master_key: str = ""
     log_dir: str = "logs"
@@ -91,6 +92,7 @@ class Settings:
             ),
             oauth_state_ttl=_to_int("OAUTH_STATE_TTL", e.get("OAUTH_STATE_TTL", "600")),
             admin_session_ttl=_to_int("ADMIN_SESSION_TTL", e.get("ADMIN_SESSION_TTL", "28800")),
+            session_cookie_secure=e.get("SESSION_COOKIE_SECURE", "false").lower() == "true",
             encrypt_at_rest=e.get("ENCRYPT_AT_REST", "false").lower() == "true",
             master_key=e.get("MASTER_KEY", ""),
             log_dir=e.get("LOG_DIR", "logs"),
