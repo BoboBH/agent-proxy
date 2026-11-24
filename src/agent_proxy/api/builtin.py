@@ -69,16 +69,20 @@ async def set_oauth_client(request: Request, mapping_id: str, body: OAuthClientS
     data = await load_public_mapping(session, request.app.state.redis, mapping_id,
                                      settings.cache_ttl)
     require_oauth_mode(data)
+    # 存 SSRF 校验器的规范化返回值（去尾斜杠）——与 create/update 上游 URL 一致，
+    # 消除尾斜杠不对称（authorization_url/redirect_uri 拼接比对依赖规范化形态）。
     try:
-        await async_validate_upstream_url(body.authorize_url, settings.ssrf_allow_private)
-        await async_validate_upstream_url(body.token_url, settings.ssrf_allow_private)
+        authorize_url = await async_validate_upstream_url(body.authorize_url,
+                                                          settings.ssrf_allow_private)
+        token_url = await async_validate_upstream_url(body.token_url,
+                                                      settings.ssrf_allow_private)
     except ValueError as exc:  # 含 UpstreamNotAllowed（其子类）
         raise AppError(400, "INVALID_PARAM", str(exc))
     await save_oauth_client_row(session, mapping_id, client_id=body.client_id,
                                 client_secret_plain=body.client_secret,
                                 token_auth=body.token_auth,
-                                authorize_url=body.authorize_url,
-                                token_url=body.token_url, scopes=body.scopes,
+                                authorize_url=authorize_url,
+                                token_url=token_url, scopes=body.scopes,
                                 source="manual", master_key=settings.master_key)
     request.state.audit_action = "oauth_client_set"
     request.state.mapping_id = mapping_id

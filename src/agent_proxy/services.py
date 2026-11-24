@@ -12,7 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from . import cache, mapping_id as mid_module, placeholder
 from .config import Settings
 from .errors import AppError
-from .models import ProxyMapping
+from .models import OAuthClient, OAuthCredential, ProxyMapping
+from .oauth.credential import invalidate_credential
 from .ssrf import async_validate_upstream_url
 
 log = logging.getLogger("agent_proxy")
@@ -144,6 +145,20 @@ async def delete_mapping(session: AsyncSession, r, mapping_id: str, owner_uid: s
         return False
     if row.owner_uid != owner_uid and not (admin_override and row.visibility == "public"):
         return False
+    # M6（§14.6）：连带清理 OAuth client/credential 行——加密 client_secret 与用户
+    # token 随宿主映射删除（映射没了绑定/客户端配置即无意义，行含密文越早清越安全）；
+    # 先按行内 uid 失效各自 cred 缓存，再同批删行（避免删行后无法反查 uid）。
+    client_rows = (await session.execute(
+        select(OAuthClient).where(OAuthClient.mapping_id == mapping_id))).scalars().all()
+    cred_rows = (await session.execute(
+        select(OAuthCredential).where(OAuthCredential.mapping_id == mapping_id)
+    )).scalars().all()
+    for cred_row in cred_rows:
+        await invalidate_credential(r, mapping_id, cred_row.uid)
+    for client_row in client_rows:
+        await session.delete(client_row)
+    for cred_row in cred_rows:
+        await session.delete(cred_row)
     await session.delete(row)
     await session.commit()
     await cache.invalidate(r, mapping_id)
