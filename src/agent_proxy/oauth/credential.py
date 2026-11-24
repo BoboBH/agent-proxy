@@ -221,3 +221,45 @@ async def delete_credential(session: AsyncSession, r, mapping_id: str, uid: str)
     await session.commit()
     await invalidate_credential(r, mapping_id, uid)
     return True
+
+
+# ---------- 授权进行中索引（authorizing 态判定，设计 §14.4 / §5.3 最小增量键） ----------
+
+
+def authz_index_key(mapping_id: str, uid: str) -> str:
+    return f"ap:oauth:authz:{mapping_id}:{uid}"
+
+
+async def set_authz_index(r, mapping_id: str, uid: str, state: str, ttl: int) -> None:
+    """authorize 写入（state 存续期索引，binding 查询据此判 authorizing）；
+    callback 成功 / 解绑时删除。"""
+    try:
+        await r.set(authz_index_key(mapping_id, uid), state, ex=ttl)
+    except Exception as exc:
+        log.warning("authz 索引写入失败: %s", exc)
+
+
+async def get_authz_index(r, mapping_id: str, uid: str) -> str | None:
+    try:
+        return await r.get(authz_index_key(mapping_id, uid))
+    except Exception as exc:
+        log.warning("authz 索引读取失败: %s", exc)
+        return None
+
+
+async def drop_authz_index(r, mapping_id: str, uid: str) -> None:
+    try:
+        await r.delete(authz_index_key(mapping_id, uid))
+    except Exception as exc:
+        log.warning("authz 索引删除失败: %s", exc)
+
+
+async def get_binding_status(session: AsyncSession, r, mapping_id: str, uid: str) -> str:
+    """绑定状态机（§14.4）：unbound → authorizing（state 存续期间）→ bound(active)
+    → invalid（refresh 失败 / 提供方吊销）。判定顺序：凭证行 → authz 索引 → unbound。"""
+    cred = await load_credential(session, r, mapping_id, uid)
+    if cred is not None:
+        return "bound" if cred.get("status") == "active" else "invalid"
+    if await get_authz_index(r, mapping_id, uid) is not None:
+        return "authorizing"
+    return "unbound"

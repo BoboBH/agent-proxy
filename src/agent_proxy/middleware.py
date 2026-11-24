@@ -19,6 +19,8 @@ def route_name(path: str) -> str:
         return "mgmt"
     if path.startswith("/api/v1/builtin"):
         return "builtin"
+    if path.startswith("/oauth/"):
+        return "builtin"
     if path.startswith("/p/"):
         return "proxy"
     if path.startswith("/admin"):

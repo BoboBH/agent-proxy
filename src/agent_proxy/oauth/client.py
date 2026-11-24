@@ -191,3 +191,20 @@ async def save_oauth_client_row(session: AsyncSession, mapping_id: str, *,
         row.scopes = scopes
         row.source = source
     await session.commit()
+
+
+# ---------- state 一次性消费（Redis MULTI 事务管道，兼容 Redis 3.0 无 GETDEL） ----------
+
+
+async def consume_state(r, state: str) -> dict:
+    """原子取删：MULTI 事务管道 GET+DEL（并发回调同一 state 仅一方取到值；
+    本地/测试 Redis 3.0.504 无 GETDEL，实现机制钉死在 MULTI，不得改写）。
+    不存在（过期 / 伪造 / 已消费）→ 400 OAUTH_STATE_INVALID。"""
+    pipe = r.pipeline(transaction=True)
+    pipe.get(state_key(state))
+    pipe.delete(state_key(state))
+    results = await pipe.execute()
+    raw = results[0]
+    if raw is None:
+        raise AppError(400, "OAUTH_STATE_INVALID", "state 无效、已使用或已过期")
+    return decode_state_payload(raw)
