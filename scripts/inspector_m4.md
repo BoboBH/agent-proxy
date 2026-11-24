@@ -8,6 +8,15 @@ initialize / tools/list / tools/call。协议级自动化等价覆盖见
 
 > 以下命令均在 Git Bash 下执行（路径为 Windows 的 `.venv/Scripts/` 形态）。
 
+- venv 已建且依赖已装：
+
+  ```bash
+  D:/Python312/python.exe -m venv .venv
+  .venv/Scripts/python.exe -m pip install -e ".[dev]" -i https://pypi.tuna.tsinghua.edu.cn/simple
+  ```
+
+- 本机 MySQL(3306) / Redis(6379) / Node(npx) 可用
+
 项目根 `.env`（不存在则从以下最小集创建；测试/演示用，生产勿抄）：
 
 ```bash
@@ -29,7 +38,7 @@ mysql -h127.0.0.1 -uroot -p123456 -e "CREATE DATABASE IF NOT EXISTS agent_proxy 
 终端 1——代理：
 
 ```bash
-.venv/Scripts/python.exe -m agent_proxy     # 监听 127.0.0.1:8800
+.venv/Scripts/python.exe -m agent_proxy     # 默认 0.0.0.0:8800（可用 AGENT_PROXY_LISTEN 收敛）
 ```
 
 终端 2——mock MCP Streamable 上游：
@@ -84,6 +93,8 @@ application/json + `Mcp-Session-Id: sess-m4`，代理把会话头透传回 Inspe
 后续 tools/list / tools/call 携带同一会话头原样透传（载荷零改写，§8.4）。
 
 ## 5. 人工验收清单（对照 §16 M4 行）
+
+> **状态：待人工执行勾选**（M4 人工验收痕迹；勾选完成后在此标注验收日期与执行人）。
 
 - [ ] **tools/list**：Tools 标签列出 1 个工具 `echo`（description「回显输入文本」）
 - [ ] **tools/call**：运行 `echo`，参数 `{"text":"hello-m4"}` → 结果文本包含 `hello-m4`

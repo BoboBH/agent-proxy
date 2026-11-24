@@ -196,6 +196,16 @@ async def test_streamable_trace_body_mode_records_request_and_response(tmp_path)
         async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
             r = await c.post(f"{PROXY}/p/{mid}/mcp", json=INITIALIZE, headers=AUTH)
             assert r.status_code == 200
+        # M4 终审收尾（间歇失败修复）：response trace 行写在转发管线 finally——
+        # 最后一个 chunk 下发之后。客户端拿到响应时代理侧 finally 可能尚未执行，
+        # 恢复 handler 后立即读文件会偶发缺 response 行（套件高负载下 3 跑 1 败，
+        # 单独跑必绿）。有界轮询等 response 行落盘（20×0.1s），超时才失败。
+        for _ in range(20):
+            if '"phase": "response"' in handler_target.read_text(encoding="utf-8"):
+                break
+            await asyncio.sleep(0.1)
+        else:
+            raise AssertionError("response trace 行 2s 内未落盘（转发管线 finally 未执行？）")
     finally:
         logger.handlers = saved
         flush_trace()

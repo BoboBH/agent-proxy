@@ -394,7 +394,7 @@ HTTP 200
 
 **返回**：`{ok, status_code, latency_ms, detail}`；测试专用短超时 5s（**总挂钟期限**：连接建立与读流 / 读响应各阶段共享同一 deadline，后继阶段仅享剩余时间，最坏 5s 内必有结论）；上游失败反映为 `ok=false` + `detail` 说明，不产生代理自身的 502/504 错误响应。
 
-**mcp 类型形态细分（M4 定稿，探测式 auto）**：不新增 `transport` 注册字段（§5.1 无此列；端点路径 `/mcp` 仅为生态惯例，SSE 服务亦可注册于 `/mcp`）——test 时先按 Streamable 语义 POST 标准 `initialize`：端点以 405/404/406 拒绝 POST（SSE-only 上游对注册端点 POST 的典型行为）→ 回落 SSE 握手探测（上表第 2 行）；其余响应按「含 `serverInfo`」硬判定（上表第 1 行；响应为 SSE 形态时取首个 `message` 事件的 data 解析）。`detail` 回告实际判定的端点形态（`Streamable initialize 成功…` / `SSE 端点（回落）…`）供排障。
+**mcp 类型形态细分（M4 定稿，探测式 auto）**：不新增 `transport` 注册字段（§5.1 无此列；端点路径 `/mcp` 仅为生态惯例，SSE 服务亦可注册于 `/mcp`）——test 时先按 Streamable 语义 POST 标准 `initialize`：Streamable initialize 返回 200 → 按「含 `serverInfo`」硬判定（上表第 1 行；响应为 SSE 形态时取首个 `message` 事件的 data 解析）；**其余非 2xx（含 401/500 等）不读响应体、不回落，直接判失败（detail=`上游拒绝（status=N）`）**——凭据失效/服务端错误显式暴露，不误报为形态问题；405/404/406 → 回落 SSE 握手探测（上表第 2 行，SSE-only 上游对注册端点 POST 的典型行为）。`detail` 回告实际判定的端点形态（`Streamable initialize 成功…` / `SSE 端点（回落）…`）供排障。
 
 **安全边界**：仅能对**已注册映射**发起（不接受任意 URL，防探测滥用）；无凭证用户对 OAuth 型公共映射发起 → `OAUTH_BINDING_REQUIRED`；审计记 `action=test_mapping`，不含 header 值。
 
