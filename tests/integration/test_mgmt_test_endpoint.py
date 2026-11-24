@@ -8,6 +8,7 @@ import glob
 import json
 
 from tests.integration.mock_mcp_sse import mock_state
+from tests.integration.mock_mcp_streamable import streamable_state
 from tests.utils import make_token
 
 
@@ -286,9 +287,12 @@ async def test_register_rejects_illegal_test_method(client):
 
 
 async def test_mcp_streamable_probe_ok(client, mcp_streamable_upstream_server):
-    """§6.6 mcp+Streamable：POST initialize → 200 JSON 含 serverInfo → ok=true。"""
+    """§6.6 mcp+Streamable：POST initialize → 200 JSON 含 serverInfo → ok=true。
+    出站头同时钉住探测专属语义（Task 5 评审核销 4）：accept-encoding=identity
+    （探测要解析响应体，读明文）+ connection=close（探测连接绝不回流池）。"""
     created = await _register(client, type="mcp",
                               upstream_url="http://127.0.0.1:9903/mcp")
+    streamable_state["received"].clear()
     resp = await _test(client, created["mapping_id"])
     assert resp.status_code == 200
     body = resp.json()
@@ -296,6 +300,10 @@ async def test_mcp_streamable_probe_ok(client, mcp_streamable_upstream_server):
     assert "Streamable initialize 成功" in body["detail"]
     assert "mock-mcp-streamable" in body["detail"]       # serverInfo.name 回告
     assert body["latency_ms"] >= 0
+    rec = streamable_state["received"][-1]
+    assert rec["rpc"]["method"] == "initialize"          # 到上游的即标准 initialize
+    assert rec["headers"]["accept-encoding"] == "identity"
+    assert rec["headers"]["connection"] == "close"
 
 
 async def test_mcp_streamable_probe_sse_form_ok(client, mcp_streamable_upstream_server):
@@ -352,3 +360,71 @@ async def test_mcp_probe_fallback_non_sse_ok_false(client, mcp_sse_upstream_serv
     assert "非 SSE 响应" in body["detail"]
     assert "SSE 端点" in body["detail"]
     assert "9902/sse" not in body["detail"]
+
+
+# ---------- M4 Task 5 评审核销项：非 2xx 不回落 / 回落成功主场景 / 回落触发器矩阵 ----------
+
+
+async def test_mcp_probe_no_fallback_on_401(client, mcp_streamable_upstream_server):
+    """评审核销 1（回归防）：上游 401（凭据失效）——直接判失败**不回落**，detail
+    含状态码且无「回落」/「SSE 端点」前缀（凭据失效应显式暴露，不掩盖为形态回落）。"""
+    created = await _register(client, type="mcp",
+                              upstream_url="http://127.0.0.1:9903/mcp-401")
+    resp = await _test(client, created["mapping_id"])
+    assert resp.status_code == 200                       # 上游失败不变成代理 5xx
+    body = resp.json()
+    assert body["ok"] is False and body["status_code"] == 401
+    assert "401" in body["detail"]
+    assert "SSE 端点" not in body["detail"]
+    assert "回落" not in body["detail"]
+
+
+async def test_mcp_probe_no_fallback_on_500(client, mcp_streamable_upstream_server):
+    """评审核销 1：上游 500（服务端错误）——同 401 直接判失败不回落。"""
+    created = await _register(client, type="mcp",
+                              upstream_url="http://127.0.0.1:9903/mcp-500")
+    resp = await _test(client, created["mapping_id"])
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is False and body["status_code"] == 500
+    assert "500" in body["detail"]
+    assert "SSE 端点" not in body["detail"]
+    assert "回落" not in body["detail"]
+
+
+async def test_mcp_probe_fallback_sse_ok(client, mcp_sse_upstream_server):
+    """评审核销 2（主用户场景）：SSE-only 上游（9902 /sse 仅注册 GET，POST 回 405）
+    → 回落 SSE 握手探测成功 → ok=true 且 detail 前缀「SSE 端点（…回落…）」。"""
+    created = await _register(client, type="mcp", upstream_url="http://127.0.0.1:9902/sse",
+                              headers={"Authorization": "Bearer sk-mcp-12345678"})
+    resp = await _test(client, created["mapping_id"])
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True and body["status_code"] == 200
+    assert "SSE 端点" in body["detail"]
+    assert "回落" in body["detail"]
+    assert "SSE 握手成功" in body["detail"]
+
+
+async def test_mcp_probe_fallback_trigger_404(client, mcp_streamable_upstream_server):
+    """评审核销 4（可选矩阵）：404 回落触发器——未注册路径 POST 回 404 → 回落
+    SSE 握手探测 → GET 同路径 404 非 SSE → ok=false，前缀「SSE 端点」。"""
+    created = await _register(client, type="mcp",
+                              upstream_url="http://127.0.0.1:9903/never-registered")
+    resp = await _test(client, created["mapping_id"])
+    body = resp.json()
+    assert body["ok"] is False and body["status_code"] == 404
+    assert "非 SSE 响应" in body["detail"]
+    assert "SSE 端点" in body["detail"]
+
+
+async def test_mcp_probe_fallback_trigger_406(client, mcp_streamable_upstream_server):
+    """评审核销 4（可选矩阵）：406 回落触发器——/mcp-406 对 POST/GET 同态 406 →
+    回落后「非 SSE 响应（status=406…）」，前缀「SSE 端点」。"""
+    created = await _register(client, type="mcp",
+                              upstream_url="http://127.0.0.1:9903/mcp-406")
+    resp = await _test(client, created["mapping_id"])
+    body = resp.json()
+    assert body["ok"] is False and body["status_code"] == 406
+    assert "非 SSE 响应" in body["detail"]
+    assert "SSE 端点" in body["detail"]

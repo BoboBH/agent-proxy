@@ -14,7 +14,11 @@
 - DELETE /mcp：204 会话结束；
 - POST /mcp-no-serverinfo：initialize 可达但 result 缺 serverInfo（非 MCP 端点
   典型形态，§6.6 硬判定 ok=false 用例）；
-- POST /mcp-slow：8s 后才回 initialize（> probe 5s 总期限，超时用例）。
+- POST /mcp-slow：8s 后才回 initialize（> probe 5s 总期限，超时用例）；
+- POST /mcp-401、/mcp-500：401（凭据失效）/ 500（服务端错误）——probe 非 2xx
+  **不回落**的直接判失败用例（M4 Task 5 评审核销 1：显式暴露不被掩盖为形态回落）；
+- /mcp-406（POST/GET 同态 406）：回落触发器之一（Task 5 评审核销 4 可选矩阵
+  ——404 触发器复用任意未注册路径，无需专用端点）。
 
 模块级 streamable_state 供测试直读（received / deletes / last_get_headers /
 last_delete_headers / get_open；测试自行清空；headers dict 为 Starlette 小写键）。
@@ -25,7 +29,8 @@ import asyncio
 import json
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import (HTMLResponse, JSONResponse, Response,
+                               StreamingResponse)
 
 SESSION_ID = "sess-m4"
 
@@ -102,6 +107,23 @@ def build_mcp_streamable_app() -> FastAPI:
         await asyncio.sleep(8)
         return JSONResponse({"jsonrpc": "2.0", "id": 1,
                              "result": {"serverInfo": {"name": "slow", "version": "0"}}})
+
+    @app.post("/mcp-401")
+    async def mcp_post_401():
+        # M4 Task 5 评审核销 1：401（凭据失效）——probe 非 2xx 直接判失败不回落
+        # （detail 含状态码，无「SSE 端点（…回落…）」前缀）
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    @app.post("/mcp-500")
+    async def mcp_post_500():
+        # M4 Task 5 评审核销 1：500（服务端错误）——同上不回落
+        return JSONResponse({"error": "boom"}, status_code=500)
+
+    @app.api_route("/mcp-406", methods=["POST", "GET"])
+    async def mcp_406():
+        # M4 Task 5 评审核销 4（可选矩阵）：406 拒绝 POST（回落触发器之一）；
+        # GET 同态非 SSE——回落探测以「非 SSE 响应（status=406…）」收尾
+        return HTMLResponse("<html>not acceptable</html>", status_code=406)
 
     @app.get("/mcp")
     async def mcp_get(request: Request):

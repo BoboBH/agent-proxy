@@ -544,6 +544,8 @@ sequenceDiagram
 
 `Mcp-Session-Id` 经白名单透传，会话状态由上游自持。
 
+> **代理实现注记（M4）**：Streamable 与 SSE 共用同一路径分发表与转发管线（§8.5 统一骨架）——POST/DELETE 按上游 origin 根还原走 http 流式管线；GET 注册端点（服务端推送流）走 SSE 解析管线，其 endpoint 改写器对 Streamable 流为字节级无操作（Streamable 流无 `endpoint` 事件），读超时不设 / 连接不复用 / SSE 活跃连接计数对推送流语义同样成立，故不新增传输形态字段。test 接口按探测式 auto 细分（见 6.6）。
+
 ### 8.5 两类代理的统一与差异
 
 **统一的部分（一套机制）**：

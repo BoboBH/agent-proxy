@@ -45,11 +45,18 @@ async def _handle_proxy(request: Request, mapping_id: str, identity: Identity,
     if data["status"] != "active":
         raise AppError(404, "MAPPING_NOT_FOUND", "映射不存在或已禁用")
     if data["type"] == "mcp":
-        # 路径分发（§8.3 表）：仅 GET/HEAD 且命中注册端点路径 → SSE 初始连接
-        # （stream_sse_forward 不转发请求体，故非 GET/HEAD 不走此分支）；其余
-        # 路径按上游 origin 根还原后复用 http 流式管线。
-        # 评审 Issue 2：裸 origin 注册（端点路径为 /）时根路径 /p/{id} 与 /p/{id}/
-        # 同为注册端点——空 sub_path 归一为 / 参与匹配，否则被 origin 根还原绕过改写
+        # 路径分发（§8.3 表，M4 起同时服务 Streamable）：仅 GET/HEAD 且命中注册
+        # 端点路径 → SSE 解析管线（stream_sse_forward 不转发请求体，故非 GET/HEAD
+        # 不走此分支）；其余方法/路径按上游 origin 根还原后复用 http 流式管线。
+        # M4 分发语义定稿（不新增 transport 字段）：Streamable 上游的 POST/DELETE
+        # （JSON-RPC 调用 / 会话结束）本就走 origin 根还原的 http 管线；GET /mcp
+        # （服务端推送流）进 SSE 解析管线——rewriter 仅改写 `event: endpoint` 的
+        # data 行，Streamable 流只有 message 事件 → 字节级无操作透传，read=None /
+        # Connection: close / sse_active 计数对推送流语义同样成立。一条分发表即可
+        # 同时正确服务两种传输；设计 §5.1 无 transport 列，不为零行为差异引入
+        # schema/DB/缓存连带变更（评审定稿记录，设计 §8.4 注记同步）。
+        # 评审 Issue 2（M3）：裸 origin 注册（端点路径为 /）时根路径 /p/{id} 与
+        # /p/{id}/ 同为注册端点——空 sub_path 归一为 / 参与匹配
         sub_path = split_sub_path(request.scope["path"], mapping_id)
         assert_safe_sub_path(sub_path)
         if request.method in ("GET", "HEAD") and \

@@ -101,13 +101,16 @@ async def probe_streamable_mapping(app_state, mapping_data: dict) -> dict:
     status = resp.status_code
     content_type = next((v for k, v in resp.headers.items()
                          if k.lower() == "content-type"), "")
-    if status in (404, 405, 406):
+    # 读段整体 try/finally（Task 5 评审机械修，与 probe_sse_mapping 同规）：
+    # CancelledError（调用方超时/断开）穿透时响应流也必然 aclose——连接不滞留池内
+    # （aclose 幂等：正常路径 _pump 读到 EOF 已自动关，finally 兜底截断/超限路径）
+    try:
+        if status in (404, 405, 406):
+            raise _NotStreamable()
+        ok, detail = await _judge_initialize_response(resp, status, content_type, start)
+        return _result(ok, status, detail)
+    finally:
         await resp.aclose()
-        raise _NotStreamable()
-
-    ok, detail = await _judge_initialize_response(resp, status, content_type, start)
-    await resp.aclose()  # _pump 读到 EOF 已自动关；截断/超限路径兜底（幂等）
-    return _result(ok, status, detail)
 
 
 async def _judge_initialize_response(resp: httpx.Response, status: int,

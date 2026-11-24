@@ -385,55 +385,59 @@ async def probe_sse_mapping(app_state, mapping_data: dict) -> dict:
     status_code = resp.status_code
     content_type = next((v for k, v in resp.headers.items()
                          if k.lower() == "content-type"), "")
-    if status_code != 200 or "text/event-stream" not in content_type.lower():
-        await resp.aclose()
-        return _result(False, status_code,
-                       f"非 SSE 响应（status={status_code}，content-type={content_type or '无'}）")
-
-    async def _first_endpoint() -> str | None:
-        buf = b""
-        current_event = ""
-        # M4：压缩字节透传（见 http_forward._response_stream 注释），无参保持到达粒度
-        async for chunk in resp.aiter_raw():
-            buf += chunk
-            while b"\n" in buf:
-                line, _, buf = buf.partition(b"\n")
-                text = line.decode("utf-8", "replace").rstrip("\r")
-                if text.startswith("event:"):
-                    current_event = text[len("event:"):].strip()
-                elif text.startswith("data:") and current_event == "endpoint":
-                    return text[len("data:"):].strip()
-                elif text == "":
-                    # 评审 Minor 2：空行 = 事件块结束，事件名复位（与
-                    # SseEndpointRewriter 对齐）——否则 `event: endpoint\n\n` 之后的
-                    # 默认事件类型 data 行被误判为 endpoint → 假 ok=true
-                    current_event = ""
-        return None
-
-    # 总挂钟期限（M4 定稿）：读流阶段只享总 deadline 的剩余量——send 与读流共享
-    # TEST_PROBE_TIMEOUT，最坏总挂钟 5s（原分阶段语义最坏 ~10s）
-    remaining = max(TEST_PROBE_TIMEOUT - (time.monotonic() - start), 0.05)
+    # 读段整体 try/finally（Task 5 评审机械修，与 probe_streamable_mapping 同规）：
+    # CancelledError（调用方超时/断开）穿透时响应流也必然 aclose——读到即断的连接
+    # 绝不滞留 keepalive 池（aclose 幂等：正常路径读到首 endpoint 即关，finally
+    # 对非 SSE 分支 / 超时 / 读断 / 取消等所有路径兜底）
     try:
-        endpoint_value = await asyncio.wait_for(_first_endpoint(), remaining)
-    except asyncio.TimeoutError:
+        if status_code != 200 or "text/event-stream" not in content_type.lower():
+            return _result(False, status_code,
+                           f"非 SSE 响应（status={status_code}，content-type={content_type or '无'}）")
+
+        async def _first_endpoint() -> str | None:
+            buf = b""
+            current_event = ""
+            # M4：压缩字节透传（见 http_forward._response_stream 注释），无参保持到达粒度
+            async for chunk in resp.aiter_raw():
+                buf += chunk
+                while b"\n" in buf:
+                    line, _, buf = buf.partition(b"\n")
+                    text = line.decode("utf-8", "replace").rstrip("\r")
+                    if text.startswith("event:"):
+                        current_event = text[len("event:"):].strip()
+                    elif text.startswith("data:") and current_event == "endpoint":
+                        return text[len("data:"):].strip()
+                    elif text == "":
+                        # 评审 Minor 2：空行 = 事件块结束，事件名复位（与
+                        # SseEndpointRewriter 对齐）——否则 `event: endpoint\n\n` 之后的
+                        # 默认事件类型 data 行被误判为 endpoint → 假 ok=true
+                        current_event = ""
+            return None
+
+        # 总挂钟期限（M4 定稿）：读流阶段只享总 deadline 的剩余量——send 与读流共享
+        # TEST_PROBE_TIMEOUT，最坏总挂钟 5s（原分阶段语义最坏 ~10s）
+        remaining = max(TEST_PROBE_TIMEOUT - (time.monotonic() - start), 0.05)
+        try:
+            endpoint_value = await asyncio.wait_for(_first_endpoint(), remaining)
+        except asyncio.TimeoutError:
+            return _result(False, status_code,
+                           f"未在 {TEST_PROBE_TIMEOUT:.0f}s 总期限内收到 endpoint 事件（非 MCP SSE 端点？）")
+        except httpx.HTTPError as exc:
+            # 评审 Important 1a：读阶段流断（上游头后 RST / gzip 坏流等）必须兜底——
+            # 原实现穿透到全局 handler 变 500，且 resp 永不 aclose（连接以 ACTIVE
+            # 滞留池内；probe 面向的恰是坏配置上游，高概率触发）
+            return _result(False, status_code,
+                           f"上游 SSE 流读取失败: {type(exc).__name__}: {exc}")
+        if endpoint_value is None:
+            return _result(False, status_code, "流结束仍未收到 endpoint 事件")
+        try:
+            redacted = trace.redact_query(endpoint_value)
+        except ValueError:
+            # 评审 Important 1b：畸形 endpoint 值（如非法 IPv6 字面量 `http://[bad`）
+            # 使 urlparse 抛 ValueError——降级为指纹占位（与转发管线对同一输入降级
+            # 透传同规，见 SseEndpointRewriter._rewrite_endpoint_data）
+            redacted = trace.fingerprint(endpoint_value)
+        return _result(True, status_code, f"SSE 握手成功（endpoint={redacted}）")
+    finally:
+        # 首个 endpoint 事件即断开（§6.6）；失败 / 取消路径同点兜底
         await resp.aclose()
-        return _result(False, status_code,
-                       f"未在 {TEST_PROBE_TIMEOUT:.0f}s 总期限内收到 endpoint 事件（非 MCP SSE 端点？）")
-    except httpx.HTTPError as exc:
-        # 评审 Important 1a：读阶段流断（上游头后 RST / gzip 坏流等）必须兜底——
-        # 原实现穿透到全局 handler 变 500，且 resp 永不 aclose（连接以 ACTIVE
-        # 滞留池内；probe 面向的恰是坏配置上游，高概率触发）
-        await resp.aclose()
-        return _result(False, status_code,
-                       f"上游 SSE 流读取失败: {type(exc).__name__}: {exc}")
-    await resp.aclose()  # 首个 endpoint 事件即断开（§6.6）
-    if endpoint_value is None:
-        return _result(False, status_code, "流结束仍未收到 endpoint 事件")
-    try:
-        redacted = trace.redact_query(endpoint_value)
-    except ValueError:
-        # 评审 Important 1b：畸形 endpoint 值（如非法 IPv6 字面量 `http://[bad`）
-        # 使 urlparse 抛 ValueError——降级为指纹占位（与转发管线对同一输入降级
-        # 透传同规，见 SseEndpointRewriter._rewrite_endpoint_data）
-        redacted = trace.fingerprint(endpoint_value)
-    return _result(True, status_code, f"SSE 握手成功（endpoint={redacted}）")
