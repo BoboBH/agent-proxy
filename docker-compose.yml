@@ -1,0 +1,73 @@
+# agent-proxy 一键部署栈（详见 docs/DEPLOYMENT.md）。
+#
+# ── 复用外部已有 MySQL / Redis ──────────────────────────────────────────────
+# 删去下面 mysql 与 redis 两个服务块，同时删去 agent-proxy 的 depends_on 块，
+# 并在 .env 中把 MYSQL_DSN / REDIS_URL 指向外部地址（compose environment 中的
+# 两条同名覆盖也一并删除，让 .env 值生效）。
+# ────────────────────────────────────────────────────────────────────────────
+services:
+  agent-proxy:
+    build: .
+    image: agent-proxy:latest
+    container_name: agent-proxy
+    ports:
+      - "8800:8800"                       # 宿主机端口占用时改左侧（容器内恒 8800）
+    env_file:
+      - .env                              # MASTER_KEY / EXTERNAL_BASE / TRACE_MODE 等
+    environment:
+      # EXTERNAL_BASE 从 .env / shell 插值透传（本机演示默认值即可；生产换真实域名）
+      EXTERNAL_BASE: ${EXTERNAL_BASE:-http://127.0.0.1:8800}
+      # 容器网络内存储地址固定指向服务名（.env 里的 127.0.0.1 DSN 在容器内不可达，
+      # 由这里覆盖）；改用外部 MySQL/Redis 时删掉这两行（见文件头说明）
+      MYSQL_DSN: mysql+aiomysql://root:${MYSQL_ROOT_PASSWORD:-123456}@mysql:3306/agent_proxy
+      REDIS_URL: redis://redis:6379/1
+    volumes:
+      - logs:/app/logs                    # 运行/审计/追踪三类滚动日志（保留 7 天）
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  mysql:
+    image: mysql:8.4
+    container_name: agent-proxy-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-123456}
+      MYSQL_DATABASE: agent_proxy         # 应用首启只建表不建库，由镜像入口建库
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      # 首次初始化期间 TCP 未就绪，靠 start_period + 足够 retries 兜过
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-p${MYSQL_ROOT_PASSWORD:-123456}"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 30s
+    # ports:
+    #   - "3306:3306"                     # 需从宿主机直连（跑迁移脚本等）时放开
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: agent-proxy-redis
+    # appendonly 可选：开启后会话（ap:sess）/缓存重启保留；不开启则重启后
+    # 仅损失登录态（重新登录）与缓存（自动回源），均自愈
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+volumes:
+  logs:
+  mysql-data:
+  redis-data:

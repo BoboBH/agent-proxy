@@ -73,9 +73,13 @@ def _row_dict(row: ProxyMapping, master_key: str, *, corrupt_ok: bool) -> dict:
     if row.upstream_headers:
         try:
             headers = plain_headers(row.upstream_headers, master_key)
-        except AppError:
+        except AppError as exc:
             if not corrupt_ok:
                 raise
+            # 降级回显路径（row_to_dict_degraded_headers）：docstring 承诺「降级空表
+            # + WARN」——占位符键名不可得且不产出明文，落 WARN 供运维感知损坏面
+            log.warning("映射 headers 密文损坏，回显降级空表（真实值读取仍 fail-closed）: "
+                        "mapping_id=%s err=%s", row.mapping_id, type(exc).__name__)
             headers = {}
     return {
         "id": row.id, "mapping_id": row.mapping_id, "owner_uid": row.owner_uid,

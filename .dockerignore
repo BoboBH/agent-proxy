@@ -1,0 +1,35 @@
+# 镜像只需 pyproject.toml + src/（pip install . 构建面）；其余一律不进构建上下文
+# （既缩上下文体积，也保证 .env / 日志 / 本地资料绝不进镜像层）
+
+# Python 运行面
+.venv/
+**/__pycache__/
+**/*.pyc
+.pytest_cache/
+**/*.egg-info/
+
+# 版本管理与环境（.env 含 MASTER_KEY，绝不进镜像）
+.git/
+.gitignore
+.env
+.env.*
+!.env.example
+
+# 日志与本地资料
+logs*/
+cms-dingtalk/
+logs-manual-check/
+
+# 开发面（测试/mock/文档/脚本不入镜像）
+tests/
+docs/
+scripts/
+README.md
+
+# 部署文件自身与 IDE
+Dockerfile
+docker-compose.yml
+.dockerignore
+.idea/
+.vscode/
+.claude/

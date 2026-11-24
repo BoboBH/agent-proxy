@@ -3906,7 +3906,7 @@ git commit -m "test(M6): 安全专项（state 过期/白名单精确匹配/全�
 9. **delete_mapping 的 TTL 残留键（Task 4 评审携带批债务注记）**：映射删除连带清理 OAuth client/credential 行与 cred 缓存，但三类 TTL 自愈键不主动清理——`ap:oauth:state:*`（≤600s，state 载荷含已删 mapping_id，回调消费时 400 OAUTH_STATE_INVALID 兜底）、`ap:oauth:authz:{mapping_id}:{uid}`（≤600s，binding 查询先回源映射 404，残留无行为影响）、`ap:lock:refresh:{mapping_id}:{uid}`（≤30s，无凭证行后刷新路径不可达）。均有界自愈、无安全面泄漏（state 键值不含 token），不实现清理；如 M7 需要精确清键，随映射删除按前缀扫描。
 10. **client 行密文损坏的用户提示精度（Task 7 评审 Minor 3）**：manual client 的 client_secret 密文不可解（MASTER_KEY 变更）时刷新按不清行处理、仅本请求 401 引导「重新授权」——但 client 行损坏重新授权无法自愈（需 admin 重新 PUT client 覆盖）；M7 页面对该形态区分提示（接口侧可后续细分 config_invalid 回告码）。
 11. **unbind 密文损坏分支代码重复（Task 7 评审 Minor 4）**：与正常解绑尾段的 metric/审计/mapping_id 三行重复，可提取 `_finish_unbind` 辅助函数；纯风格重构不急。
-12. **刷新锁属主校验的 e2e 形态（Task 7 评审 Minor 6）**：`release_refresh_lock` 属主语义目前仅直操 Redis 单元面钉住；慢 token 端点 >30s TTL 的真实属主窗口无 e2e（脚本化需 30s+ 级时延，测试成本高），并发刷新单飞用例间接覆盖释放路径。
+12. **刷新锁属主校验的 e2e 形态（Task 7 评审提出；收尾终审报告 Minor 1 同项重申，M7 计划 M8+ 债务节 12 已并档）**：`release_refresh_lock` 属主语义目前仅直操 Redis 单元面钉住；慢 token 端点 >30s TTL 的真实属主窗口无 e2e（脚本化需 30s+ 级时延，测试成本高），并发刷新单飞用例间接覆盖释放路径。
 13. **等待路径 decrypt_text 未包裹（M6 Task 5/6 评审 Minor 3）**：`_wait_for_others_refresh` 轮询读到的新刷新行解密失败（密钥轮换窗口）→ 500；几乎不可达，M4 前统一处理或加 try 兜底。
 14. **front_redirect origin 大小写敏感（M6 Task 5/6 评审 Minor 6）**：非本次引入，仅可用性误伤；如需收敛改 host.lower() 比较。
 
