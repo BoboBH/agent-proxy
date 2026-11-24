@@ -107,6 +107,11 @@ async def probe_streamable_mapping(app_state, mapping_data: dict) -> dict:
     try:
         if status in (404, 405, 406):
             raise _NotStreamable()
+        if not (200 <= status < 300):
+            # 非 2xx 短路（Task 5 评审携带 polish）：不读体直接判失败，detail 明示
+            # 「上游拒绝」——凭据失效/服务端错误显式暴露，不误报为「缺少 serverInfo
+            # （非 MCP Streamable 端点？）」的形态误导
+            return _result(False, status, f"上游拒绝（status={status}）")
         ok, detail = await _judge_initialize_response(resp, status, content_type, start)
         return _result(ok, status, detail)
     finally:

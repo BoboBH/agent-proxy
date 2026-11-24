@@ -76,9 +76,23 @@ async def test_tools_list_json_with_session_header_upstream_passthrough():
     assert rec["rpc"]["method"] == "tools/list"
 
 
+async def test_notification_post_202_passthrough():
+    """§8.4 矩阵补缺（Task 5 评审携带）：notifications（无 id）POST 经代理 → 上游
+    202 无响应体原样透传（MCP Streamable 规范形态，与直连冒烟 test_post_notification_returns_202 对称）。"""
+    created = await _register_streamable()
+    mid = created["mapping_id"]
+    async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+        r = await c.post(f"{PROXY}/p/{mid}/mcp",
+                         json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+                         headers={**AUTH, **SESSION})
+    assert r.status_code == 202
+    assert streamable_state["received"][-1]["rpc"]["method"] == "notifications/initialized"
+
+
 async def test_tools_call_sse_form_streamed_back():
     """§8.4「application/json 或 text/event-stream」的 SSE 形态：tools/call 短 SSE
-    流经代理流式回传（query 透传切换 mock 形态），JSON-RPC 载荷不改写。"""
+    流经代理流式回传（query 透传切换 mock 形态），JSON-RPC 载荷不改写；
+    Mcp-Session-Id 双向透传在 SSE 形态同样断言（Task 5 评审携带）。"""
     created = await _register_streamable()
     mid = created["mapping_id"]
     async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
@@ -89,6 +103,7 @@ async def test_tools_call_sse_form_streamed_back():
                             headers={**AUTH, **SESSION}) as resp:
             assert resp.status_code == 200
             assert resp.headers["content-type"].startswith("text/event-stream")
+            assert resp.headers["mcp-session-id"] == "sess-m4"   # 响应侧会话头透传
             msg = None
             async for line in sse_line_iter(resp):
                 if line.startswith("data:"):
@@ -98,6 +113,7 @@ async def test_tools_call_sse_form_streamed_back():
     assert "hello-m4" in json.dumps(msg["result"])
     rec = streamable_state["received"][-1]
     assert rec["query"] == {"form": "sse"}                 # query 原样透传（origin 根还原）
+    assert rec["headers"]["mcp-session-id"] == "sess-m4"   # 请求侧会话头透传（双向）
 
 
 async def test_get_mcp_push_stream_passthrough_with_sse_pipeline_semantics():

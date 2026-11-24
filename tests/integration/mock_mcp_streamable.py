@@ -5,7 +5,8 @@
   `Mcp-Session-Id: sess-m4` 响应头（会话由上游自持，§8.4）；tools/list /
   tools/call 默认返回 JSON 形态，查询参数 `?form=sse`（或路径别名
   /mcp-sse-form）切换为**短 SSE 流形态**（单条 `event: message` 后 EOF），
-  覆盖代理对两种响应形态的回传分支；
+  覆盖代理对两种响应形态的回传分支（**与真实服务端的偏离**：不读 Accept 头
+  协商响应形态，由 `?form=sse` / 路径别名显式切换——测试确定性优先）；
 - 会话语义：非 initialize 的 POST 缺（或错值）`Mcp-Session-Id` 头 → 400
   （代理必须把客户端会话头双向透传：请求侧带上游、响应侧带客户端）；
 - notifications（无 id）→ 202 Accepted 无响应体（MCP Streamable 规范形态）；
@@ -79,7 +80,10 @@ def build_mcp_streamable_app() -> FastAPI:
         if sse_form:
             async def gen():
                 yield f"event: message\ndata: {payload}\n\n".encode("utf-8")
-            return StreamingResponse(gen(), media_type="text/event-stream")
+            # SSE 形态同样带会话头（Task 5 评审携带：与 JSON 形态对齐，§8.4 双向透传
+            # 在 SSE 形态响应侧也有断言面）
+            return StreamingResponse(gen(), media_type="text/event-stream",
+                                     headers={"mcp-session-id": SESSION_ID})
         return Response(content=payload.encode("utf-8"), media_type="application/json",
                         headers={"mcp-session-id": SESSION_ID})
 

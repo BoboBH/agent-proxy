@@ -5,6 +5,8 @@ status=active 拦截（disabled → 404 隐藏）→ 按映射 type 分发：
 - http：前缀拼接流式转发（§8.2）；
 - mcp：GET/HEAD 且命中注册端点路径 → SSE 初始连接（endpoint 事件改写，§8.3 第 1 行）；
   其余方法/路径按上游 origin 根还原，复用 http 流式管线（§8.3 第 2 行 / §8.5 统一骨架）。
+  M4：SSE 管线同时服务 Streamable 服务端推送流（GET /mcp，rewriter 字节级无操作，
+  §8.4 注记）。
 """
 from __future__ import annotations
 

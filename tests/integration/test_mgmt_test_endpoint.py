@@ -367,27 +367,28 @@ async def test_mcp_probe_fallback_non_sse_ok_false(client, mcp_sse_upstream_serv
 
 async def test_mcp_probe_no_fallback_on_401(client, mcp_streamable_upstream_server):
     """评审核销 1（回归防）：上游 401（凭据失效）——直接判失败**不回落**，detail
-    含状态码且无「回落」/「SSE 端点」前缀（凭据失效应显式暴露，不掩盖为形态回落）。"""
+    明示「上游拒绝」且无「回落」/「SSE 端点」前缀（凭据失效应显式暴露，不掩盖为
+    形态回落，也不误报为「缺少 serverInfo」的端点形态误导）。"""
     created = await _register(client, type="mcp",
                               upstream_url="http://127.0.0.1:9903/mcp-401")
     resp = await _test(client, created["mapping_id"])
     assert resp.status_code == 200                       # 上游失败不变成代理 5xx
     body = resp.json()
     assert body["ok"] is False and body["status_code"] == 401
-    assert "401" in body["detail"]
+    assert "上游拒绝（status=401）" in body["detail"]
     assert "SSE 端点" not in body["detail"]
     assert "回落" not in body["detail"]
 
 
 async def test_mcp_probe_no_fallback_on_500(client, mcp_streamable_upstream_server):
-    """评审核销 1：上游 500（服务端错误）——同 401 直接判失败不回落。"""
+    """评审核销 1：上游 500（服务端错误）——同 401 非 2xx 短路判失败不回落。"""
     created = await _register(client, type="mcp",
                               upstream_url="http://127.0.0.1:9903/mcp-500")
     resp = await _test(client, created["mapping_id"])
     assert resp.status_code == 200
     body = resp.json()
     assert body["ok"] is False and body["status_code"] == 500
-    assert "500" in body["detail"]
+    assert "上游拒绝（status=500）" in body["detail"]
     assert "SSE 端点" not in body["detail"]
     assert "回落" not in body["detail"]
 

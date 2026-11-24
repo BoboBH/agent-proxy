@@ -434,7 +434,7 @@ async def probe_sse_mapping(app_state, mapping_data: dict) -> dict:
             redacted = trace.redact_query(endpoint_value)
         except ValueError:
             # 评审 Important 1b：畸形 endpoint 值（如非法 IPv6 字面量 `http://[bad`）
-            # 使 urlparse 抛 ValueError——降级为指纹占位（与转发管线对同一输入降级
+            # 使 urlparse 抛 ValueError——降级为脱敏指纹（与转发管线对同一输入降级
             # 透传同规，见 SseEndpointRewriter._rewrite_endpoint_data）
             redacted = trace.fingerprint(endpoint_value)
         return _result(True, status_code, f"SSE 握手成功（endpoint={redacted}）")
