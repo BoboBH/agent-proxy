@@ -4,9 +4,9 @@
 FROM python:3.12-slim
 
 # PyPI 源可覆盖：docker build --build-arg PIP_INDEX_URL=https://pypi.org/simple .
+# ARG 直接用于 RUN（不落 ENV）——运行镜像内不残留构建期配置
 ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
-ENV PIP_INDEX_URL=${PIP_INDEX_URL} \
-    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     # 容器内日志直写文件（LOG_DIR=logs → /app/logs，挂卷持久化），无 stdout 缓冲问题
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
@@ -18,7 +18,7 @@ COPY pyproject.toml ./
 COPY src/ ./src/
 
 # 依赖全为纯 wheel（无编译需求，slim 够用）；装完清理缓存
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir --index-url "${PIP_INDEX_URL}" .
 
 # 非 root 运行；logs 目录属主提前建好（具名卷首挂时继承该属主）
 RUN useradd --create-home --shell /usr/sbin/nologin appuser \

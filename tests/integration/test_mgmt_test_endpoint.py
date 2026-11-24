@@ -283,6 +283,30 @@ async def test_register_rejects_illegal_test_method(client):
     assert resp.status_code == 400 and resp.json()["code"] == "INVALID_PARAM"
 
 
+async def test_register_rejects_extra_test_request_keys(client):
+    """部署前安全评审 Minor 7（部署批次落地）：test_request 键白名单——
+    method/path/expect_status 之外的多余键注册即拒（此前原样入库并在详情回显、
+    probe 不消费；PUT 更新同守卫），回告列出多余键名。"""
+    for extra in ({"body": '{"x":1}'}, {"headers": {"X-1": "1"}, "expect_status": 200}):
+        resp = await client.post(
+            "/api/v1/mappings",
+            json={"type": "http", "upstream_url": "http://127.0.0.1:9901/api/v1",
+                  "headers": {}, "test_request": {"method": "GET", "path": "/", **extra}},
+            headers={"Authorization": f"Bearer {make_token(888)}"})
+        assert resp.status_code == 400 and resp.json()["code"] == "INVALID_PARAM"
+        assert "多余键" in resp.json()["message"]
+    # PUT 更新路径同一守卫
+    created = (await client.post(
+        "/api/v1/mappings",
+        json={"type": "http", "upstream_url": "http://127.0.0.1:9901/api/v1", "headers": {}},
+        headers={"Authorization": f"Bearer {make_token(888)}"})).json()
+    resp = await client.put(
+        f"/api/v1/mappings/{created['mapping_id']}",
+        json={"test_request": {"method": "GET", "path": "/", "unknown": True}},
+        headers={"Authorization": f"Bearer {make_token(888)}"})
+    assert resp.status_code == 400 and "多余键" in resp.json()["message"]
+
+
 # ---------- M4：mcp test 探测式 auto（先 Streamable initialize，拒绝 POST 回落 SSE） ----------
 
 

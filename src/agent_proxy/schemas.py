@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, field_validator
 
 
 _TEST_REQUEST_METHODS = ("DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT")
+_TEST_REQUEST_KEYS = ("method", "path", "expect_status")
 
 
 def _require_method_path(v: dict | None) -> dict | None:
@@ -18,14 +19,17 @@ def _require_method_path(v: dict | None) -> dict | None:
     - 含 expect_status 时必须是 100-599 的整数（bool 除外）——注册时即拒绝畸形值，
       不留 /test 500 隐患（评审修复）。严格模式缺失 expect_status 的语义：
       /test 一律判失败（见 probe_http_mapping docstring），不当作「任意状态码皆可」。
-    - 已知限制（评审 Minor，部署批次安全评审钉住）：method/path/expect_status 之外
-      的多余键**原样入库并在详情回显**，probe 不消费——若未来 probe 演进为消费额外
-      键（如 body/header），须先补白名单；部署评审需确认多余键无注入面/无敏感值明文
-      落 trace 的暴露路径。
+    - 键白名单（部署前安全评审 Minor 7，部署批次落地）：method/path/expect_status
+      之外的多余键注册即拒（此前原样入库并在详情回显、probe 不消费——多余键无
+      消费面即无合法用途，白名单比回显面钉住更稳；probe 未来要消费新键先扩白名单）。
     """
     if v is not None:
         if not {"method", "path"} <= set(v.keys()):
             raise ValueError("test_request 需包含 method/path")
+        extra = sorted(set(v.keys()) - set(_TEST_REQUEST_KEYS))
+        if extra:
+            raise ValueError("test_request 仅支持 "
+                             f"{'/'.join(_TEST_REQUEST_KEYS)} 键，多余键: {', '.join(extra)}")
         method = v.get("method")
         if not isinstance(method, str) or method.upper() not in _TEST_REQUEST_METHODS:
             raise ValueError("test_request.method 必须为合法 HTTP 动词"

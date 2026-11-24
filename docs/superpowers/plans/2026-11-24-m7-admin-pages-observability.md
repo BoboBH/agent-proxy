@@ -2078,12 +2078,13 @@ git commit -m "docs(M7): README 管理页面快速开始/接口速览/指标清�
 6. **M6 页面相关债务承接**：client 行密文损坏（MASTER_KEY 变更）时页面区分提示（接口侧细分 config_invalid 回告码，M6 债务 10）；ENCRYPT_AT_REST（upstream_headers 可选加密）落地后页面提示形态（M6 债务 4）。
 7. **/admin 页面安全响应头**：CSP / X-Content-Type-Options 等未加（无外部输入渲染面，模板变量全走 Jinja 自动转义 + JS esc()）；随安全评审批次补。
 8. **/metrics 访问控制**：设计定位「无鉴权、仅内网可达」（与 /healthz、/readyz 一致）；网关侧隔离属部署交付，随部署文档批次。
-9. **Dockerfile 与 docker-compose**：部署交付（用户要求的部署文档单独批次），本计划不含。
+9. **Dockerfile 与 docker-compose**：部署交付（用户要求的部署文档单独批次），本计划不含——**已由部署批次兑现**（Dockerfile / docker-compose / docs/DEPLOYMENT.md 落地，本机 Docker 实测通过）。
 10. **trace 行为页面的覆盖**：管理页面流量（route=admin）的 trace 记录现为 metadata 模式默认行为（无 body 面板）；如需页面侧排障视图（按 request_id 查 trace/audit），属二期可观测性增强。
-11. **admin 模板打包声明**：`pyproject.toml` 已落 `[tool.setuptools.package-data]`（`agent_proxy = ["admin/*.html"]`，评审修复）——模板随包分发，wheel/容器打包缺失即运行期 TemplateNotFound；部署批次（Dockerfile/compose）核对打包产物含模板目录。
+11. **admin 模板打包声明**：`pyproject.toml` 已落 `[tool.setuptools.package-data]`（`agent_proxy = ["admin/*.html"]`，评审修复）——模板随包分发，wheel/容器打包缺失即运行期 TemplateNotFound；**部署批次已核对兑现**（容器内登录页/主页面实测可渲染）。
 12. **刷新锁属主校验的 e2e 形态（收尾终审报告 Minor 1；与 M6 计划 M7 债务节 12 同项并档）**：`release_refresh_lock` 属主语义目前仅直操 Redis 单元面钉住；慢 token 端点 >30s TTL 的真实属主窗口无 e2e（脚本化需 30s+ 级时延，测试成本高），并发刷新单飞用例间接覆盖释放路径。
 13. **管理面响应 Cache-Control 未加（收尾终审报告 Minor 2）**：`/admin` 页面与 `/api/v1` 管理响应未统一 `Cache-Control: no-store`（登录态页面/身份上下文防浏览器与中间层缓存）；与债务 7 安全响应头（CSP / X-Content-Type-Options）同批随安全评审补。
 14. **README CORS 前置说明（收尾终审报告 Minor 3）**：README 快速开始未前置说明 `CORS_ALLOWED_ORIGINS` 生效面（管理页面为同源 fetch 不依赖 CORS；跨域管理页/浏览器直连 `/api/v1` 才需配白名单，`/p/*` 默认不开）——部署文档 `docs/DEPLOYMENT.md`（部署批次）已承载该说明，README 指引随下次文档批次补一行。
+15. **依赖锁定文件（部署评审提出）**：`pyproject.toml` 依赖为下界约束（`>=`），镜像重建可能拉入新版本、构建不可复现——引入 pip-compile / uv lock 生成锁定文件（部署文档 §7 已提示），随下次工具链批次。
 
 ## 自查记录（对照任务要求）
 

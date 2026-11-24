@@ -40,6 +40,8 @@ cp .env.example .env
 |---|---|---|
 | **`MASTER_KEY`** | **必填，无默认** | 敏感字段（upstream_headers / OAuth 凭证 / client_secret）强制 Fernet 加密的密钥，缺失拒绝启动。高熵生成：`python -c "import secrets; print(secrets.token_urlsafe(48))"`（无本机 python 时：`docker run --rm python:3.12-slim python -c "..."`）。见 §8 Q4 的 `.env` 行内注释规则——urlsafe 字符集天然无 `#`，安全 |
 | **`EXTERNAL_BASE`** | 默认 `http://127.0.0.1:8800` | 本机演示保持默认；局域网联调改 `http://<局域网IP>:8800`（proxy_url 拼接、OAuth redirect_uri、front_redirect 白名单都依赖它；改了它，冒烟命令里的地址也要同步） |
+| `AGENT_PROXY_LISTEN` | 默认 `0.0.0.0:8800` | 保持默认：容器内监听地址恒为 `0.0.0.0:8800`（改宿主机端口走 compose ports 左侧映射） |
+| `MYSQL_ROOT_PASSWORD` | 形态 A 默认 `123456` | 仅形态 A（compose 内置 MySQL）使用：root 密码，与 compose 的 mysql 服务及 DSN 同源插值；形态 B 不需要 |
 | `MYSQL_DSN` / `REDIS_URL` | `.env.example` 默认值 | **形态 A 下不生效**：compose `environment` 将其覆盖为容器网络服务名（`mysql` / `redis`）；只有形态 B 才需要在 `.env` 改这两个值 |
 | `ENV` | `dev` | `prod` 门禁：stub 校验/登录实现拒绝启动（生产见 §5） |
 | `TOKEN_VERIFY_IMPL` / `LOGIN_IMPL` | `stub` | 当前唯一可用实现；`company_sso` / `third_party` 为 M8+ 债务 |
@@ -53,10 +55,16 @@ cp .env.example .env
 ### 3.2 启动
 
 ```bash
-docker compose up -d --build     # 首次构建约 1–3 分钟（pip 走清华源，可用 --build-arg PIP_INDEX_URL 覆盖）
+docker compose up -d --build     # 首次构建约 1–3 分钟（pip 源可用 --build-arg PIP_INDEX_URL 覆盖）
 docker compose ps                # 三服务均 Up（healthy）
-docker compose logs -f agent-proxy   # 首启日志：自动建表 → 「agent-proxy 启动: listen=0.0.0.0:8800 …」
+docker compose logs -f agent-proxy   # stdout 仅 uvicorn 行（见下）
+docker compose exec agent-proxy tail -f /app/logs/agent-proxy.log   # 应用日志走文件（含建表与「agent-proxy 启动: …」行）
 ```
+
+> 日志预期（勿误判）：应用 logger（`agent_proxy`）只挂**文件** handler（滚动日志，propagate=False），
+> 容器 stdout 只有 uvicorn 行——`Application startup complete.` / `Uvicorn running on http://0.0.0.0:8800`；
+> 「agent-proxy 启动: listen=…」等应用日志在 `/app/logs/agent-proxy.log`（经上面的 `tail -f` 查看），
+> stdout 缺它**不是**启动失败。
 
 首启自动建表：应用 lifespan 内 `create_all` 建三张业务表（`proxy_mapping` / `proxy_oauth_credential` / `proxy_oauth_client`），并自检 MySQL（`SELECT 1`）与 Redis（`ping`）连通，任一失败即 fail-fast 退出（见 §8 Q2）。
 
@@ -138,6 +146,7 @@ docker compose down -v     # 连数据卷一并删除：MySQL 数据 / 会话 / 
 ## 7. 升级与回滚
 
 - **升级**：`git pull` → （如该版本含迁移脚本，按 §6 先行）→ `docker compose up -d --build`。镜像重建，**数据卷不动**（MySQL/Redis/logs 全保留）；
+- **依赖钉版提示**：`pyproject.toml` 依赖为下界约束（`>=`）——镜像重建可能拉入新版本导致构建不可复现；建议后续以 pip-compile / uv lock 生成锁定文件固化依赖（记 M8+ 债务），锁定前升级后建议关注依赖变更；
 - **回滚**：`git checkout <旧版本>` → `docker compose up -d --build`。数据卷同样保留；
 - **注意**：若目标版本包含不可逆 schema 变更，回滚代码前先用备份还原数据库（`mysqldump` 还原）——幂等脚本不承诺反向迁移；损坏密文行设计为原状保留（fail-closed 404/409），不会无声销毁现场。
 

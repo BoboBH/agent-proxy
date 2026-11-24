@@ -23,6 +23,9 @@ services:
       REDIS_URL: redis://redis:6379/1
     volumes:
       - logs:/app/logs                    # 运行/审计/追踪三类滚动日志（保留 7 天）
+    # 优雅停机排空 SHUTDOWN_DRAIN_SECONDS 默认 10s；compose 默认宽限期同为 10s，
+    # 边界上 SIGKILL 会掐断排空中的 SSE 流——给 5s 余量
+    stop_grace_period: 15s
     depends_on:
       mysql:
         condition: service_healthy
@@ -42,8 +45,10 @@ services:
     volumes:
       - mysql-data:/var/lib/mysql
     healthcheck:
-      # 首次初始化期间 TCP 未就绪，靠 start_period + 足够 retries 兜过
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-p${MYSQL_ROOT_PASSWORD:-123456}"]
+      # 首次初始化期间 TCP 未就绪，靠 start_period + 足够 retries 兜过；
+      # mysqladmin ping 有应答即存活（Access denied 也返回 0）——不带密码，
+      # 免密码字面量进容器配置与特殊字符拆参问题
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1"]
       interval: 5s
       timeout: 3s
       retries: 30

@@ -4,6 +4,7 @@ __pycache__/
 *.pyc
 .pytest_cache/
 *.egg-info/
+build/
 
 # 环境与密钥
 .env
