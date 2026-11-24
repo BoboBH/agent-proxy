@@ -49,7 +49,7 @@ def parse_proxy_url(raw: str, external_base: str = "") -> str:
 def _registered_out(settings: Settings, data: dict) -> RegisteredOut:
     return RegisteredOut(
         mapping_id=data["mapping_id"], name=data.get("name"), type=data["type"],
-        visibility=data["visibility"],
+        visibility=data["visibility"], auth_mode=data["auth_mode"],
         proxy_url=build_proxy_url(settings, data["mapping_id"], data["upstream_url"], data["type"]),
         headers=placeholder.mask_headers(data["upstream_headers"]), status=data["status"])
 
@@ -71,7 +71,8 @@ async def resolve_mapping(request: Request, proxy_url: str = Query(...),
                           session=Depends(get_db), settings: Settings = Depends(get_settings)):
     mapping_id = parse_proxy_url(proxy_url, settings.external_base)
     data = await get_owned(session, request.app.state.redis, mapping_id,
-                           identity.user_id, settings.cache_ttl)
+                           identity.user_id, settings.cache_ttl,
+                           admin_override=is_admin(identity, settings.admin_role))
     if data is None:
         raise AppError(404, "MAPPING_NOT_FOUND", "映射不存在")
     request.state.audit_action = "view_credentials"
@@ -91,7 +92,7 @@ async def create_mapping_route(request: Request, body: MappingCreate,
             session, request.app.state.redis, settings, identity.user_id,
             type_=body.type, name=body.name, visibility=body.visibility,
             upstream_url=body.upstream_url, headers=body.headers,
-            test_request=body.test_request)
+            test_request=body.test_request, auth_mode=body.auth_mode)
     except ValueError as exc:  # 含 UpstreamNotAllowed（其子类，header 校验/SSRF 均归 400）
         raise AppError(400, "INVALID_PARAM", str(exc))
     request.state.mapping_id = row.mapping_id
@@ -119,7 +120,8 @@ async def get_detail(request: Request, mapping_id: str,
                      identity: Identity = Depends(get_current_identity),
                      session=Depends(get_db), settings: Settings = Depends(get_settings)):
     data = await get_owned(session, request.app.state.redis, mapping_id,
-                           identity.user_id, settings.cache_ttl)
+                           identity.user_id, settings.cache_ttl,
+                           admin_override=is_admin(identity, settings.admin_role))
     if data is None:
         raise AppError(404, "MAPPING_NOT_FOUND", "映射不存在")
     request.state.audit_action = "view_credentials"
@@ -137,7 +139,9 @@ async def update_mapping_route(request: Request, mapping_id: str, body: MappingU
     patch = body.model_dump(exclude_unset=True)
     try:
         data = await update_mapping(session, request.app.state.redis, settings,
-                                    mapping_id, identity.user_id, **patch)
+                                    mapping_id, identity.user_id,
+                                    admin_override=is_admin(identity, settings.admin_role),
+                                    **patch)
     except ValueError as exc:  # 含 UpstreamNotAllowed（其子类，header 校验/SSRF 均归 400）
         raise AppError(400, "INVALID_PARAM", str(exc))
     if data is None:
@@ -149,8 +153,11 @@ async def update_mapping_route(request: Request, mapping_id: str, body: MappingU
 @router.delete("/{mapping_id}", status_code=204)
 async def delete_mapping_route(request: Request, mapping_id: str,
                                identity: Identity = Depends(get_current_identity),
-                               session=Depends(get_db)):
-    ok = await delete_mapping(session, request.app.state.redis, mapping_id, identity.user_id)
+                               session=Depends(get_db),
+                               settings: Settings = Depends(get_settings)):
+    ok = await delete_mapping(session, request.app.state.redis, mapping_id,
+                              identity.user_id,
+                              admin_override=is_admin(identity, settings.admin_role))
     if not ok:
         raise AppError(404, "MAPPING_NOT_FOUND", "映射不存在")
     request.state.mapping_id = mapping_id
@@ -164,7 +171,8 @@ async def test_mapping_route(request: Request, mapping_id: str,
                              settings: Settings = Depends(get_settings)):
     """配置有效性测试（设计 §6.6）：仅注册者、仅已注册映射（防探测滥用）。"""
     data = await get_owned(session, request.app.state.redis, mapping_id,
-                           identity.user_id, settings.cache_ttl)
+                           identity.user_id, settings.cache_ttl,
+                           admin_override=is_admin(identity, settings.admin_role))
     if data is None:
         raise AppError(404, "MAPPING_NOT_FOUND", "映射不存在")
     request.state.audit_action = "test_mapping"

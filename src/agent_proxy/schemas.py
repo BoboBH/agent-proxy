@@ -37,6 +37,7 @@ class MappingCreate(BaseModel):
     type: Literal["http", "mcp"]
     name: str | None = Field(default=None, max_length=128)
     visibility: Literal["private", "public"] = "private"
+    auth_mode: Literal["static", "oauth"] = "static"
     upstream_url: str = Field(min_length=1, max_length=2048)
     headers: dict[str, str] = Field(default_factory=dict)
     test_request: dict | None = None
@@ -50,6 +51,7 @@ class MappingCreate(BaseModel):
 class MappingUpdate(BaseModel):
     name: str | None = Field(default=None, max_length=128)
     visibility: Literal["private", "public"] | None = None
+    auth_mode: Literal["static", "oauth"] | None = None
     upstream_url: str | None = Field(default=None, min_length=1, max_length=2048)
     headers: dict[str, str] | None = None
     test_request: dict | None = None
@@ -67,6 +69,7 @@ class RegisteredOut(BaseModel):
     name: str | None = None
     type: str
     visibility: str
+    auth_mode: str = "static"
     proxy_url: str
     headers: dict[str, str]
     status: str
@@ -97,3 +100,58 @@ class MappingTestOut(BaseModel):
     status_code: int | None = None
     latency_ms: int
     detail: str
+
+
+class OAuthClientSet(BaseModel):
+    """PUT /api/v1/builtin-mappings/{id}/client 请求（admin，手动模式，§14.3）。
+    client_secret 可空（公共客户端 token_auth=none）。"""
+    client_id: str = Field(min_length=1, max_length=256)
+    client_secret: str | None = Field(default=None, max_length=1024)
+    token_auth: Literal["client_secret_basic", "client_secret_post", "none"] = \
+        "client_secret_post"
+    authorize_url: str = Field(min_length=1, max_length=2048)
+    token_url: str = Field(min_length=1, max_length=2048)
+    scopes: str | None = Field(default=None, max_length=512)
+
+
+class OAuthClientOut(BaseModel):
+    """GET/PUT client 响应：secret 只回是否已配置，永不回显值（§14.6）。"""
+    mapping_id: str
+    client_id: str
+    client_secret_configured: bool
+    token_auth: str
+    authorize_url: str | None = None
+    token_url: str | None = None
+    scopes: str | None = None
+    source: str
+
+
+class AuthorizeIn(BaseModel):
+    """POST /{id}/authorize 请求：回跳页面地址（域白名单校验，§14.6）。"""
+    front_redirect: str = Field(min_length=1, max_length=2048)
+
+
+class AuthorizeOut(BaseModel):
+    authorization_url: str
+
+
+class BindingOut(BaseModel):
+    """GET /{id}/binding 响应：binding ∈ unbound/authorizing/bound/invalid（§14.4）。"""
+    mapping_id: str
+    auth_mode: str
+    binding: str
+    expires_at: str | None = None
+    scope: str | None = None
+
+
+class BuiltinItemOut(BaseModel):
+    """GET /api/v1/builtin-mappings 列表项：占位符 headers，不含真实值（§6.5）；
+    binding 仅 auth_mode=oauth 有值（static 为 None）。"""
+    mapping_id: str
+    name: str | None = None
+    type: str
+    proxy_url: str
+    headers: dict[str, str]
+    auth_mode: str
+    binding: str | None = None
+    status: str

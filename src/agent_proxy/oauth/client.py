@@ -19,7 +19,12 @@ import json
 import secrets
 from urllib.parse import urlencode, urlparse
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from ..errors import AppError
+from ..models import OAuthClient
+from .credential import decrypt_text, encrypt_text
 
 STATE_KEY_PREFIX = "ap:oauth:state:"
 
@@ -139,3 +144,50 @@ def validate_front_redirect(front_redirect: str,
     if origin not in normalized:
         raise AppError(400, "INVALID_PARAM", f"front_redirect 域不在白名单: {origin}")
     return front_redirect.strip()
+
+
+# ---------- OAuth 客户端行存取（proxy_oauth_client，uk_mapping 每映射一份） ----------
+
+
+def _row_to_client(row: OAuthClient, master_key: str) -> dict:
+    """行 → client dict：secret 解密、token_auth 归一。revocation_endpoint 仅 DCR
+    经 discovery 实时获得（manual 模式无 revoke 端点配置列，§14.4）。"""
+    return {"client_id": row.client_id,
+            "client_secret": (decrypt_text(row.client_secret, master_key)
+                              if row.client_secret else None),
+            "token_auth": normalize_token_auth(row.token_auth),
+            "authorize_url": row.authorize_url, "token_url": row.token_url,
+            "scopes": row.scopes, "source": row.source,
+            "revocation_endpoint": None}
+
+
+async def load_client_row(session: AsyncSession, mapping_id: str) -> OAuthClient | None:
+    return (await session.execute(
+        select(OAuthClient).where(OAuthClient.mapping_id == mapping_id)
+    )).scalar_one_or_none()
+
+
+async def save_oauth_client_row(session: AsyncSession, mapping_id: str, *,
+                                client_id: str, client_secret_plain: str | None,
+                                token_auth: str, authorize_url: str | None,
+                                token_url: str | None, scopes: str | None,
+                                source: str, master_key: str) -> None:
+    """upsert；client_secret 强制加密落库（§14.6，不受 ENCRYPT_AT_REST 影响）。"""
+    row = await load_client_row(session, mapping_id)
+    secret_ct = (encrypt_text(client_secret_plain, master_key)
+                 if client_secret_plain else None)
+    if row is None:
+        row = OAuthClient(mapping_id=mapping_id, client_id=client_id,
+                          client_secret=secret_ct, token_auth=token_auth,
+                          authorize_url=authorize_url, token_url=token_url,
+                          scopes=scopes, source=source)
+        session.add(row)
+    else:
+        row.client_id = client_id
+        row.client_secret = secret_ct
+        row.token_auth = token_auth
+        row.authorize_url = authorize_url
+        row.token_url = token_url
+        row.scopes = scopes
+        row.source = source
+    await session.commit()

@@ -19,6 +19,7 @@ from .middleware import RequestContextMiddleware
 from . import models as _models  # noqa: F401  注册 ORM 元数据供 create_all
 from .api.mgmt import router as mgmt_router
 from .api.proxy import router as proxy_router
+from .api.builtin import router as builtin_router
 
 log = logging.getLogger("agent_proxy")
 
@@ -74,6 +75,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     errors.install_error_handlers(app)
     app.include_router(mgmt_router)
     app.include_router(proxy_router)
+    app.include_router(builtin_router)
 
     @app.get("/healthz")
     async def healthz():
