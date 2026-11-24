@@ -116,6 +116,17 @@ async def test_put_client_on_static_mapping_400(client):
     assert resp.status_code == 400 and resp.json()["code"] == "OAUTH_NOT_APPLICABLE"
 
 
+async def test_builtin_test_static_by_non_admin_400(client):
+    """M6 终审 Important 1：非 admin 对 static 公共映射 test → 400
+    OAUTH_NOT_APPLICABLE（与 PUT client 守卫对称）——不再走 401
+    OAUTH_BINDING_REQUIRED「请先 authorize」误导（static 的 authorize 本身必
+    400 OAUTH_NOT_APPLICABLE，原语义构成死循环）。admin 测静态配置不受影响
+    （见 test_oauth_injection.py test_builtin_test_admin_static_no_injection）。"""
+    mid = (await _create(client, auth_mode="static"))["mapping_id"]
+    resp = await client.post(f"/api/v1/builtin-mappings/{mid}/test", headers=USER)
+    assert resp.status_code == 400 and resp.json()["code"] == "OAUTH_NOT_APPLICABLE"
+
+
 async def test_builtin_endpoints_hide_private_and_missing(client):
     private = (await _create(client, visibility="private", auth_mode="static",
                              headers=ADMIN))["mapping_id"]

@@ -283,9 +283,11 @@ async def test_builtin_mapping(request: Request, mapping_id: str,
                                session=Depends(get_db),
                                settings: Settings = Depends(get_settings)):
     """公共映射 test（§6.5 / §6.6）：admin 测静态配置（不注入）；其他用户必须已绑定，
-    以本人凭证执行对应验证（mcp 走探测式 auto）。无凭证用户 → 401
-    OAUTH_BINDING_REQUIRED（§6.6 安全边界）；上游以 401 拒绝 → ok=false + detail
-    追加「重新授权」提示（探测语义沿 M4：非 2xx 不回落直接判失败）。"""
+    以本人凭证执行对应验证（mcp 走探测式 auto）。static 公共映射对非 admin → 400
+    OAUTH_NOT_APPLICABLE（无「本人凭证」语义，与 PUT client 守卫对称——原 401
+    引导 authorize 而 static authorize 必 400，误导死循环）；OAuth 映射无凭证用户
+    → 401 OAUTH_BINDING_REQUIRED（§6.6 安全边界）；上游以 401 拒绝 → ok=false +
+    detail 追加「重新授权」提示（探测语义沿 M4：非 2xx 不回落直接判失败）。"""
     data = await load_public_mapping(session, request.app.state.redis, mapping_id,
                                      settings.cache_ttl)
     request.state.audit_action = "test_mapping"
@@ -294,6 +296,11 @@ async def test_builtin_mapping(request: Request, mapping_id: str,
     if is_admin(identity, settings.admin_role):
         probe_data = data                                 # admin：静态配置实测（不注入）
     else:
+        # M6 终审 Important 1：非 admin + static 公共映射无本人凭证可注入——原走
+        # get_callable_credential 返回误导性 401 OAUTH_BINDING_REQUIRED（引导去
+        # authorize，但 static authorize 本身必 400，死循环）；与 PUT client 的
+        # require_oauth_mode 守卫对称，直接 400 OAUTH_NOT_APPLICABLE。
+        require_oauth_mode(data)
         token = await get_callable_credential(session, request.app.state.redis,
                                               request.app.state, data,
                                               identity.user_id, settings.master_key,

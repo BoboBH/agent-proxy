@@ -604,8 +604,8 @@ sequenceDiagram
 | 代理子路径含 `..` 等非法段 | 400 | `INVALID_PARAM` |
 | 用户未完成 OAuth 绑定 / 凭证失效 | 401 | `OAUTH_BINDING_REQUIRED`（body 附授权引导信息） |
 | OAuth state 无效 / 过期 / 重放 / 与回调路径不匹配 | 400 | `OAUTH_STATE_INVALID` |
-| 对 static 公共映射发起 OAuth 语义操作（authorize / binding / client 配置） | 400 | `OAUTH_NOT_APPLICABLE` |
-| OAuth 客户端未配置（查询缺配置 / 回调缺配置） | 400 | `OAUTH_CLIENT_NOT_CONFIGURED` |
+| 对 static 公共映射发起 OAuth 语义操作（authorize / binding / client 配置；test 非 admin 同） | 400 | `OAUTH_NOT_APPLICABLE` |
+| OAuth 客户端未配置（查询缺配置） | 404 | `OAUTH_CLIENT_NOT_CONFIGURED` |
 | OAuth discovery / DCR 失败（body 提示管理员改用手动配置） | 502 | `OAUTH_CLIENT_SETUP_FAILED` |
 | 第三方 token 校验服务不可用 | 503 | `AUTH_SERVICE_UNAVAILABLE` |
 | 上游连接失败 | 502 | `UPSTREAM_ERROR` |
