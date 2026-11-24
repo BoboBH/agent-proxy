@@ -160,6 +160,19 @@ def build_mcp_streamable_app() -> FastAPI:
         # GET 同态非 SSE——回落探测以「非 SSE 响应（status=406…）」收尾
         return HTMLResponse("<html>not acceptable</html>", status_code=406)
 
+    @app.post("/mcp-multiline-data")
+    async def mcp_post_multiline_data():
+        # M5 扫尾 b（已知限制回归面）：initialize 响应为「多行 data:」SSE——
+        # 探测 _first_message_data 只取首个 data 行（不拼接，注释见
+        # forward/mcp_streamable.py）→ 截断 JSON 解析失败 → ok=false，不误判
+        # 成功。真实 SDK（官方 SDK / Inspector）initialize 均为单行 data，本端点
+        # 仅为已知限制的回归钉子，不代表合理上游形态。
+        async def gen():
+            yield b'event: message\ndata: {"jsonrpc": "2.0", "id": 1,\n'
+            yield b'data: "result": {"protocolVersion": "2025-06-18",\n'
+            yield b'data: "serverInfo": {"name": "multiline", "version": "0"}}}\n\n'
+        return StreamingResponse(gen(), media_type="text/event-stream")
+
     @app.get("/mcp")
     async def mcp_get(request: Request):
         streamable_state["last_get_headers"] = dict(request.headers.items())

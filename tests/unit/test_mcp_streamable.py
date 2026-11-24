@@ -67,3 +67,12 @@ async def test_judge_over_max_bytes_truncated_ok_false():
         _FakeResp([head + b"x" * (INITIALIZE_MAX_BYTES + 1)]),
         200, "application/json", time.monotonic())
     assert ok is False and "非合法 JSON" in detail
+
+
+def test_first_message_data_multiline_data_known_limitation():
+    """已知限制钉住（M5 扫尾 b）：多行 data: 不拼接，取首个 data 行——真实 SDK
+    （官方 SDK / Inspector）initialize 均为单行 data；多行形态截断后 JSON 解析失败
+    判 ok=false（不误判成功）。注释见 _first_message_data，回归面见 mock
+    /mcp-multiline-data + test_proxy_mcp_streamable 探测用例。"""
+    raw = b'event: message\ndata: {"jsonrpc": "2.0",\ndata: "id": 1}\n\n'
+    assert _first_message_data(raw) == b'{"jsonrpc": "2.0",'

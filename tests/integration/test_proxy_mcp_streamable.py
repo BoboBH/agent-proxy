@@ -12,7 +12,7 @@ import re
 import httpx
 
 from tests.integration.mock_mcp_streamable import streamable_state
-from tests.utils import make_token, sse_line_iter
+from tests.utils import make_token, read_next_message_data, sse_line_iter
 
 PROXY = "http://127.0.0.1:9910"
 UPSTREAM = "http://127.0.0.1:9903/mcp"
@@ -241,3 +241,55 @@ async def test_streamable_auth_and_path_security_matrix():
     assert r401.status_code == 401 and r401.json()["code"] == "INVALID_TOKEN"
     assert r403.status_code == 403 and r403.json()["code"] == "FORBIDDEN"
     assert r400.status_code == 400 and r400.json()["code"] == "INVALID_PARAM"
+
+
+async def test_streamable_push_stream_trace_body_mode_records_message_events():
+    """M5 扫尾 a（M2 Task 5 评审遗留）：GET /mcp 推送流走 SSE 解析管线——body 模式下
+    message 事件经 trace.log_sse_event 记录（设计 §8.4 注记「推送流的 message 事件行
+    在 body 模式下记录」的集成断言，M3 已实现未断言）；心跳注释行不记录；无 endpoint
+    事件（Streamable 流无改写面，rewriter 字节级无操作）。"""
+    import glob
+    import json as jsonlib
+
+    from agent_proxy import trace as trace_mod
+    from agent_proxy.logging_setup import flush_trace
+
+    created = await _register_streamable()
+    mid = created["mapping_id"]
+    trace_mod.configure("body", 64 * 1024)   # 进程级全局：真实服务器与测试同进程，钉住后恢复
+    try:
+        async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+            async with c.stream("GET", f"{PROXY}/p/{mid}/mcp",
+                                headers={**AUTH, **SESSION}) as resp:
+                assert resp.status_code == 200
+                push = await read_next_message_data(resp)   # 首条推送事件读到即断开
+    finally:
+        flush_trace()
+        trace_mod.configure("metadata", 64 * 1024)          # 恢复（集成夹具 lifespan 亦会重配）
+    records = []
+    for path in glob.glob("logs-test/trace.log.*"):
+        with open(path, encoding="utf-8") as fh:
+            records.extend(jsonlib.loads(x) for x in fh.read().splitlines() if x.strip())
+    reqs = [r for r in records if r.get("mapping_id") == mid and r["phase"] == "request"]
+    assert reqs and reqs[0]["url"] == "http://127.0.0.1:9903/mcp"
+    assert "sk-mcp4-12345678" not in jsonlib.dumps(reqs)    # 敏感头指纹化（红线复扫）
+    req_ids = {r["request_id"] for r in reqs}
+    sse = [r for r in records if r["phase"] == "sse_event" and r["request_id"] in req_ids]
+    assert {r["event"] for r in sse} == {"message"}         # 推送流仅 message（无 endpoint 事件）
+    assert any("push-hello" in r["data"] for r in sse)      # 推送载荷已记录（§11.1）
+    assert not any("ping" in (r.get("data") or "") for r in sse), "心跳注释行不记录"
+
+
+async def test_probe_multiline_data_initialize_judged_failure():
+    """M5 扫尾 b（已知限制回归钉）：/mcp-multiline-data 的 initialize 为多行 data
+    SSE——_first_message_data 只取首行不拼接 → JSON 解析失败 → ok=false
+    「非合法 JSON」（显式失败，不误判 serverInfo 成功；真实 SDK 均单行）。"""
+    created = await _register_streamable(
+        upstream_url="http://127.0.0.1:9903/mcp-multiline-data")
+    mid = created["mapping_id"]
+    async with httpx.AsyncClient() as c:
+        r = await c.post(f"{PROXY}/api/v1/mappings/{mid}/test",
+                         headers={"Authorization": f"Bearer {make_token('u888')}"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is False and "非合法 JSON" in body["detail"]

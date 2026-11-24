@@ -49,7 +49,15 @@ class _NotStreamable(Exception):
 
 def _first_message_data(raw: bytes) -> bytes | None:
     """SSE 形态取首个 message（或未具名）事件的 data 载荷；空行复位事件名
-    （与 SseEndpointRewriter / probe_sse 行解析同规）。"""
+    （与 SseEndpointRewriter / probe_sse 行解析同规）。
+
+    已知限制（M5 扫尾 b，不实现拼接）：SSE 规范允许多个 data: 行按 \n 拼接为
+    单条载荷，本函数只取首个 data 行——真实 MCP SDK（官方 SDK / Inspector）的
+    initialize 响应均为单行 data，探测判定只需取到可解析 JSON；若上游确为多行
+    形态则截断内容 JSON 解析失败判 ok=false（显式失败，不误判成功）。拼接实现
+    需保留行间分隔语义（\n join），收益不抵复杂度。回归钉子：mock
+    /mcp-multiline-data + test_proxy_mcp_streamable 探测用例 + 单测钉首行行为。
+    """
     current_event = ""
     for line in raw.split(b"\n"):
         text = line.decode("utf-8", "replace").rstrip("\r")
