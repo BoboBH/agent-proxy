@@ -15,8 +15,8 @@ from agent_proxy.oauth.credential import (decrypt_text, refresh_lock_key,
                                           release_refresh_lock)
 from tests.utils import make_token
 
-ADMIN = {"Authorization": f"Bearer {make_token('uadmin', 'admin')}"}
-U888 = {"Authorization": f"Bearer {make_token('u888')}"}
+ADMIN = {"Authorization": f"Bearer {make_token(100, 'admin')}"}
+U888 = {"Authorization": f"Bearer {make_token(888)}"}
 FRONT = "http://testserver/console"
 MASTER = "test-master-key"
 
@@ -154,14 +154,14 @@ async def test_refresh_lock_release_owner_checked(client, app):
     """终审遗留 1：刷新锁释放属主校验（Lua compare-and-delete）——非属主删除被拒
     （防持锁超 30s TTL 后误删继任者新锁 → 并发刷新失防），属主删除成功；
     Redis 3.0 的 EVAL 可用性由本用例钉住。"""
-    lock = refresh_lock_key("m-sec", "u888")
+    lock = refresh_lock_key("m-sec", 888)
     await app.state.redis.set(lock, "req-holder-a", ex=30)
-    assert await release_refresh_lock(app.state.redis, "m-sec", "u888",
+    assert await release_refresh_lock(app.state.redis, "m-sec", 888,
                                       "req-holder-b") is False   # 非属主：拒绝
     assert await app.state.redis.get(lock) == b"req-holder-a"    # 锁未被误删
-    assert await release_refresh_lock(app.state.redis, "m-sec", "u888",
+    assert await release_refresh_lock(app.state.redis, "m-sec", 888,
                                       "req-holder-a") is True    # 属主：释放
     assert await app.state.redis.get(lock) is None
     # 幂等：锁不存在时属主再释放 → False（0），不报错
-    assert await release_refresh_lock(app.state.redis, "m-sec", "u888",
+    assert await release_refresh_lock(app.state.redis, "m-sec", 888,
                                       "req-holder-a") is False

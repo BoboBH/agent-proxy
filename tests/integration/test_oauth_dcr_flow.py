@@ -17,9 +17,9 @@ PROXY = "http://127.0.0.1:9910"
 AS = "http://127.0.0.1:9904"
 FRONT = "http://127.0.0.1:9910/console"
 MASTER = "test-master-key"
-ADMIN = {"Authorization": f"Bearer {make_token('uadmin', 'admin')}"}
-U888 = {"Authorization": f"Bearer {make_token('u888')}"}
-U999 = {"Authorization": f"Bearer {make_token('u999')}"}
+ADMIN = {"Authorization": f"Bearer {make_token(100, 'admin')}"}
+U888 = {"Authorization": f"Bearer {make_token(888)}"}
+U999 = {"Authorization": f"Bearer {make_token(999)}"}
 TCP_TIMEOUT = httpx.Timeout(connect=5, read=10, write=10, pool=5)
 
 MANUAL_CLIENT = {"client_id": "manual-cl", "client_secret": "manual-cs-123456",
@@ -74,7 +74,7 @@ async def _proxy_call(mid, path, headers):
         return await c.get(f"{PROXY}/p/{mid}/{path}", headers=headers)
 
 
-async def _cred_token(app, mid, uid="u888") -> str:
+async def _cred_token(app, mid, uid=888) -> str:
     async with app.state.sessionmaker() as session:
         row = (await session.execute(select(OAuthCredential).where(
             OAuthCredential.mapping_id == mid,
@@ -135,7 +135,7 @@ async def test_unbind_revokes_and_401_afterwards(app):
     async with app.state.sessionmaker() as session:
         row = (await session.execute(select(OAuthCredential).where(
             OAuthCredential.mapping_id == mid,
-            OAuthCredential.uid == "u888"))).scalar_one()
+            OAuthCredential.uid == 888))).scalar_one()
     refresh = decrypt_text(row.refresh_token, MASTER)
     async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
         r = await c.delete(f"{PROXY}/api/v1/builtin-mappings/{mid}/binding", headers=U888)
@@ -214,10 +214,10 @@ async def test_unbind_corrupt_ciphertext_204_reauth_guidance(app):
     async with app.state.sessionmaker() as session:
         row = (await session.execute(select(OAuthCredential).where(
             OAuthCredential.mapping_id == mid,
-            OAuthCredential.uid == "u888"))).scalar_one()
+            OAuthCredential.uid == 888))).scalar_one()
         row.access_token = "corrupted-not-fernet"
         await session.commit()
-    await invalidate_credential(app.state.redis, mid, "u888")
+    await invalidate_credential(app.state.redis, mid, 888)
     async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
         r = await c.delete(f"{PROXY}/api/v1/builtin-mappings/{mid}/binding",
                            headers=U888)

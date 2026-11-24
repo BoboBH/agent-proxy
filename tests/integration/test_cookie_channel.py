@@ -13,7 +13,7 @@ BODY = {"type": "http", "upstream_url": "http://10.0.0.5/api/v1",
 
 
 async def test_mgmt_create_list_with_cookie_session_only(client, app):
-    sid = await create_session(app.state.redis, Identity(user_id="u888", user_name="张三"), 600)
+    sid = await create_session(app.state.redis, Identity(user_id=888, user_name="张三"), 600)
     client.cookies.set(SESSION_COOKIE, sid)
     r = await client.post("/api/v1/mappings", json=BODY)
     assert r.status_code == 201 and r.json()["mapping_id"]
@@ -24,18 +24,18 @@ async def test_mgmt_create_list_with_cookie_session_only(client, app):
 
 async def test_bearer_takes_precedence_over_cookie_in_api(client, app):
     r = await client.post("/api/v1/mappings", json=BODY,
-                          headers={"Authorization": f"Bearer {make_token('u888')}"})
+                          headers={"Authorization": f"Bearer {make_token(888)}"})
     assert r.status_code == 201
-    sid = await create_session(app.state.redis, Identity(user_id="u999"), 600)
+    sid = await create_session(app.state.redis, Identity(user_id=999), 600)
     client.cookies.set(SESSION_COOKIE, sid)
     r = await client.get("/api/v1/mappings",
-                         headers={"Authorization": f"Bearer {make_token('u888')}"})
+                         headers={"Authorization": f"Bearer {make_token(888)}"})
     # Bearer（u888）优先于 Cookie（u999）：返回 u888 的 1 条而非 u999 的空列表
     assert r.status_code == 200 and len(r.json()) == 1
 
 
 async def test_destroyed_session_cookie_401(client, app):
-    sid = await create_session(app.state.redis, Identity(user_id="u888"), 600)
+    sid = await create_session(app.state.redis, Identity(user_id=888), 600)
     client.cookies.set(SESSION_COOKIE, sid)
     await destroy_session(app.state.redis, sid)
     r = await client.get("/api/v1/mappings")
@@ -49,7 +49,7 @@ async def test_missing_credentials_401_unchanged(client):
 
 async def test_cookie_channel_public_visibility_guard(client, app):
     """Cookie 通道下权限矩阵照旧生效（页面不做越权捷径的 API 侧兜底）。"""
-    sid = await create_session(app.state.redis, Identity(user_id="u888"), 600)
+    sid = await create_session(app.state.redis, Identity(user_id=888), 600)
     client.cookies.set(SESSION_COOKIE, sid)
     r = await client.post("/api/v1/mappings", json={**BODY, "visibility": "public"})
     assert r.status_code == 403 and r.json()["code"] == "FORBIDDEN"

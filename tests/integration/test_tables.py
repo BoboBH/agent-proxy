@@ -47,3 +47,31 @@ async def test_mapping_visibility_index(app):
             "AND column_name='visibility'"), {"db": db})
         names = {r[0] for r in rows}
     assert "ix_proxy_mapping_visibility" in names
+
+
+async def test_sensitive_column_types(app):
+    """收尾批次 schema 定型：user_id 整数化（owner_uid/uid BIGINT，索引保留）+
+    upstream_headers 强制加密（TEXT 密文列，JSON 明文列废止）。"""
+    db = app.state.engine.url.database
+    async with app.state.engine.connect() as conn:
+        rows = await conn.execute(text(
+            "SELECT table_name, column_name, data_type FROM information_schema.columns "
+            "WHERE table_schema=:db AND ((table_name='proxy_mapping' AND column_name IN "
+            "('owner_uid','upstream_headers')) OR (table_name='proxy_oauth_credential' "
+            "AND column_name='uid'))"), {"db": db})
+        types = {f"{t}.{c}": d for t, c, d in rows}
+    assert types["proxy_mapping.owner_uid"] == "bigint"
+    assert types["proxy_oauth_credential.uid"] == "bigint"
+    assert types["proxy_mapping.upstream_headers"] == "text"
+
+
+async def test_uid_columns_indexed(app):
+    """整数化后索引保留（owner_uid / uid 均有单列索引，归属过滤与 uk 前缀依赖）。"""
+    db = app.state.engine.url.database
+    async with app.state.engine.connect() as conn:
+        rows = await conn.execute(text(
+            "SELECT table_name, index_name FROM information_schema.statistics "
+            "WHERE table_schema=:db AND column_name IN ('owner_uid','uid')"),
+            {"db": db})
+        indexed = {f"{t}" for t, _ in rows}
+    assert {"proxy_mapping", "proxy_oauth_credential"} <= indexed

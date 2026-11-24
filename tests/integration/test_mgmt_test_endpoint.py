@@ -12,7 +12,7 @@ from tests.integration.mock_mcp_streamable import streamable_state
 from tests.utils import make_token
 
 
-async def _register(client, user="u888", **overrides):
+async def _register(client, user=888, **overrides):
     payload = {"type": "http", "upstream_url": "http://127.0.0.1:9901/api/v1",
                "headers": {"Authorization": "Bearer sk-real-12345678"}, **overrides}
     resp = await client.post("/api/v1/mappings", json=payload,
@@ -21,7 +21,7 @@ async def _register(client, user="u888", **overrides):
     return resp.json()
 
 
-async def _test(client, mapping_id, user="u888"):
+async def _test(client, mapping_id, user=888):
     hdrs = {"Authorization": f"Bearer {make_token(user)}"}
     return await client.post(f"/api/v1/mappings/{mapping_id}/test", headers=hdrs)
 
@@ -84,8 +84,8 @@ async def test_http_probe_upstream_down_ok_false(client):
 
 
 async def test_test_endpoint_owner_only_404(client):
-    created = await _register(client, user="u888")
-    resp = await _test(client, created["mapping_id"], user="u999")
+    created = await _register(client, user=888)
+    resp = await _test(client, created["mapping_id"], user=999)
     assert resp.status_code == 404 and resp.json()["code"] == "MAPPING_NOT_FOUND"
 
 
@@ -247,7 +247,7 @@ async def test_register_rejects_malformed_expect_status(client):
               "headers": {},
               "test_request": {"method": "GET", "path": "/status/201",
                                "expect_status": "abc"}},
-        headers={"Authorization": f"Bearer {make_token('u888')}"})
+        headers={"Authorization": f"Bearer {make_token(888)}"})
     assert resp.status_code == 400 and resp.json()["code"] == "INVALID_PARAM"
 
 
@@ -279,7 +279,7 @@ async def test_register_rejects_illegal_test_method(client):
         json={"type": "http", "upstream_url": "http://127.0.0.1:9901/api/v1",
               "headers": {},
               "test_request": {"method": "TRACE", "path": "/orders", "expect_status": 200}},
-        headers={"Authorization": f"Bearer {make_token('u888')}"})
+        headers={"Authorization": f"Bearer {make_token(888)}"})
     assert resp.status_code == 400 and resp.json()["code"] == "INVALID_PARAM"
 
 

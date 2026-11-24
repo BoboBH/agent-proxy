@@ -22,13 +22,13 @@ def _read(path):
 
 def test_off_mode_no_records(tmp_path):
     path = _capture(tmp_path, "off")
-    trace.log_request("r1", "u1", "m1", "GET", "http://x", {"Authorization": "Bearer abc"})
+    trace.log_request("r1", 1, "m1", "GET", "http://x", {"Authorization": "Bearer abc"})
     assert _read(path) == []
 
 
 def test_metadata_mode_fingerprint_no_body(tmp_path):
     path = _capture(tmp_path, "metadata")
-    trace.log_request("r1", "u1", "m1", "POST", "http://x/api",
+    trace.log_request("r1", 1, "m1", "POST", "http://x/api",
                       {"X-API-Key": "sk-very-secret-key", "Content-Type": "application/json"},
                       body=b'{"a":1}', content_type="application/json")
     trace.log_response("r1", 200, 123)
@@ -43,7 +43,7 @@ def test_metadata_mode_fingerprint_no_body(tmp_path):
 
 def test_body_mode_masks_sensitive_but_keeps_normal(tmp_path):
     path = _capture(tmp_path, "body")
-    trace.log_request("r1", "u1", "m1", "POST", "http://x",
+    trace.log_request("r1", 1, "m1", "POST", "http://x",
                       {"Authorization": "Bearer sk-abc12345", "Accept": "application/json"},
                       body=b'{"q":1}', content_type="application/json")
     recs = _read(path)
@@ -55,14 +55,14 @@ def test_body_mode_masks_sensitive_but_keeps_normal(tmp_path):
 
 def test_body_truncation(tmp_path):
     path = _capture(tmp_path, "body", limit=10)
-    trace.log_request("r1", "u1", "m1", "POST", "http://x", {}, body=b"0123456789ABCDEF")
+    trace.log_request("r1", 1, "m1", "POST", "http://x", {}, body=b"0123456789ABCDEF")
     recs = _read(path)
     assert recs[0]["body_truncated"] is True and len(recs[0]["body"]) == 10
 
 
 def test_binary_body_skipped(tmp_path):
     path = _capture(tmp_path, "body")
-    trace.log_request("r1", "u1", "m1", "POST", "http://x", {}, body=b"\x00\x01", content_type="application/octet-stream")
+    trace.log_request("r1", 1, "m1", "POST", "http://x", {}, body=b"\x00\x01", content_type="application/octet-stream")
     recs = _read(path)
     assert recs[0]["body_bytes"] == 2 and "body" not in recs[0]
 
@@ -95,7 +95,7 @@ def test_fingerprint_long_value_first4_last4(value, expected):
 
 def test_sensitive_header_substring_fallback_in_body_mode(tmp_path):
     path = _capture(tmp_path, "body")
-    trace.log_request("r1", "u1", "m1", "POST", "http://x",
+    trace.log_request("r1", 1, "m1", "POST", "http://x",
                       {"X-Custom-Token": "tok-9ab2", "X-Request-Id": "abc123"},
                       body=b'{"q":1}', content_type="application/json")
     recs = _read(path)
@@ -106,9 +106,9 @@ def test_sensitive_header_substring_fallback_in_body_mode(tmp_path):
 
 def test_plus_json_and_yaml_content_types_kept_as_text(tmp_path):
     path = _capture(tmp_path, "body")
-    trace.log_request("r1", "u1", "m1", "POST", "http://x", {},
+    trace.log_request("r1", 1, "m1", "POST", "http://x", {},
                       body=b'{"a":1}', content_type="application/vnd.api+json")
-    trace.log_request("r2", "u1", "m1", "POST", "http://x", {},
+    trace.log_request("r2", 1, "m1", "POST", "http://x", {},
                       body=b"a: 1", content_type="application/yaml; charset=utf-8")
     recs = _read(path)
     assert recs[0]["body"] == '{"a":1}' and recs[0]["body_truncated"] is False
@@ -138,7 +138,7 @@ def test_redact_query_no_query_unchanged():
 
 def test_log_request_redacts_url_query(tmp_path):
     path = _capture(tmp_path, "metadata")
-    trace.log_request("r1", "u1", "m1", "GET",
+    trace.log_request("r1", 1, "m1", "GET",
                       "http://x/api?access_token=secret-token-value", {})
     recs = _read(path)
     assert "secret-token-value" not in json.dumps(recs)
@@ -162,7 +162,7 @@ def test_request_side_compressed_body_recorded_as_binary(tmp_path):
     """M4 评审携带项：request 侧同样有压缩传输编码（调用方 POST gzip body）——
     log_request 传 content_encoding 走二进制路径，trace 不记乱码。"""
     path = _capture(tmp_path, "body")
-    trace.log_request("r1", "u1", "m1", "POST", "http://x", {},
+    trace.log_request("r1", 1, "m1", "POST", "http://x", {},
                       body=b"\x1f\x8b\x08\x00req", content_type="application/json",
                       content_encoding="gzip")
     recs = _read(path)
@@ -173,7 +173,7 @@ def test_identity_content_encoding_treated_as_text(tmp_path):
     """M4 评审携带项：identity = 无压缩（RFC 9110），请求/响应体为明文——
     不得按二进制丢弃，仍按文本记录。"""
     path = _capture(tmp_path, "body")
-    trace.log_request("r1", "u1", "m1", "POST", "http://x", {},
+    trace.log_request("r1", 1, "m1", "POST", "http://x", {},
                       body=b'{"q":1}', content_type="application/json",
                       content_encoding="identity")
     trace.log_response("r1", 200, 5, body=b'{"ok":true}', content_type="application/json",

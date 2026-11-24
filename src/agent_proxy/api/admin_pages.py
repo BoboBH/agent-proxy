@@ -78,7 +78,7 @@ async def admin_index(request: Request, settings: Settings = Depends(get_setting
     request.state.user_name = identity.user_name or ""
     request.state.audit_action = "view_admin_page"
     return templates.TemplateResponse(request, "index.html", {
-        "user_name": identity.user_name or identity.user_id,
+        "user_name": identity.user_name or str(identity.user_id),
         # is_admin 仅决定入口显隐；越权请求仍由 /api/v1 既有权限矩阵兜底（403/404）
         "is_admin": identity.role == settings.admin_role,
     })

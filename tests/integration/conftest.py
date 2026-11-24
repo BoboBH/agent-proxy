@@ -23,6 +23,9 @@ def _clean_test_logs():
 
 @pytest.fixture(scope="session", autouse=True)
 def _recreate_test_db():
+    """建测试库 + drop 三业务表（收尾批次 schema 变更：owner_uid/uid BIGINT 化、
+    upstream_headers JSON→TEXT 密文列；测试基建允许 drop——表内均为测试数据，
+    无状态保留语义），随后 app lifespan 的 create_all 按现行 models 重建。"""
     conn = pymysql.connect(host="127.0.0.1", user="root", password="123456", port=3306)
     try:
         with conn.cursor() as cur:
@@ -30,6 +33,8 @@ def _recreate_test_db():
                 "CREATE DATABASE IF NOT EXISTS agent_proxy_test "
                 "DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
             )
+            for table in ("proxy_oauth_credential", "proxy_oauth_client", "proxy_mapping"):
+                cur.execute(f"DROP TABLE IF EXISTS agent_proxy_test.{table}")
             conn.commit()
     finally:
         conn.close()

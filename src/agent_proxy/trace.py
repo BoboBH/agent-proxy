@@ -94,7 +94,7 @@ def _write(record: dict) -> None:
     _trace.info(json.dumps(line, ensure_ascii=False))
 
 
-def log_request(request_id: str, uid: str, mapping_id: str, method: str, url: str,
+def log_request(request_id: str, uid: int | str, mapping_id: str, method: str, url: str,
                 headers: dict[str, str], body: bytes = b"",
                 body_bytes: int | None = None, content_type: str = "",
                 content_encoding: str = "") -> None:

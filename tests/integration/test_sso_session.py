@@ -6,7 +6,7 @@ from agent_proxy.sso.session import (create_session, destroy_session, get_sessio
 
 
 async def test_create_then_get_roundtrip_with_ttl(app):
-    identity = Identity(user_id="u888", user_name="张三", role="admin")
+    identity = Identity(user_id=888, user_name="张三", role="admin")
     sid = await create_session(app.state.redis, identity, 600)
     assert await get_session(app.state.redis, sid) == identity
     ttl = await app.state.redis.ttl(session_key(sid))
@@ -24,7 +24,7 @@ async def test_get_missing_or_garbage_sid_returns_none(app):
 
 
 async def test_destroy_session_removes_key_and_is_idempotent(app):
-    sid = await create_session(app.state.redis, Identity(user_id="u1"), 600)
+    sid = await create_session(app.state.redis, Identity(user_id=1), 600)
     await destroy_session(app.state.redis, sid)
     assert await get_session(app.state.redis, sid) is None
     await destroy_session(app.state.redis, sid)                      # 幂等（重放/重复登出安全）
@@ -33,7 +33,7 @@ async def test_destroy_session_removes_key_and_is_idempotent(app):
 async def test_session_ttl_argument_from_settings(app):
     """接线形态钉住：admin_auth_callback 以 settings.admin_session_ttl 传参。"""
     settings = app.state.settings
-    sid = await create_session(app.state.redis, Identity(user_id="u2"),
+    sid = await create_session(app.state.redis, Identity(user_id=2),
                                settings.admin_session_ttl)
     ttl = await app.state.redis.ttl(session_key(sid))
     assert 0 < ttl <= settings.admin_session_ttl

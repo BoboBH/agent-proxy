@@ -50,8 +50,10 @@ def encode_identity(identity: Identity) -> str:
 
 
 def decode_identity(raw: str | bytes) -> Identity | None:
-    """载荷非法（坏 JSON / 非对象 / 缺或空 user_id / user_name-role 类型不符）
-    → None（按未登录处理，不抛——会话数据损坏不该变成 500）。"""
+    """载荷非法（坏 JSON / 非对象 / 缺或非 int 的 user_id / user_name-role 类型不符）
+    → None（按未登录处理，不抛——会话数据损坏不该变成 500）。
+    user_id 必须 int（收尾批次整数化；bool 不是 int 身份）。旧 str 形态载荷
+    （升级前写入的会话）同样拒收 → 按未登录处理，重新登录即得新形态。"""
     try:
         payload = json.loads(raw)
     except (TypeError, ValueError):
@@ -61,8 +63,8 @@ def decode_identity(raw: str | bytes) -> Identity | None:
     user_id = payload.get("user_id")
     user_name = payload.get("user_name")
     role = payload.get("role")
-    if not user_id or not isinstance(user_id, str):
-        return None                                   # 空 / 缺 / 非 str 一律拒收
+    if not isinstance(user_id, int) or isinstance(user_id, bool):
+        return None                                   # 缺 / 非 int（含 str 残留）一律拒收
     if user_name is not None and not isinstance(user_name, str):
         return None
     if role is not None and not isinstance(role, str):

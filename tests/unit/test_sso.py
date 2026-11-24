@@ -28,8 +28,8 @@ async def test_stub_exchange_decodes_ticket_to_identity():
     from tests.utils import make_token
 
     identity = await StubLoginProvider().exchange(
-        make_token("u888", role="admin", user_name="张三"))
-    assert identity == Identity(user_id="u888", user_name="张三", role="admin")
+        make_token(888, role="admin", user_name="张三"))
+    assert identity == Identity(user_id=888, user_name="张三", role="admin")
 
 
 async def test_stub_exchange_invalid_ticket_raises_token_invalid():
@@ -75,16 +75,19 @@ def test_session_key_prefix_and_sid_shape():
 
 
 def test_identity_payload_encode_decode_roundtrip():
-    raw = encode_identity(Identity(user_id="u1", user_name="张三", role="admin"))
-    assert decode_identity(raw) == Identity(user_id="u1", user_name="张三", role="admin")
-    assert decode_identity(encode_identity(Identity(user_id="u2"))) == Identity(user_id="u2")
+    """user_id 为 int（收尾批次整数化）：JSON 往返保持 int 同型。"""
+    raw = encode_identity(Identity(user_id=1, user_name="张三", role="admin"))
+    assert decode_identity(raw) == Identity(user_id=1, user_name="张三", role="admin")
+    assert decode_identity(encode_identity(Identity(user_id=2))) == Identity(user_id=2)
 
 
 def test_decode_identity_rejects_malformed_payload():
     assert decode_identity("not-json") is None
     assert decode_identity('{"no_user_id": 1}') is None
-    assert decode_identity('{"user_id": 123}') is None              # user_id 必须 str
-    assert decode_identity(b'{"user_id": "bin"}') == Identity(user_id="bin")   # bytes 兼容
+    # user_id 必须 int：str 残留（升级前写入的会话）/数字串一律拒收 → 未登录重登
+    assert decode_identity('{"user_id": "888"}') is None
+    assert decode_identity(b'{"user_id": 888}') == Identity(user_id=888)       # bytes 兼容
+    assert decode_identity('{"user_id": true}') is None             # bool 不是 int 身份
 
 
 def test_decode_identity_rejects_non_dict_json():
@@ -94,12 +97,12 @@ def test_decode_identity_rejects_non_dict_json():
 
 
 def test_decode_identity_rejects_non_string_fields():
-    assert decode_identity('{"user_id": "u1", "user_name": 123}') is None   # user_name 必须 str
-    assert decode_identity('{"user_id": "u1", "role": 5}') is None          # role 同型校验
+    assert decode_identity('{"user_id": 1, "user_name": 123}') is None   # user_name 必须 str
+    assert decode_identity('{"user_id": 1, "role": 5}') is None          # role 同型校验
 
 
-def test_decode_identity_rejects_empty_user_id():
-    assert decode_identity('{"user_id": ""}') is None               # 空 user_id = 未认证
+def test_decode_identity_rejects_missing_user_id():
+    assert decode_identity('{"user_id": null}') is None             # 缺 user_id = 未认证
 
 
 async def test_get_session_redis_error_returns_none_with_warning(caplog):

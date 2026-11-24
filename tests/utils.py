@@ -2,7 +2,8 @@ import base64
 import json
 
 
-def make_token(user_id: str = "u888", role: str | None = None, user_name: str = "张三") -> str:
+def make_token(user_id: int = 888, role: str | None = None, user_name: str = "张三") -> str:
+    """user_id 为 int（收尾批次整数化，与 Identity.user_id: int 同型）。"""
     payload = {"user_id": user_id, "user_name": user_name}
     if role:
         payload["role"] = role

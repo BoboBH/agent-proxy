@@ -13,7 +13,7 @@ from agent_proxy.oauth.credential import (cred_cache_key, delete_credential,
 
 MASTER = "test-master-key"
 MID = "m1m2m3m4m5m6"
-UID = "u888"
+UID = 888
 
 
 async def _save(app, uid=UID, expires=None, access="at-plain-123456",
@@ -106,16 +106,16 @@ async def test_save_credential_concurrent_upsert_race_resolves_as_update(app):
             select(func.count()).select_from(OAuthCredential))).scalar_one() == 0
         # B：并发请求同 uk 插入并提交
         async with app.state.sessionmaker() as sb:
-            await save_credential(sb, app.state.redis, MID, "u-race",
+            await save_credential(sb, app.state.redis, MID, 901,
                                   access_token_ct=encrypt_text("at-from-b-123456", MASTER),
                                   refresh_token_ct=None, expires_at=None,
                                   scope="read", master_key=MASTER)
         # A：此刻才 save——快照里无行 → INSERT → 撞 uk → 回滚重试为 UPDATE
-        await save_credential(sa, app.state.redis, MID, "u-race",
+        await save_credential(sa, app.state.redis, MID, 901,
                               access_token_ct=encrypt_text(access_a, MASTER),
                               refresh_token_ct=None, expires_at=None,
                               scope="read", master_key=MASTER)
-    row = await _raw_row(app, uid="u-race")            # 恰好一行（uk 保证），A 的值胜出
+    row = await _raw_row(app, uid=901)            # 恰好一行（uk 保证），A 的值胜出
     assert decrypt_text(row.access_token, MASTER) == access_a
     assert row.status == "active"
 

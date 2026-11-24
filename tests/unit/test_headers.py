@@ -8,13 +8,13 @@ from agent_proxy.headers import build_outbound_headers, filter_response_headers,
 
 def test_stored_full_plus_whitelist_caller_jwt_not_forwarded():
     out = build_outbound_headers(
-        {"Authorization": "Bearer sk-real-12345678", "X-User-Id": "u888"},
+        {"Authorization": "Bearer sk-real-12345678", "X-User-Id": "u-888"},
         {"Authorization": "Bearer caller-system-jwt", "Accept": "application/json",
          "X-Caller-Only": "should-not-leak", "User-Agent": "agent/1.0",
          "Cookie": "sid=abc"},
         content_type="application/json", content_length="11", content_encoding=None)
     assert out["authorization"] == "Bearer sk-real-12345678"      # 存储还原（调用方 JWT 被丢弃）
-    assert out["x-user-id"] == "u888"
+    assert out["x-user-id"] == "u-888"
     assert out["accept"] == "application/json"                    # 白名单透传
     assert out["content-type"] == "application/json"
     assert out["content-length"] == "11"

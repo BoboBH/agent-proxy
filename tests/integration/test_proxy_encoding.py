@@ -14,7 +14,7 @@ import httpx
 from tests.utils import make_token
 
 PROXY = "http://127.0.0.1:9910"
-AUTH = {"Authorization": f"Bearer {make_token('u888')}"}
+AUTH = {"Authorization": f"Bearer {make_token(888)}"}
 TCP_TIMEOUT = httpx.Timeout(connect=5, read=10, write=10, pool=5)
 
 
@@ -41,7 +41,7 @@ async def test_http_pipeline_gzip_body_passthrough_bytes_exact():
     修复前：aiter_bytes 自动解压（明文体 > 声明 content-length），真实链路上
     代理侧 uvicorn/h11 报 "Too much data" 断连；修复后压缩字节原样透传。
     """
-    created = await _register("u888", {"type": "http",
+    created = await _register(888, {"type": "http",
                                        "upstream_url": "http://127.0.0.1:9901/api/v1"})
     status, headers, raw = await _raw_response(
         "GET", f"{PROXY}/p/{created['mapping_id']}/gzip-text", AUTH)
@@ -55,7 +55,7 @@ async def test_http_pipeline_gzip_body_passthrough_bytes_exact():
 
 async def test_sse_pipeline_plain_branch_gzip_passthrough_bytes_exact():
     """M3 SSE 管线 plain 分支（非 event-stream 响应原样回传路径）同样 aiter_raw。"""
-    created = await _register("u888", {"type": "mcp",
+    created = await _register(888, {"type": "mcp",
                                        "upstream_url": "http://127.0.0.1:9902/sse-gzip-html"})
     status, headers, raw = await _raw_response(
         "GET", f"{PROXY}/p/{created['mapping_id']}/sse-gzip-html", AUTH)

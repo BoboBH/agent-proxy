@@ -17,7 +17,6 @@ os.environ.update({
     "SSRF_ALLOW_PRIVATE": "true",
     "MAX_BODY_SIZE": "1MB",
     "CORS_ALLOWED_ORIGINS": "http://127.0.0.1:9910,http://testserver",
-    "ENCRYPT_AT_REST": "false",
     "MASTER_KEY": "test-master-key",
     "TRACE_MODE": "metadata",
     "LOG_DIR": "logs-test",
@@ -41,7 +40,8 @@ async def client(app):
         yield c
 
 
-def make_token(user_id: str = "u888", role: str | None = None, user_name: str = "张三") -> str:
+def make_token(user_id: int = 888, role: str | None = None, user_name: str = "张三") -> str:
+    """user_id 为 int（收尾批次整数化，与 Identity.user_id: int 同型）。"""
     payload = {"user_id": user_id, "user_name": user_name}
     if role:
         payload["role"] = role
@@ -49,5 +49,5 @@ def make_token(user_id: str = "u888", role: str | None = None, user_name: str = 
     return f"stub.{body}.sig"
 
 
-def auth(user_id: str = "u888", role: str | None = None) -> dict[str, str]:
+def auth(user_id: int = 888, role: str | None = None) -> dict[str, str]:
     return {"Authorization": f"Bearer {make_token(user_id, role)}"}

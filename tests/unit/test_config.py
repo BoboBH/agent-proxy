@@ -5,6 +5,7 @@ from agent_proxy.config import ConfigError, Settings, load_dotenv_file
 BASE = {
     "MYSQL_DSN": "mysql+aiomysql://root:123456@127.0.0.1:3306/agent_proxy",
     "REDIS_URL": "redis://127.0.0.1:6379/1",
+    "MASTER_KEY": "test-master-key",
 }
 
 
@@ -13,6 +14,7 @@ def test_defaults():
     assert s.env == "dev" and s.token_verify_impl == "stub" and s.cache_ttl == 300
     assert s.max_body_size == 10 * 1024 * 1024 and s.trace_body_max_size == 64 * 1024
     assert s.trace_mode == "metadata" and s.upstream_max_redirects == 3
+    assert s.master_key == "test-master-key"     # 收尾批次：MASTER_KEY 必填
 
 
 def test_parse_size_and_external_base_strip():
@@ -43,24 +45,25 @@ def test_prod_with_third_party_rejected_until_impl_lands():
         )
 
 
-def test_encrypt_with_master_key_ok():
-    s = Settings.from_env({**BASE, "ENCRYPT_AT_REST": "true", "MASTER_KEY": "k"})
-    assert s.encrypt_at_rest is True and s.master_key == "k"
-
-
 def test_missing_dsn_rejected():
     with pytest.raises(ConfigError):
-        Settings.from_env({"REDIS_URL": "redis://127.0.0.1:6379/1"})
+        Settings.from_env({"REDIS_URL": "redis://127.0.0.1:6379/1",
+                           "MASTER_KEY": "test-master-key"})
+
+
+def test_missing_master_key_rejected():
+    """收尾批次：敏感字段（upstream_headers / OAuth 凭证 / client_secret）强制加密，
+    MASTER_KEY 无开关必填；ENCRYPT_AT_REST 可选开关已废止（Setting 无此字段）。"""
+    with pytest.raises(ConfigError):
+        Settings.from_env({**BASE, "MASTER_KEY": ""})
+    with pytest.raises(ConfigError):
+        Settings.from_env({k: v for k, v in BASE.items() if k != "MASTER_KEY"})
+    assert not hasattr(Settings(), "encrypt_at_rest")
 
 
 def test_bad_trace_mode_rejected():
     with pytest.raises(ConfigError):
         Settings.from_env({**BASE, "TRACE_MODE": "loud"})
-
-
-def test_encrypt_requires_master_key():
-    with pytest.raises(ConfigError):
-        Settings.from_env({**BASE, "ENCRYPT_AT_REST": "true"})
 
 
 def _write_env(tmp_path, content):

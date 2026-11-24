@@ -16,9 +16,9 @@ from agent_proxy.oauth.credential import (encrypt_text, load_credential,
                                           save_credential)
 from tests.utils import make_token
 
-ADMIN = {"Authorization": f"Bearer {make_token('uadmin', 'admin')}"}
-ADMIN2 = {"Authorization": f"Bearer {make_token('uadmin2', 'admin')}"}
-USER = {"Authorization": f"Bearer {make_token('u888')}"}
+ADMIN = {"Authorization": f"Bearer {make_token(100, 'admin')}"}
+ADMIN2 = {"Authorization": f"Bearer {make_token(101, 'admin')}"}
+USER = {"Authorization": f"Bearer {make_token(888)}"}
 MASTER = "test-master-key"
 
 CLIENT_BODY = {"client_id": "manual-cl", "client_secret": "manual-cs-123456",
@@ -235,7 +235,7 @@ async def test_delete_mapping_cascades_oauth_rows(client, app):
     resp = await _put_client(client, mid)
     assert resp.status_code == 200
     async with app.state.sessionmaker() as session:
-        await save_credential(session, app.state.redis, mid, "u888",
+        await save_credential(session, app.state.redis, mid, 888,
                               access_token_ct=encrypt_text("at-cascade-123456", MASTER),
                               refresh_token_ct=None, expires_at=None, scope="read",
                               master_key=MASTER)
@@ -246,4 +246,4 @@ async def test_delete_mapping_cascades_oauth_rows(client, app):
             OAuthClient.mapping_id == mid))).scalar_one_or_none() is None
         assert (await session.execute(select(OAuthCredential).where(
             OAuthCredential.mapping_id == mid))).scalars().all() == []
-        assert await load_credential(session, app.state.redis, mid, "u888") is None
+        assert await load_credential(session, app.state.redis, mid, 888) is None

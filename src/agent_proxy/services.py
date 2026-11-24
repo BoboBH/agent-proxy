@@ -1,6 +1,13 @@
-"""应用服务层：映射 CRUD、cache-aside 加载、归属校验。管理、回显、转发共用。"""
+"""应用服务层：映射 CRUD、cache-aside 加载、归属校验。管理、回显、转发共用。
+
+敏感面（收尾批次强制加密）：upstream_headers 落库/Redis 缓存一律 Fernet(MASTER_KEY)
+密文（复用 oauth.credential 的 encrypt_text/decrypt_text，SHA256(MASTER_KEY) 派生）；
+读取方（转发/详情/test）经 load_mapping 解密为明文 dict。损坏密文 fail-closed：
+解密失败 WARN + 按映射不可用（None → 404 语义），绝不返回部分明文。
+owner_uid / OAuth uid 为 int（收尾批次整数化，列 BIGINT，整链 int 比较）。"""
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 from urllib.parse import urlparse
@@ -13,22 +20,69 @@ from . import cache, mapping_id as mid_module, placeholder
 from .config import Settings
 from .errors import AppError
 from .models import OAuthClient, OAuthCredential, ProxyMapping
-from .oauth.credential import invalidate_credential
+from .oauth.credential import decrypt_text, encrypt_text, invalidate_credential
 from .ssrf import async_validate_upstream_url
 
 log = logging.getLogger("agent_proxy")
 
 
-def row_to_dict(row: ProxyMapping) -> dict:
+def encrypt_headers(headers: dict[str, str], master_key: str) -> str:
+    """明文 headers dict → Fernet 密文字符串（落库 / Redis 缓存统一形态）。"""
+    return encrypt_text(json.dumps(headers, ensure_ascii=False), master_key)
+
+
+def plain_headers(stored_ct: str | None, master_key: str) -> dict[str, str]:
+    """密文 → 明文 dict；损坏密文（不可解 / 非 JSON object）抛 AppError——由
+    load_mapping 捕获转「映射不可用」，不返回部分明文（fail-closed）。"""
+    if not stored_ct:
+        return {}
+    raw = decrypt_text(stored_ct, master_key)
+    try:
+        data = json.loads(raw)
+    except ValueError as exc:
+        raise AppError(500, "INTERNAL_ERROR", "映射 headers 密文载荷非法") from exc
+    if not isinstance(data, dict):
+        raise AppError(500, "INTERNAL_ERROR", "映射 headers 密文载荷非法")
+    return data
+
+
+def row_to_dict(row: ProxyMapping, master_key: str) -> dict:
+    """行 → dict（明文 headers 形态，管理输出/详情语义；缓存形态见 _row_cache_dict）。"""
     return {
         "id": row.id, "mapping_id": row.mapping_id, "owner_uid": row.owner_uid,
         "name": row.name, "type": row.type, "visibility": row.visibility,
         "auth_mode": row.auth_mode, "upstream_url": row.upstream_url,
-        "upstream_headers": row.upstream_headers or {}, "test_request": row.test_request,
+        "upstream_headers": plain_headers(row.upstream_headers, master_key),
+        "test_request": row.test_request,
         "status": row.status,
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }
+
+
+def _row_cache_dict(row: ProxyMapping) -> dict:
+    """行 → dict（密文缓存形态）：headers 保持密文字符串原样（Redis 侧不落明文），
+    其余字段与 row_to_dict 一致（owner_uid int 由 ORM 映射）。"""
+    return {
+        "id": row.id, "mapping_id": row.mapping_id, "owner_uid": row.owner_uid,
+        "name": row.name, "type": row.type, "visibility": row.visibility,
+        "auth_mode": row.auth_mode, "upstream_url": row.upstream_url,
+        "upstream_headers": row.upstream_headers or "", "test_request": row.test_request,
+        "status": row.status,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+def _decrypt_or_none(data: dict, master_key: str) -> dict | None:
+    """缓存/回源形态（密文 headers）→ 明文形态；解密失败 WARN + None（fail-closed，
+    调用方 404「映射不存在」语义；trace/audit 侧字段不变）。"""
+    try:
+        return {**data, "upstream_headers": plain_headers(data["upstream_headers"], master_key)}
+    except AppError as exc:
+        log.warning("映射 headers 解密失败，按映射不可用处理: mapping_id=%s err=%s",
+                    data.get("mapping_id"), type(exc).__name__)
+        return None
 
 
 def build_proxy_url(settings: Settings, mapping_id: str, upstream_url: str, type_: str) -> str:
@@ -39,26 +93,29 @@ def build_proxy_url(settings: Settings, mapping_id: str, upstream_url: str, type
     return prefix
 
 
-async def load_mapping(session: AsyncSession, r, mapping_id: str, ttl: int) -> dict | None:
-    """cache-aside：Redis → MySQL 回填。返回记录 dict 或 None。"""
+async def load_mapping(session: AsyncSession, r, mapping_id: str, ttl: int,
+                       master_key: str) -> dict | None:
+    """cache-aside：Redis → MySQL 回填。Redis 缓存存密文形态（headers 密文字符串，
+    与 ap:cred:* 先例一致）；返回给调用方的恒为解密后的明文 dict 或 None。
+    损坏密文（缓存命中或回源）→ WARN + None（视为映射不可用，404 语义）。"""
     cached = await cache.get_mapping(r, mapping_id)
     if cached is not None:
-        return cached
+        return _decrypt_or_none(cached, master_key)
     row = (await session.execute(
         select(ProxyMapping).where(ProxyMapping.mapping_id == mapping_id)
     )).scalar_one_or_none()
     if row is None:
         return None
-    data = row_to_dict(row)
+    data = _row_cache_dict(row)
     await cache.set_mapping(r, mapping_id, data, ttl)
-    return data
+    return _decrypt_or_none(data, master_key)
 
 
-async def get_owned(session: AsyncSession, r, mapping_id: str, uid: str, ttl: int,
-                    admin_override: bool = False) -> dict | None:
+async def get_owned(session: AsyncSession, r, mapping_id: str, uid: int, ttl: int,
+                    master_key: str, admin_override: bool = False) -> dict | None:
     """加载并校验归属；非注册者返回 None（404 隐藏存在性）。
     M6（§14.2）：admin_override 时 public 映射对任意 admin 可见（详情/resolve/test）。"""
-    data = await load_mapping(session, r, mapping_id, ttl)
+    data = await load_mapping(session, r, mapping_id, ttl, master_key)
     if data is None:
         return None
     if data["owner_uid"] == uid:
@@ -68,7 +125,7 @@ async def get_owned(session: AsyncSession, r, mapping_id: str, uid: str, ttl: in
     return None
 
 
-async def create_mapping(session: AsyncSession, r, settings: Settings, owner_uid: str, *,
+async def create_mapping(session: AsyncSession, r, settings: Settings, owner_uid: int, *,
                          type_: str, name: str | None, visibility: str,
                          upstream_url: str, headers: dict[str, str],
                          test_request: dict | None,
@@ -78,11 +135,12 @@ async def create_mapping(session: AsyncSession, r, settings: Settings, owner_uid
     if auth_mode == "oauth" and visibility != "public":
         raise ValueError("auth_mode=oauth 仅允许 public 映射")
     url = await async_validate_upstream_url(upstream_url, settings.ssrf_allow_private)
+    headers_ct = encrypt_headers(headers, settings.master_key)  # 强制加密（无密钥 fail-closed 500）
     for attempt in range(5):
         mapping_id = mid_module.new_mapping_id()
         row = ProxyMapping(mapping_id=mapping_id, owner_uid=owner_uid, name=name,
                            type=type_, visibility=visibility, auth_mode=auth_mode,
-                           upstream_url=url, upstream_headers=headers,
+                           upstream_url=url, upstream_headers=headers_ct,
                            test_request=test_request, status="active")
         session.add(row)
         try:
@@ -97,7 +155,8 @@ async def create_mapping(session: AsyncSession, r, settings: Settings, owner_uid
     return row
 
 
-async def list_mappings(session: AsyncSession, owner_uid: str, limit: int, offset: int) -> list[ProxyMapping]:
+async def list_mappings(session: AsyncSession, owner_uid: int, limit: int,
+                        offset: int) -> list[ProxyMapping]:
     result = await session.execute(
         select(ProxyMapping).where(ProxyMapping.owner_uid == owner_uid)
         .order_by(ProxyMapping.id.desc()).offset(offset).limit(limit))
@@ -105,9 +164,9 @@ async def list_mappings(session: AsyncSession, owner_uid: str, limit: int, offse
 
 
 async def update_mapping(session: AsyncSession, r, settings: Settings, mapping_id: str,
-                         owner_uid: str, *, admin_override: bool = False,
+                         owner_uid: int, *, admin_override: bool = False,
                          **patch: Any) -> dict | None:
-    """更新；返回 row_to_dict 或 None（不存在/无权限）。
+    """更新；返回 row_to_dict（明文 headers）或 None（不存在/无权限）。
     M6（§14.2）：admin_override 时任意 admin 可改 public 映射；
     auth_mode 变更后仍须满足 oauth⇒public（违规 ValueError → api 层 400）。"""
     row = (await session.execute(
@@ -123,7 +182,7 @@ async def update_mapping(session: AsyncSession, r, settings: Settings, mapping_i
         raise ValueError("auth_mode=oauth 仅允许 public 映射")
     if patch.get("headers") is not None:
         placeholder.validate_headers(patch["headers"])
-        row.upstream_headers = patch["headers"]
+        row.upstream_headers = encrypt_headers(patch["headers"], settings.master_key)
     if patch.get("upstream_url"):
         row.upstream_url = await async_validate_upstream_url(
             patch["upstream_url"], settings.ssrf_allow_private)
@@ -133,10 +192,10 @@ async def update_mapping(session: AsyncSession, r, settings: Settings, mapping_i
     await session.commit()
     await session.refresh(row)  # 回填 server 端 updated_at，避免 row_to_dict 触发异步下不支持的懒加载
     await cache.invalidate(r, mapping_id)
-    return row_to_dict(row)
+    return row_to_dict(row, settings.master_key)
 
 
-async def delete_mapping(session: AsyncSession, r, mapping_id: str, owner_uid: str,
+async def delete_mapping(session: AsyncSession, r, mapping_id: str, owner_uid: int,
                          admin_override: bool = False) -> bool:
     row = (await session.execute(
         select(ProxyMapping).where(ProxyMapping.mapping_id == mapping_id)

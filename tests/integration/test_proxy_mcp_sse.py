@@ -20,13 +20,13 @@ from tests.utils import make_token, read_first_endpoint_event, read_next_message
 PROXY = "http://127.0.0.1:9910"
 UPSTREAM_BASE = "http://127.0.0.1:9902"
 SSE_UPSTREAM = f"{UPSTREAM_BASE}/sse"
-AUTH = {"Authorization": f"Bearer {make_token('u888')}"}
+AUTH = {"Authorization": f"Bearer {make_token(888)}"}
 SSE_HEADERS = {**AUTH, "Accept": "text/event-stream"}
 # SSE 读用宽松超时（流按心跳持续到达，读永不空转超期）
 TCP_TIMEOUT = httpx.Timeout(connect=5, read=10, write=10, pool=5)
 
 
-async def _register_mcp(user="u888", **overrides):
+async def _register_mcp(user=888, **overrides):
     payload = {"type": "mcp", "upstream_url": SSE_UPSTREAM,
                "headers": {"Authorization": "Bearer sk-mcp-12345678"}, **overrides}
     async with httpx.AsyncClient() as c:
@@ -294,11 +294,11 @@ async def test_head_registered_endpoint_dispatches_sse_branch():
 
 async def test_non_owner_mcp_403():
     """private mcp 映射仅注册者可调（§7/§14.2 语义）。"""
-    created = await _register_mcp(user="u888")
+    created = await _register_mcp(user=888)
     mid = created["mapping_id"]
     async with httpx.AsyncClient() as c:
         r = await c.get(f"{PROXY}/p/{mid}/sse",
-                        headers={"Authorization": f"Bearer {make_token('u999')}",
+                        headers={"Authorization": f"Bearer {make_token(999)}",
                                  "Accept": "text/event-stream"})
     assert r.status_code == 403 and r.json()["code"] == "FORBIDDEN"
 
@@ -317,7 +317,7 @@ async def test_mcp_dot_segment_400():
     mid = created["mapping_id"]
     async with httpx.AsyncClient() as c:
         r = await c.get(f"{PROXY}/p/{mid}/%2e%2e/etc/passwd",
-                        headers={"Authorization": f"Bearer {make_token('u888')}"})
+                        headers={"Authorization": f"Bearer {make_token(888)}"})
     assert r.status_code == 400 and r.json()["code"] == "INVALID_PARAM"
 
 

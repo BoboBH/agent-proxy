@@ -1,7 +1,8 @@
 """OAuth 凭证层（设计 §5.3 / §14.5 / §14.6）：强制加密存取、cred 缓存、刷新与注入。
 
 安全底线：
-- access/refresh token 落库一律 Fernet(MASTER_KEY) 密文，不受 ENCRYPT_AT_REST 开关影响；
+- access/refresh token 落库一律 Fernet(MASTER_KEY) 密文（M6 强制；收尾批次起
+  upstream_headers 同标准，ENCRYPT_AT_REST 可选开关已废止）；
 - Redis cred 缓存（ap:cred:*，TTL 60s）存同一密文形态，读取方按需解密——缓存命中也过
   Fernet（成本可忽略），换取 Redis 侧不落明文；
 - token 明文不入任何日志（本模块日志只记 mapping_id/uid/异常类型名）。
@@ -81,11 +82,11 @@ def decrypt_text(ciphertext: str, master_key: str) -> str:
                        "OAuth 凭证解密失败（MASTER_KEY 变更？需重新授权）") from exc
 
 
-def cred_cache_key(mapping_id: str, uid: str) -> str:
+def cred_cache_key(mapping_id: str, uid: int) -> str:
     return f"ap:cred:{mapping_id}:{uid}"
 
 
-def refresh_lock_key(mapping_id: str, uid: str) -> str:
+def refresh_lock_key(mapping_id: str, uid: int) -> str:
     return f"ap:lock:refresh:{mapping_id}:{uid}"
 
 
@@ -127,7 +128,7 @@ def _row_to_cred(row: OAuthCredential) -> dict:
             "scope": row.scope, "status": row.status}
 
 
-async def _cache_get(r, mapping_id: str, uid: str) -> dict | None:
+async def _cache_get(r, mapping_id: str, uid: int) -> dict | None:
     try:
         raw = await r.get(cred_cache_key(mapping_id, uid))
     except Exception as exc:
@@ -142,7 +143,7 @@ async def _cache_get(r, mapping_id: str, uid: str) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-async def _cache_put(r, mapping_id: str, uid: str, cred: dict, ttl: int = 60) -> None:
+async def _cache_put(r, mapping_id: str, uid: int, cred: dict, ttl: int = 60) -> None:
     try:
         await r.set(cred_cache_key(mapping_id, uid),
                     json.dumps(cred, ensure_ascii=False), ex=ttl)
@@ -150,7 +151,7 @@ async def _cache_put(r, mapping_id: str, uid: str, cred: dict, ttl: int = 60) ->
         log.warning("cred 缓存写入失败: %s", exc)
 
 
-async def invalidate_credential(r, mapping_id: str, uid: str) -> None:
+async def invalidate_credential(r, mapping_id: str, uid: int) -> None:
     """绑定 / 解绑 / 刷新后失效 cred 缓存（§5.3：绑定 / 解绑 / 刷新时失效）。"""
     try:
         await r.delete(cred_cache_key(mapping_id, uid))
@@ -158,7 +159,7 @@ async def invalidate_credential(r, mapping_id: str, uid: str) -> None:
         log.warning("cred 缓存删除失败: %s", exc)
 
 
-async def load_credential(session: AsyncSession, r, mapping_id: str, uid: str) -> dict | None:
+async def load_credential(session: AsyncSession, r, mapping_id: str, uid: int) -> dict | None:
     """缓存优先的凭证读取（密文形态，§5.3 cache-aside）；未绑定返回 None。"""
     cached = await _cache_get(r, mapping_id, uid)
     if cached is not None:
@@ -174,7 +175,7 @@ async def load_credential(session: AsyncSession, r, mapping_id: str, uid: str) -
     return cred
 
 
-async def save_credential(session: AsyncSession, r, mapping_id: str, uid: str, *,
+async def save_credential(session: AsyncSession, r, mapping_id: str, uid: int, *,
                           access_token_ct: str, refresh_token_ct: str | None,
                           expires_at: datetime | None, scope: str | None,
                           master_key: str) -> None:
@@ -211,7 +212,7 @@ async def save_credential(session: AsyncSession, r, mapping_id: str, uid: str, *
 
 
 async def mark_credential_invalid(session: AsyncSession, r, mapping_id: str,
-                                  uid: str) -> None:
+                                  uid: int) -> None:
     """AS 业务性拒绝刷新后标记 invalid（§14.4：invalid 后调用一律 401，页面引导
     重新授权）；瞬时失败不走本函数——凭证原状保留（评审 Important 2 分级）。"""
     row = (await session.execute(
@@ -224,7 +225,7 @@ async def mark_credential_invalid(session: AsyncSession, r, mapping_id: str,
     await invalidate_credential(r, mapping_id, uid)
 
 
-async def delete_credential(session: AsyncSession, r, mapping_id: str, uid: str) -> bool:
+async def delete_credential(session: AsyncSession, r, mapping_id: str, uid: int) -> bool:
     """解绑：删除本地凭证（revoke 由 api 层在删除前取 token 后 best-effort 调用）。
     行已不存在（重复解绑/并发删除）时同样失效 cred 缓存——过期缓存比消失的行
     更危险（缓存残留 → 已解绑用户仍被注入旧 token）。"""
@@ -244,11 +245,11 @@ async def delete_credential(session: AsyncSession, r, mapping_id: str, uid: str)
 # ---------- 授权进行中索引（authorizing 态判定，设计 §14.4 / §5.3 最小增量键） ----------
 
 
-def authz_index_key(mapping_id: str, uid: str) -> str:
+def authz_index_key(mapping_id: str, uid: int) -> str:
     return f"ap:oauth:authz:{mapping_id}:{uid}"
 
 
-async def set_authz_index(r, mapping_id: str, uid: str, state: str, ttl: int) -> None:
+async def set_authz_index(r, mapping_id: str, uid: int, state: str, ttl: int) -> None:
     """authorize 写入（state 存续期索引，binding 查询据此判 authorizing）；
     callback 成功 / 解绑时删除。"""
     try:
@@ -257,7 +258,7 @@ async def set_authz_index(r, mapping_id: str, uid: str, state: str, ttl: int) ->
         log.warning("authz 索引写入失败: %s", exc)
 
 
-async def get_authz_index(r, mapping_id: str, uid: str) -> str | None:
+async def get_authz_index(r, mapping_id: str, uid: int) -> str | None:
     try:
         return await r.get(authz_index_key(mapping_id, uid))
     except Exception as exc:
@@ -265,14 +266,14 @@ async def get_authz_index(r, mapping_id: str, uid: str) -> str | None:
         return None
 
 
-async def drop_authz_index(r, mapping_id: str, uid: str) -> None:
+async def drop_authz_index(r, mapping_id: str, uid: int) -> None:
     try:
         await r.delete(authz_index_key(mapping_id, uid))
     except Exception as exc:
         log.warning("authz 索引删除失败: %s", exc)
 
 
-async def get_binding_status(session: AsyncSession, r, mapping_id: str, uid: str) -> str:
+async def get_binding_status(session: AsyncSession, r, mapping_id: str, uid: int) -> str:
     """绑定状态机（§14.4）：unbound → authorizing（state 存续期间）→ bound(active)
     → invalid（refresh 失败 / 提供方吊销）。判定顺序：凭证行 → authz 索引 → unbound。"""
     cred = await load_credential(session, r, mapping_id, uid)
@@ -303,7 +304,7 @@ def _parse_expires(value) -> datetime | None:
 
 
 async def get_callable_credential(session: AsyncSession, r, app_state,
-                                  mapping_data: dict, uid: str, master_key: str,
+                                  mapping_data: dict, uid: int, master_key: str,
                                   request_id: str = "") -> str:
     """调用时凭证获取（§14.5）：无 / invalid → 401 OAUTH_BINDING_REQUIRED；
     expires_at - 60s 内 → 刷新（Redis 锁防并发）→ 返回新 access；刷新失败分级：
@@ -338,7 +339,7 @@ _RELEASE_LOCK_LUA = (
 )
 
 
-async def release_refresh_lock(r, mapping_id: str, uid: str, token: str) -> bool:
+async def release_refresh_lock(r, mapping_id: str, uid: int, token: str) -> bool:
     """属主校验释放刷新锁：仅当锁值仍为 token（获取锁时写入的 request_id）才删除；
     锁已过期且被继任者重取（值不同）→ 不动锁返回 False（继任者的锁由继任者自己
     的 finally 释放）。脚本执行失败仅 WARN——锁 30s TTL 兜底自愈。"""
@@ -351,7 +352,7 @@ async def release_refresh_lock(r, mapping_id: str, uid: str, token: str) -> bool
 
 
 async def refresh_credential(session: AsyncSession, r, app_state, mapping_data: dict,
-                             uid: str, master_key: str,
+                             uid: int, master_key: str,
                              request_id: str = "") -> str | None:
     """刷新互斥（§14.5）：抢锁成功者执行 refresh_token 换新（落库 + 失效缓存）；
     未抢到锁者轮询 cred（上限 8s）等他人刷新结果。锁 ap:lock:refresh:{mapping}:{uid}
@@ -379,7 +380,7 @@ async def refresh_credential(session: AsyncSession, r, app_state, mapping_data: 
 
 
 async def _wait_for_others_refresh(session: AsyncSession, r, mapping_id: str,
-                                   uid: str, master_key: str) -> str | None:
+                                   uid: int, master_key: str) -> str | None:
     """锁被他人持有时轮询 cred：拿到非过期的 active token 即用；他人刷新失败
     （invalid）→ None；等待超时 → None（该请求 401，下一请求重试刷新）。"""
     deadline = time.monotonic() + REFRESH_WAIT_SECONDS
@@ -410,7 +411,7 @@ class _RefreshFailed(Exception):
 
 
 async def _do_refresh(session: AsyncSession, r, app_state, mapping_data: dict,
-                      uid: str, master_key: str, request_id: str = "") -> str | None:
+                      uid: int, master_key: str, request_id: str = "") -> str | None:
     """持锁刷新：refresh_token 换新 → upsert 落库 + 失效缓存 + metrics/审计。
     失败分级（评审 Important 2）：AS 业务拒绝（400/401/403）→ invalid +
     metrics {action="fail"}；网络/discovery/5xx/响应畸形 → 凭证原状保留
@@ -492,7 +493,7 @@ async def _do_refresh(session: AsyncSession, r, app_state, mapping_data: dict,
     return access
 
 
-def _audit_refresh(request_id: str, mapping_id: str, uid: str, ok: bool) -> None:
+def _audit_refresh(request_id: str, mapping_id: str, uid: int, ok: bool) -> None:
     """刷新入审计日志（§14.6）：复用当前请求 request_id 与中间件请求行关联；
     action=oauth_refresh 区分（测试按 action 过滤；无请求上下文时 request_id 空串）。"""
     audit_log.info(json.dumps({

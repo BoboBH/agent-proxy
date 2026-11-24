@@ -59,7 +59,6 @@ class Settings:
     oauth_state_ttl: int = 600
     admin_session_ttl: int = 28800
     session_cookie_secure: bool = False
-    encrypt_at_rest: bool = False
     master_key: str = ""
     log_dir: str = "logs"
     log_level: str = "INFO"
@@ -93,7 +92,6 @@ class Settings:
             oauth_state_ttl=_to_int("OAUTH_STATE_TTL", e.get("OAUTH_STATE_TTL", "600")),
             admin_session_ttl=_to_int("ADMIN_SESSION_TTL", e.get("ADMIN_SESSION_TTL", "28800")),
             session_cookie_secure=e.get("SESSION_COOKIE_SECURE", "false").lower() == "true",
-            encrypt_at_rest=e.get("ENCRYPT_AT_REST", "false").lower() == "true",
             master_key=e.get("MASTER_KEY", ""),
             log_dir=e.get("LOG_DIR", "logs"),
             log_level=e.get("LOG_LEVEL", "INFO"),
@@ -114,8 +112,10 @@ class Settings:
             raise ConfigError(f"非法 TRACE_MODE: {self.trace_mode}")
         if not self.mysql_dsn or not self.redis_url:
             raise ConfigError("缺少必需配置: MYSQL_DSN / REDIS_URL")
-        if self.encrypt_at_rest and not self.master_key:
-            raise ConfigError("ENCRYPT_AT_REST 开启时必须配置 MASTER_KEY")
+        if not self.master_key:
+            # 收尾批次：敏感字段（upstream_headers / OAuth 凭证 / client_secret）强制
+            # 加密落库，MASTER_KEY 无开关必填；ENCRYPT_AT_REST 可选开关已废止
+            raise ConfigError("缺少必需配置: MASTER_KEY（敏感字段强制加密落库）")
 
 
 def load_dotenv_file(path: str = ".env") -> None:

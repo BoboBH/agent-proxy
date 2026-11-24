@@ -30,7 +30,7 @@ async def test_stub_login_page_renders_with_callback_form(client):
 async def test_callback_builds_session_and_cookie_attributes(client, app):
     """§15.1 时序 4-6：exchange → 会话入 Redis → Set-Cookie（HttpOnly+SameSite=Lax；
     Secure 由 SESSION_COOKIE_SECURE 配置，测试环境 http 下为 false）→ 302 /admin。"""
-    r = await client.get(f"/admin/auth/callback?ticket={make_token('u888', user_name='张三')}")
+    r = await client.get(f"/admin/auth/callback?ticket={make_token(888, user_name='张三')}")
     assert r.status_code == 302 and r.headers["location"] == "/admin"
     set_cookie = r.headers["set-cookie"]
     assert f"{SESSION_COOKIE}=" in set_cookie
@@ -39,11 +39,11 @@ async def test_callback_builds_session_and_cookie_attributes(client, app):
     assert "max-age=28800" in set_cookie.lower()     # ADMIN_SESSION_TTL 默认值
     assert "secure" not in set_cookie.lower()        # SESSION_COOKIE_SECURE=false（测试环境）
     raw = await app.state.redis.get(session_key(r.cookies[SESSION_COOKIE]))
-    assert raw and json.loads(raw)["user_id"] == "u888"   # 服务端会话已入 Redis
+    assert raw and json.loads(raw)["user_id"] == 888   # 服务端会话已入 Redis
 
 
 async def test_callback_session_ttl_uses_admin_session_ttl(client, app):
-    r = await client.get(f"/admin/auth/callback?ticket={make_token('u1')}")
+    r = await client.get(f"/admin/auth/callback?ticket={make_token(1)}")
     ttl = await app.state.redis.ttl(session_key(r.cookies[SESSION_COOKIE]))
     assert 0 < ttl <= app.state.settings.admin_session_ttl
     assert ttl > 8000                                # 非「秒级误传」形态
@@ -55,12 +55,12 @@ async def test_callback_pure_digit_ticket_becomes_identity(client, app):
     r = await client.get("/admin/auth/callback?ticket=12345")
     assert r.status_code == 302 and r.headers["location"] == "/admin"
     raw = await app.state.redis.get(session_key(r.cookies[SESSION_COOKIE]))
-    assert raw and json.loads(raw)["user_id"] == "12345"
+    assert raw and json.loads(raw)["user_id"] == 12345
 
 
 async def test_admin_renders_with_session_and_identity_context(client, app):
     sid = await create_session(app.state.redis,
-                               Identity(user_id="u888", user_name="张三"), 600)
+                               Identity(user_id=888, user_name="张三"), 600)
     r = await client.get(ADMIN, headers={"Cookie": f"{SESSION_COOKIE}={sid}"})
     assert r.status_code == 200
     assert "张三" in r.text                          # 身份上下文由模板注入（§15.1）
@@ -70,7 +70,7 @@ async def test_admin_renders_with_session_and_identity_context(client, app):
 
 async def test_admin_context_admin_role_shows_public_view(client, app):
     sid = await create_session(app.state.redis,
-                               Identity(user_id="boss", user_name="管理员", role="admin"), 600)
+                               Identity(user_id=100, user_name="管理员", role="admin"), 600)
     r = await client.get(ADMIN, headers={"Cookie": f"{SESSION_COOKIE}={sid}"})
     assert r.status_code == 200
     assert "公共映射管理" in r.text and 'data-view="public"' in r.text
@@ -93,7 +93,7 @@ async def test_callback_return_to_open_redirect_neutralized(client):
     for bad in ("//evil.com", "/\\evil.com", "/\\/\\evil.com", "https://evil.com/x",
                 "javascript:alert(1)", "/admin\r\nX-Injected: 1"):
         r = await client.get(
-            f"/admin/auth/callback?ticket={make_token('u1')}&return_to={quote(bad, safe='')}")
+            f"/admin/auth/callback?ticket={make_token(1)}&return_to={quote(bad, safe='')}")
         assert r.status_code == 302
         assert r.headers["location"] == "/admin"
         assert "\r" not in r.headers["location"] and "\n" not in r.headers["location"]
@@ -113,7 +113,7 @@ def test_safe_return_to_backslash_and_crlf_normalization():
 
 
 async def test_logout_deletes_server_session_and_cookie(client, app):
-    sid = await create_session(app.state.redis, Identity(user_id="u888"), 600)
+    sid = await create_session(app.state.redis, Identity(user_id=888), 600)
     r = await client.post("/admin/logout", headers={"Cookie": f"{SESSION_COOKIE}={sid}"})
     assert r.status_code == 302
     assert r.headers["location"].startswith("/admin/login")

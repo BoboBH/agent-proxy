@@ -50,9 +50,10 @@ tools/list 与 tools/call 的人工验收步骤（协议级自动化覆盖见
 ## 管理页面（M7）
 
 浏览器打开 `http://127.0.0.1:8800/admin`（未登录自动 302 到登录页）。`LOGIN_IMPL=stub`
-为本地假登录：填写用户 ID（如 `u888`）、需要管理员视图把角色选为 `admin`，提交即换取
-服务端会话（Redis `ap:sess:{sid}`，TTL `ADMIN_SESSION_TTL`，Cookie `ap_sess` 属性
-HttpOnly+SameSite=Lax；`EXTERNAL_BASE` 为 https 的部署必须置 `SESSION_COOKIE_SECURE=true`）。
+为本地假登录：填写整数用户 ID（如 `888`；内部系统 user_id 为整数）、需要管理员视图把
+角色选为 `admin`，提交即换取服务端会话（Redis `ap:sess:{sid}`，TTL `ADMIN_SESSION_TTL`，
+Cookie `ap_sess` 属性 HttpOnly+SameSite=Lax；`EXTERNAL_BASE` 为 https 的部署必须置
+`SESSION_COOKIE_SECURE=true`）。
 
 - 我的映射：注册（响应含代理地址与占位符 header，「保存到 Agent」）/ resolve 回显编辑 /
   test / 删除；

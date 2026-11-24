@@ -15,7 +15,8 @@ class ProxyMapping(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     mapping_id: Mapped[str] = mapped_column(String(16), unique=True, index=True)
-    owner_uid: Mapped[str] = mapped_column(String(64), index=True)
+    # 收尾批次整数化：内部系统 user_id 为整数（BIGINT，索引保留）
+    owner_uid: Mapped[int] = mapped_column(BigInteger, index=True)
     name: Mapped[str | None] = mapped_column(String(128))
     type: Mapped[str] = mapped_column(Enum("http", "mcp", name="mapping_type"))
     visibility: Mapped[str] = mapped_column(
@@ -23,7 +24,9 @@ class ProxyMapping(Base):
     auth_mode: Mapped[str] = mapped_column(
         Enum("static", "oauth", name="mapping_auth_mode"), default="static")
     upstream_url: Mapped[str] = mapped_column(String(2048))
-    upstream_headers: Mapped[dict[str, str]] = mapped_column(JSON, default=dict)
+    # 收尾批次强制加密：headers 落库为 Fernet(MASTER_KEY) 密文 TEXT（JSON 明文列废止，
+    # 由 services 层 encrypt/decrypt 转换，读取方拿到的恒为解密后的 dict）
+    upstream_headers: Mapped[str] = mapped_column(Text)
     test_request: Mapped[dict[str, str] | None] = mapped_column(JSON)
     status: Mapped[str] = mapped_column(
         Enum("active", "disabled", name="mapping_status"), default="active")
@@ -61,7 +64,8 @@ class OAuthCredential(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     mapping_id: Mapped[str] = mapped_column(String(16))
-    uid: Mapped[str] = mapped_column(String(64), index=True)
+    # 收尾批次整数化：与 proxy_mapping.owner_uid 同型（BIGINT，索引保留）
+    uid: Mapped[int] = mapped_column(BigInteger, index=True)
     access_token: Mapped[str] = mapped_column(Text)
     refresh_token: Mapped[str | None] = mapped_column(Text)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime)

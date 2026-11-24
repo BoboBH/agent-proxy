@@ -4,7 +4,7 @@ from agent_proxy.placeholder import mask_headers, validate_headers
 
 
 def test_mask_same_key_different_value():
-    masked = mask_headers({"Authorization": "Bearer sk-real-key", "X-User-Id": "u888"})
+    masked = mask_headers({"Authorization": "Bearer sk-real-key", "X-User-Id": "u-888"})
     assert masked == {"Authorization": "${PX:Authorization}", "X-User-Id": "${PX:X-User-Id}"}
     assert "sk-real-key" not in str(masked)
 

@@ -42,11 +42,11 @@ def _find_audit_entry(request_id: str) -> dict:
 
 
 async def test_audit_has_identity_and_request_id(client):
-    headers = {"Authorization": f"Bearer {make_token('u888')}"}
+    headers = {"Authorization": f"Bearer {make_token(888)}"}
     resp = await client.post("/api/v1/mappings", json=BODY, headers=headers)
     assert resp.status_code == 201
     entry = _find_audit_entry(resp.headers["x-request-id"])
-    assert entry["user_id"] == "u888" and entry["user_name"] == "张三"
+    assert entry["user_id"] == 888 and entry["user_name"] == "张三"
     assert entry["action"] == "mgmt" and entry["status"] == 201
     assert entry["method"] == "POST" and entry["path"] == "/api/v1/mappings"
 
@@ -56,31 +56,31 @@ async def test_audit_identity_from_cookie_session(client, app):
     （get_current_identity 双通道写 request.state，middleware 落盘）——页面 fetch
     场景的审计身份贯通与 Bearer 通道一致。"""
     sid = await create_session(app.state.redis,
-                               Identity(user_id="u777", user_name="李四"), 600)
+                               Identity(user_id=777, user_name="李四"), 600)
     resp = await client.post("/api/v1/mappings", json=BODY,
                              headers={"Cookie": f"{SESSION_COOKIE}={sid}"})
     assert resp.status_code == 201
     entry = _find_audit_entry(resp.headers["x-request-id"])
-    assert entry["user_id"] == "u777" and entry["user_name"] == "李四"
+    assert entry["user_id"] == 777 and entry["user_name"] == "李四"
     assert entry["action"] == "mgmt" and entry["status"] == 201
 
 
 async def test_view_credentials_audited(client):
     created = (await client.post("/api/v1/mappings", json=BODY,
-                                 headers={"Authorization": f"Bearer {make_token('u888')}"})).json()
+                                 headers={"Authorization": f"Bearer {make_token(888)}"})).json()
     mid = created["mapping_id"]
     resp = await client.get(f"/api/v1/mappings/{mid}",
-                            headers={"Authorization": f"Bearer {make_token('u888')}"})
+                            headers={"Authorization": f"Bearer {make_token(888)}"})
     assert resp.status_code == 200
     entry = _find_audit_entry(resp.headers["x-request-id"])
     assert entry["action"] == "view_credentials" and entry["mapping_id"] == mid
-    assert entry["user_id"] == "u888"
+    assert entry["user_id"] == 888
 
 
 async def test_audit_never_contains_header_values(client):
     body = {**BODY, "headers": {"Authorization": "Bearer sk-super-secret-value"}}
     resp = await client.post("/api/v1/mappings", json=body,
-                             headers={"Authorization": f"Bearer {make_token('u888')}"})
+                             headers={"Authorization": f"Bearer {make_token(888)}"})
     assert resp.status_code == 201
     for path, lines in _read_audit_files().items():
         text = "\n".join(lines)
@@ -90,7 +90,7 @@ async def test_audit_never_contains_header_values(client):
 
 async def test_audit_records_bytes_in_out(client):
     resp = await client.post("/api/v1/mappings", json=BODY,
-                             headers={"Authorization": f"Bearer {make_token('u888')}"})
+                             headers={"Authorization": f"Bearer {make_token(888)}"})
     assert resp.status_code == 201
     entry = _find_audit_entry(resp.headers["x-request-id"])
     assert entry["bytes_in"] > 0   # 请求体（JSON）被应用实际读取

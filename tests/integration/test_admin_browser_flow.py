@@ -24,7 +24,7 @@ def _client(app) -> AsyncClient:
     return AsyncClient(transport=ASGITransport(app=app), base_url=BASE)
 
 
-async def _browser_login(c: AsyncClient, user_id: str, role: str | None = None) -> None:
+async def _browser_login(c: AsyncClient, user_id: int, role: str | None = None) -> None:
     """复刻登录页表单行为：入口 302 → 登录页可渲染 → 票据 callback → 会话 Cookie 入 jar。"""
     r = await c.get("/admin")
     assert r.status_code == 302 and r.headers["location"].startswith("/admin/login")
@@ -38,7 +38,7 @@ async def _browser_login(c: AsyncClient, user_id: str, role: str | None = None) 
 
 async def test_full_browser_flow_admin_as_admin(app):
     async with _client(app) as c:
-        await _browser_login(c, "boss", role="admin")
+        await _browser_login(c, 100, role="admin")
         assert (await c.get("/admin")).status_code == 200
 
         # 我的映射：注册（占位符响应）→ resolve 回显 → test（echo 9901 连通判定）→ 删除
@@ -82,10 +82,10 @@ async def test_non_admin_view_isolated_and_api_privilege_enforced(app):
     页面入口隐藏（模板不含 public 视图）+ 直接打 API 仍被既有矩阵拦（403）。"""
     async with _client(app) as c:
         r = await c.post("/api/v1/mappings", json={**HTTP_BODY, "visibility": "public"},
-                         headers={"Authorization": f"Bearer {make_token('boss', role='admin')}"})
+                         headers={"Authorization": f"Bearer {make_token(100, role='admin')}"})
         assert r.status_code == 201
         pub = r.json()["mapping_id"]
-        await _browser_login(c, "u888")
+        await _browser_login(c, 888)
         page = await c.get("/admin")
         assert page.status_code == 200
         assert "公共映射管理" not in page.text            # 视图隔离（模板入口隐藏）
@@ -110,7 +110,7 @@ async def test_real_tcp_admin_page_and_cookie_channel(real_proxy_app):
         r = await c.get(f"{PROXY}/admin", follow_redirects=False)
         assert r.status_code == 302 and r.headers["location"].startswith("/admin/login")
         r = await c.get(f"{PROXY}/admin/auth/callback",
-                        params={"ticket": make_token("u888")}, follow_redirects=False)
+                        params={"ticket": make_token(888)}, follow_redirects=False)
         assert r.status_code == 302
         assert c.cookies.get(SESSION_COOKIE)
         r = await c.post(f"{PROXY}/api/v1/mappings", json=HTTP_BODY)

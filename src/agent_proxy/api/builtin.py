@@ -42,7 +42,7 @@ from ..oauth.credential import (decrypt_text, delete_credential, drop_authz_inde
                                 save_credential, set_authz_index)
 from ..schemas import (AuthorizeIn, AuthorizeOut, BindingOut, BuiltinItemOut,
                        MappingTestOut, OAuthClientOut, OAuthClientSet)
-from ..services import build_proxy_url, load_mapping
+from ..services import build_proxy_url, load_mapping, plain_headers
 from ..ssrf import async_validate_upstream_url
 from .deps import get_current_identity, get_db, is_admin
 
@@ -54,9 +54,11 @@ router = APIRouter(prefix="/api/v1/builtin-mappings", tags=["builtin"])
 callback_router = APIRouter(tags=["builtin"])
 
 
-async def load_public_mapping(session: AsyncSession, r, mapping_id: str, ttl: int) -> dict:
-    """内置接口专用加载：必须 visibility=public；private/不存在一律 404（隐藏存在性）。"""
-    data = await load_mapping(session, r, mapping_id, ttl)
+async def load_public_mapping(session: AsyncSession, r, mapping_id: str, ttl: int,
+                              master_key: str) -> dict:
+    """内置接口专用加载：必须 visibility=public；private/不存在一律 404（隐藏存在性）。
+    损坏密文经 load_mapping → None → 同样 404（fail-closed，不返回部分明文）。"""
+    data = await load_mapping(session, r, mapping_id, ttl, master_key)
     if data is None or data["visibility"] != "public":
         raise AppError(404, "MAPPING_NOT_FOUND", "内置映射不存在")
     return data
@@ -96,7 +98,10 @@ async def list_builtin_mappings(request: Request,
         out.append(BuiltinItemOut(
             mapping_id=row.mapping_id, name=row.name, type=row.type,
             proxy_url=build_proxy_url(settings, row.mapping_id, row.upstream_url, row.type),
-            headers=placeholder.mask_headers(row.upstream_headers or {}),
+            # 行内 headers 为密文（收尾批次强制加密）：列表只展示占位符，也须经
+            # plain_headers 解密取键名——直接迭代密文字符串会把字符当 header 名
+            headers=placeholder.mask_headers(
+                plain_headers(row.upstream_headers, settings.master_key)),
             auth_mode=row.auth_mode, binding=binding, status=row.status))
     return out
 
@@ -111,7 +116,7 @@ async def set_oauth_client(request: Request, mapping_id: str, body: OAuthClientS
     if not is_admin(identity, settings.admin_role):
         raise AppError(403, "FORBIDDEN", "仅管理员可配置 OAuth 客户端")
     data = await load_public_mapping(session, request.app.state.redis, mapping_id,
-                                     settings.cache_ttl)
+                                     settings.cache_ttl, settings.master_key)
     require_oauth_mode(data)
     # 存 SSRF 校验器的规范化返回值（去尾斜杠）——与 create/update 上游 URL 一致，
     # 消除尾斜杠不对称（authorization_url/redirect_uri 拼接比对依赖规范化形态）。
@@ -143,7 +148,7 @@ async def get_oauth_client(request: Request, mapping_id: str,
     if not is_admin(identity, settings.admin_role):
         raise AppError(403, "FORBIDDEN", "仅管理员可查看 OAuth 客户端配置")
     await load_public_mapping(session, request.app.state.redis, mapping_id,
-                              settings.cache_ttl)
+                              settings.cache_ttl, settings.master_key)
     row = await load_client_row(session, mapping_id)
     if row is None:
         raise AppError(404, "OAUTH_CLIENT_NOT_CONFIGURED", "尚未配置 OAuth 客户端")
@@ -159,7 +164,7 @@ async def authorize_mapping(request: Request, mapping_id: str, body: AuthorizeIn
     """发起授权（§14.4）：任意有效用户；front_redirect 域白名单校验 → state +
     PKCE verifier 入 Redis（600s，绑 uid）→ 返回 authorization_url。"""
     data = await load_public_mapping(session, request.app.state.redis, mapping_id,
-                                     settings.cache_ttl)
+                                     settings.cache_ttl, settings.master_key)
     require_oauth_mode(data)
     front_redirect = validate_front_redirect(body.front_redirect,
                                              settings.cors_allowed_origins)
@@ -190,7 +195,7 @@ async def get_binding_route(request: Request, mapping_id: str,
                             settings: Settings = Depends(get_settings)):
     """我的绑定状态查询（页面轮询，§14.4 状态机）。"""
     data = await load_public_mapping(session, request.app.state.redis, mapping_id,
-                                     settings.cache_ttl)
+                                     settings.cache_ttl, settings.master_key)
     require_oauth_mode(data)
     binding = await get_binding_status(session, request.app.state.redis, mapping_id,
                                        identity.user_id)
@@ -216,7 +221,7 @@ async def unbind_mapping(request: Request, mapping_id: str,
     （MASTER_KEY 变更 / 行损坏）→ 删本地坏行 + 204 引导重新授权（终审遗留 4：
     原为 500 死局）。"""
     data = await load_public_mapping(session, request.app.state.redis, mapping_id,
-                                     settings.cache_ttl)
+                                     settings.cache_ttl, settings.master_key)
     require_oauth_mode(data)
     r = request.app.state.redis
     cred = await load_credential(session, r, mapping_id, identity.user_id)
@@ -289,7 +294,7 @@ async def test_builtin_mapping(request: Request, mapping_id: str,
     → 401 OAUTH_BINDING_REQUIRED（§6.6 安全边界）；上游以 401 拒绝 → ok=false +
     detail 追加「重新授权」提示（探测语义沿 M4：非 2xx 不回落直接判失败）。"""
     data = await load_public_mapping(session, request.app.state.redis, mapping_id,
-                                     settings.cache_ttl)
+                                     settings.cache_ttl, settings.master_key)
     request.state.audit_action = "test_mapping"
     request.state.mapping_id = mapping_id
     injected = False
@@ -366,7 +371,7 @@ async def oauth_callback(request: Request, mapping_id: str,
         return RedirectResponse(
             f"{front_redirect}{sep}binding=failed&{reason}", status_code=302)
     data = await load_public_mapping(session, request.app.state.redis, mapping_id,
-                                     settings.cache_ttl)
+                                     settings.cache_ttl, settings.master_key)
     require_oauth_mode(data)
     client = await ensure_client(session, request.app.state, data,
                                  settings.master_key,

@@ -16,7 +16,7 @@ BODY = {"type": "http", "upstream_url": UPSTREAM,
                     "X-API-Key": "stored-key-0000"}}
 
 
-async def _register(client, user="u888", **overrides):
+async def _register(client, user=888, **overrides):
     payload = {**BODY, **overrides}
     resp = await client.post("/api/v1/mappings", json=payload,
                              headers={"Authorization": f"Bearer {make_token(user)}"})
@@ -24,7 +24,7 @@ async def _register(client, user="u888", **overrides):
     return resp.json()
 
 
-async def _call(client, mapping_id, method, path, *, user="u888", headers=None, **kw):
+async def _call(client, mapping_id, method, path, *, user=888, headers=None, **kw):
     hdrs = {"Authorization": f"Bearer {make_token(user)}", **(headers or {})}
     return await client.request(method, f"/p/{mapping_id}{path}", headers=hdrs, **kw)
 
@@ -43,7 +43,7 @@ async def test_forward_get_echoes_stored_headers_not_caller(client):
     # 用于代理鉴权，出站被存储值替换——由下方 authorization==存储值 与
     # "stub." not in resp.text 两条断言共同钉住。
     resp = await _call(client, mid, "GET", "/orders?status=paid&page=2",
-                       headers={"Authorization": f"Bearer {make_token('u888')}",
+                       headers={"Authorization": f"Bearer {make_token(888)}",
                                 "X-Caller-Only": "should-not-leak",
                                 "Accept": "application/json"})
     assert resp.status_code == 200
@@ -107,8 +107,8 @@ async def test_proxy_unauthenticated_401(client):
 
 
 async def test_non_owner_private_403(client):
-    created = await _register(client, user="u888")
-    resp = await _call(client, created["mapping_id"], "GET", "/orders", user="u999")
+    created = await _register(client, user=888)
+    resp = await _call(client, created["mapping_id"], "GET", "/orders", user=999)
     assert resp.status_code == 403 and resp.json()["code"] == "FORBIDDEN"
 
 
@@ -121,7 +121,7 @@ async def test_disabled_mapping_404(client):
     created = await _register(client)
     mid = created["mapping_id"]
     resp = await client.put(f"/api/v1/mappings/{mid}", json={"status": "disabled"},
-                            headers={"Authorization": f"Bearer {make_token('u888')}"})
+                            headers={"Authorization": f"Bearer {make_token(888)}"})
     assert resp.status_code == 200
     resp = await _call(client, mid, "GET", "/orders")
     assert resp.status_code == 404 and resp.json()["code"] == "MAPPING_NOT_FOUND"
@@ -466,7 +466,7 @@ async def test_upstream_read_timeout_maps_504():
                             json={"type": "http",
                                   "upstream_url": "http://127.0.0.1:9901/api/v1",
                                   "headers": {}},
-                            headers={"Authorization": f"Bearer {make_token('u888')}"})
+                            headers={"Authorization": f"Bearer {make_token(888)}"})
         mid = resp.json()["mapping_id"]
         resp = await _call(c, mid, "GET", "/slow?seconds=3")
     after = metrics_mod.upstream_errors_total.labels(
@@ -490,7 +490,7 @@ async def test_pool_exhausted_returns_503():
                             json={"type": "http",
                                   "upstream_url": "http://127.0.0.1:9901/api/v1",
                                   "headers": {}},
-                            headers={"Authorization": f"Bearer {make_token('u888')}"})
+                            headers={"Authorization": f"Bearer {make_token(888)}"})
         mid = resp.json()["mapping_id"]
         r1, r2 = await asyncio.gather(
             _call(c, mid, "GET", "/slow?seconds=5"),

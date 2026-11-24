@@ -32,10 +32,11 @@ async def _handle_proxy(request: Request, mapping_id: str, identity: Identity,
                         settings: Settings) -> Response:
     # DB session 只包住 load_mapping 与 OAuth 凭证获取（M6）：不走 get_db 依赖——其
     # teardown 在响应发完才执行，SSE/长流会把连接占死（池 10 → ~20 并发即排队）。
-    # load_mapping 返回脱管 dict（row_to_dict），session 早关安全。
+    # load_mapping 返回脱管 dict（headers 已解密为明文，收尾批次密文化读取路径），
+    # session 早关安全。
     async with request.app.state.sessionmaker() as session:
         data = await load_mapping(session, request.app.state.redis, mapping_id,
-                                  settings.cache_ttl)
+                                  settings.cache_ttl, settings.master_key)
         if data is None:
             raise AppError(404, "MAPPING_NOT_FOUND", "映射不存在")
         # 审计 mapping_id 对后续所有分支生效（含 403/禁用 404）

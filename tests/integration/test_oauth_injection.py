@@ -24,9 +24,9 @@ PROXY = "http://127.0.0.1:9910"
 AS = "http://127.0.0.1:9904"
 FRONT = "http://127.0.0.1:9910/console"
 MASTER = "test-master-key"
-ADMIN = {"Authorization": f"Bearer {make_token('uadmin', 'admin')}"}
-U888 = {"Authorization": f"Bearer {make_token('u888')}"}
-U999 = {"Authorization": f"Bearer {make_token('u999')}"}
+ADMIN = {"Authorization": f"Bearer {make_token(100, 'admin')}"}
+U888 = {"Authorization": f"Bearer {make_token(888)}"}
+U999 = {"Authorization": f"Bearer {make_token(999)}"}
 TCP_TIMEOUT = httpx.Timeout(connect=5, read=10, write=10, pool=5)
 
 CLIENT_BODY = {"client_id": "manual-cl", "client_secret": "manual-cs-123456",
@@ -65,14 +65,14 @@ async def _bind(mid, user_headers=U888, front=FRONT):
     assert "binding=success" in cb.headers["location"]
 
 
-async def _cred_row(app, mid, uid="u888"):
+async def _cred_row(app, mid, uid=888):
     async with app.state.sessionmaker() as session:
         return (await session.execute(select(OAuthCredential).where(
             OAuthCredential.mapping_id == mid,
             OAuthCredential.uid == uid))).scalar_one()
 
 
-async def _cred_token(app, mid, uid="u888") -> str:
+async def _cred_token(app, mid, uid=888) -> str:
     return decrypt_text((await _cred_row(app, mid, uid)).access_token, MASTER)
 
 
@@ -147,10 +147,10 @@ async def test_invalid_status_call_401(app):
     async with app.state.sessionmaker() as session:
         row = (await session.execute(select(OAuthCredential).where(
             OAuthCredential.mapping_id == mid,
-            OAuthCredential.uid == "u888"))).scalar_one()
+            OAuthCredential.uid == 888))).scalar_one()
         row.status = "invalid"
         await session.commit()
-    await invalidate_credential(app.state.redis, mid, "u888")
+    await invalidate_credential(app.state.redis, mid, 888)
     async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
         r = await c.get(f"{PROXY}/p/{mid}/orders", headers=U888)
     assert r.status_code == 401 and r.json()["code"] == "OAUTH_BINDING_REQUIRED"
@@ -279,10 +279,10 @@ async def test_unreadable_ciphertext_401_reauth_guidance(app):
     async with app.state.sessionmaker() as session:
         row = (await session.execute(select(OAuthCredential).where(
             OAuthCredential.mapping_id == mid,
-            OAuthCredential.uid == "u888"))).scalar_one()
+            OAuthCredential.uid == 888))).scalar_one()
         row.access_token = "not-a-fernet-payload"
         await session.commit()
-    await invalidate_credential(app.state.redis, mid, "u888")
+    await invalidate_credential(app.state.redis, mid, 888)
     async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
         r = await c.get(f"{PROXY}/p/{mid}/orders", headers=U888)
     assert r.status_code == 401 and r.json()["code"] == "OAUTH_BINDING_REQUIRED"
@@ -300,7 +300,7 @@ async def test_builtin_test_bound_user_uses_own_credential(app):
     assert body["ok"] is True and body["status_code"] == 200   # 有效凭证 → initialize 通过
     assert secure_state["received"][-1]["headers"]["authorization"] == f"Bearer {token}"
     await _bind(mid, U999)                                # 第二用户独立绑定
-    token999 = await _cred_token(app, mid, "u999")
+    token999 = await _cred_token(app, mid, 999)
     assert token999 != token
     async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
         r999 = await c.post(f"{PROXY}/api/v1/builtin-mappings/{mid}/test", headers=U999)
@@ -313,7 +313,7 @@ async def test_builtin_test_stale_token_hints_reauth(app):
     不回落，M4 定稿），detail 追加「重新授权」提示。"""
     mid = await _setup_manual("http://127.0.0.1:9903/mcp-secure", type_="mcp")
     await _bind(mid)
-    await _set_cred_token_ct(app, mid, "u888", "at-stale-revoked-000000")
+    await _set_cred_token_ct(app, mid, 888, "at-stale-revoked-000000")
     async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
         r = await c.post(f"{PROXY}/api/v1/builtin-mappings/{mid}/test", headers=U888)
     assert r.status_code == 200
@@ -352,10 +352,10 @@ async def test_refresh_corrupt_client_secret_401_not_500(app):
         cl.client_secret = "corrupted-client-secret-not-fernet"
         row = (await session.execute(select(OAuthCredential).where(
             OAuthCredential.mapping_id == mid,
-            OAuthCredential.uid == "u888"))).scalar_one()
+            OAuthCredential.uid == 888))).scalar_one()
         row.expires_at = datetime.now(timezone.utc) - timedelta(seconds=120)
         await session.commit()
-    await invalidate_credential(app.state.redis, mid, "u888")
+    await invalidate_credential(app.state.redis, mid, 888)
     async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
         r = await c.get(f"{PROXY}/p/{mid}/orders", headers=U888)
     assert r.status_code == 401 and r.json()["code"] == "OAUTH_BINDING_REQUIRED"
@@ -400,18 +400,18 @@ async def test_refresh_wait_timeout_returns_none_then_recovers(app, monkeypatch)
     async with app.state.sessionmaker() as session:
         row = (await session.execute(select(OAuthCredential).where(
             OAuthCredential.mapping_id == mid,
-            OAuthCredential.uid == "u888"))).scalar_one()
+            OAuthCredential.uid == 888))).scalar_one()
         row.expires_at = datetime.now(timezone.utc) - timedelta(seconds=120)
         await session.commit()
-    await invalidate_credential(app.state.redis, mid, "u888")
+    await invalidate_credential(app.state.redis, mid, 888)
     async with app.state.sessionmaker() as session:
-        mapping_data = await load_mapping(session, app.state.redis, mid, 60)
+        mapping_data = await load_mapping(session, app.state.redis, mid, 60, MASTER)
     monkeypatch.setattr(cred_mod, "REFRESH_WAIT_SECONDS", 0.3)
-    lock = refresh_lock_key(mid, "u888")
+    lock = refresh_lock_key(mid, 888)
     await app.state.redis.set(lock, "req-other-holder", ex=30)
     async with app.state.sessionmaker() as session:
         got = await refresh_credential(session, app.state.redis, app.state,
-                                       mapping_data, "u888", MASTER, "req-wait")
+                                       mapping_data, 888, MASTER, "req-wait")
     assert got is None                                    # 等待超时 → None（→401）
     row = await _cred_row(app, mid)
     assert row.status == "active"                         # 凭证未被等待路径破坏
@@ -419,7 +419,7 @@ async def test_refresh_wait_timeout_returns_none_then_recovers(app, monkeypatch)
     await app.state.redis.delete(lock)
     async with app.state.sessionmaker() as session:
         token = await refresh_credential(session, app.state.redis, app.state,
-                                         mapping_data, "u888", MASTER, "req-go")
+                                         mapping_data, 888, MASTER, "req-go")
     assert token and token.startswith("at-")              # 锁释放后正常刷新
     assert len(as_state["refresh_events"]) == 1
 

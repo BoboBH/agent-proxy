@@ -57,7 +57,7 @@ def state_key(state: str) -> str:
     return f"{STATE_KEY_PREFIX}{state}"
 
 
-def encode_state_payload(*, uid: str, mapping_id: str, code_verifier: str,
+def encode_state_payload(*, uid: int, mapping_id: str, code_verifier: str,
                          front_redirect: str) -> str:
     return json.dumps({"uid": uid, "mapping_id": mapping_id,
                        "code_verifier": code_verifier,
@@ -70,11 +70,11 @@ def decode_state_payload(raw: str | bytes) -> dict:
     except (ValueError, TypeError) as exc:
         raise AppError(400, "OAUTH_STATE_INVALID", "state 载荷非法") from exc
     required = ("uid", "mapping_id", "code_verifier", "front_redirect")
-    # 类型守卫：uid/mapping_id 必须为 str（拼缓存键 / 落库 / 鉴权决策的输入，
-    # 数字/None/容器等畸形类型一律 OAUTH_STATE_INVALID）。
+    # 类型守卫：uid 必须为 int（收尾批次整数化：拼缓存键 / 落库 proxy_oauth_credential.uid
+    # BIGINT 的输入；str/bool/容器等畸形一律 OAUTH_STATE_INVALID），mapping_id 必须为 str。
     if (not isinstance(payload, dict)
             or not all(k in payload for k in required)
-            or not isinstance(payload["uid"], str)
+            or not isinstance(payload["uid"], int) or isinstance(payload["uid"], bool)
             or not isinstance(payload["mapping_id"], str)):
         raise AppError(400, "OAUTH_STATE_INVALID", "state 载荷非法")
     return payload
@@ -182,7 +182,7 @@ async def save_oauth_client_row(session: AsyncSession, mapping_id: str, *,
                                 token_auth: str, authorize_url: str | None,
                                 token_url: str | None, scopes: str | None,
                                 source: str, master_key: str) -> None:
-    """upsert；client_secret 强制加密落库（§14.6，不受 ENCRYPT_AT_REST 影响）。"""
+    """upsert；client_secret 强制加密落库（§14.6；收尾批次起全敏感字段同标准）。"""
     row = await load_client_row(session, mapping_id)
     secret_ct = (encrypt_text(client_secret_plain, master_key)
                  if client_secret_plain else None)

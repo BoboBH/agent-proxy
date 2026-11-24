@@ -12,9 +12,9 @@ from agent_proxy.oauth.credential import decrypt_text
 from tests.integration.mock_oauth_as import as_state
 from tests.utils import make_token
 
-ADMIN = {"Authorization": f"Bearer {make_token('uadmin', 'admin')}"}
-U888 = {"Authorization": f"Bearer {make_token('u888')}"}
-U999 = {"Authorization": f"Bearer {make_token('u999')}"}
+ADMIN = {"Authorization": f"Bearer {make_token(100, 'admin')}"}
+U888 = {"Authorization": f"Bearer {make_token(888)}"}
+U999 = {"Authorization": f"Bearer {make_token(999)}"}
 FRONT = "http://testserver/console"
 MASTER = "test-master-key"
 
@@ -82,7 +82,7 @@ async def test_full_manual_flow_success_redirect_and_encrypted_storage(client, a
     async with app.state.sessionmaker() as session:
         row = (await session.execute(select(OAuthCredential).where(
             OAuthCredential.mapping_id == mid))).scalar_one()
-    assert row.uid == "u888" and row.access_token.startswith("gAAAA")
+    assert row.uid == 888 and row.access_token.startswith("gAAAA")
     assert "at-" not in row.access_token                  # 明文不落库
     assert decrypt_text(row.access_token, MASTER) == as_state["issued"][-1]["access_token"]
     assert row.refresh_token.startswith("gAAAA")
@@ -121,7 +121,7 @@ async def test_authorization_url_shape_and_state_in_redis(client, app):
     assert 0 < ttl <= 600                                # OAUTH_STATE_TTL
     import json as jsonlib
     payload = jsonlib.loads(await app.state.redis.get(key))
-    assert payload["uid"] == "u888" and payload["mapping_id"] == mid
+    assert payload["uid"] == 888 and payload["mapping_id"] == mid
     assert len(payload["code_verifier"]) == 43
     assert payload["front_redirect"] == FRONT
 
@@ -201,7 +201,7 @@ async def test_callback_as_error_redirects_failed(client, app):
     # AS 拒绝授权不落凭证
     from agent_proxy.oauth.credential import load_credential
     async with app.state.sessionmaker() as session:
-        assert await load_credential(session, app.state.redis, mid, "u888") is None
+        assert await load_credential(session, app.state.redis, mid, 888) is None
 
 
 async def test_callback_missing_code_redirects_failed(client):
@@ -241,7 +241,7 @@ async def test_callback_bogus_code_token_exchange_failed_no_credential(client, a
     assert "binding=failed&reason=token_exchange" in resp.headers["location"]
     from agent_proxy.oauth.credential import load_credential
     async with app.state.sessionmaker() as session:
-        assert await load_credential(session, app.state.redis, mid, "u888") is None
+        assert await load_credential(session, app.state.redis, mid, 888) is None
 
 
 async def test_full_flow_client_secret_basic(client, app):
