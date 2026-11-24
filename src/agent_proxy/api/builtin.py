@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import logging
+from urllib.parse import urlencode
 
 import httpx
 from fastapi import APIRouter, Depends, Request
@@ -243,9 +244,11 @@ async def oauth_callback(request: Request, mapping_id: str,
     if as_error or not code:
         # 用户在 AS 拒绝授权 / AS 错误重定向 / 缺 code：不落凭证，回跳失败态
         metrics.oauth_actions_total.labels(action="fail").inc()
-        reason = as_error or "missing_code"
+        # reason 是 AS 可控字符串（Task 4 评审携带批）：urlencode 后作为单一参数值
+        # 回跳——特殊字符不得拆出新 query 参数（防参数注入）。
+        reason = urlencode({"reason": as_error or "missing_code"})
         return RedirectResponse(
-            f"{front_redirect}{sep}binding=failed&reason={reason}", status_code=302)
+            f"{front_redirect}{sep}binding=failed&{reason}", status_code=302)
     data = await load_public_mapping(session, request.app.state.redis, mapping_id,
                                      settings.cache_ttl)
     require_oauth_mode(data)

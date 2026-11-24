@@ -294,3 +294,15 @@ def test_front_redirect_rejects_outside_whitelist():
 def test_front_redirect_empty_whitelist_fail_closed():
     with pytest.raises(AppError):
         validate_front_redirect("http://testserver/cb", ())
+
+
+def test_front_redirect_rejects_control_chars():
+    """Task 4 评审携带批：值含 [\x00-\x1f\x7f] 一律拒绝——防 CRLF 注入响应 /
+    畸形 Location 自 DoS；白名单 origin 命中不构成豁免。"""
+    for bad in ("http://testserver/cb\r\nX-Inj: 1",       # CRLF 注入
+                "http://testserver/\x00cb",                # NUL
+                "http\x1b://testserver/cb",                # ESC
+                "http://testserver/cb\x7f"):               # DEL
+        with pytest.raises(AppError) as ei:
+            validate_front_redirect(bad, ALLOWED)
+        assert ei.value.code == "INVALID_PARAM"

@@ -16,6 +16,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import re
 import secrets
 from urllib.parse import urlencode, urlparse
 
@@ -136,6 +137,10 @@ def validate_front_redirect(front_redirect: str,
     path/query 保留；空白名单一律拒绝（fail-closed）。非法 → 400 INVALID_PARAM。"""
     if not front_redirect or not front_redirect.strip():
         raise AppError(400, "INVALID_PARAM", "front_redirect 不能为空")
+    # 控制字符（\x00-\x1f\x7f）一律拒绝（Task 4 评审携带批）：CRLF 可注入响应头 /
+    # 拆分 Location 语义，其余控制字符会让浏览器产生不可预期回跳（自 DoS）。
+    if re.search(r"[\x00-\x1f\x7f]", front_redirect):
+        raise AppError(400, "INVALID_PARAM", "front_redirect 含非法控制字符")
     parsed = urlparse(front_redirect.strip())
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
         raise AppError(400, "INVALID_PARAM", "front_redirect 必须为绝对 http(s) 地址")

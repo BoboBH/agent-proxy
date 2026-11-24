@@ -3903,6 +3903,7 @@ git commit -m "test(M6): 安全专项（state 过期/白名单精确匹配/全�
 6. **discovery AS base SSRF**：AS base 来自上游元数据，代理不再对其做 SSRF 校验（upstream origin 注册期已校验；元数据指向属上游自身声明，与跨源重定向同一信任模型）——已写入 discovery.py docstring，如需收紧随二期。
 7. **refresh 审计双行**：同一 request_id 在触发刷新的请求下会有中间件行 + oauth_refresh 行两条（action 区分）；若 M7 审计看板按 request_id 唯一聚合，需按 action 过滤。
 8. **DCR 客户端失效**：AS 侧若丢掉 client 注册（重启清库等），代理侧 dcr 行已成孤儿 → authorize 时 AS 拒绝；处置为 admin PUT client 覆盖为 manual（upsert 已支持），自动化检测移交 M7+。
+9. **delete_mapping 的 TTL 残留键（Task 4 评审携带批债务注记）**：映射删除连带清理 OAuth client/credential 行与 cred 缓存，但三类 TTL 自愈键不主动清理——`ap:oauth:state:*`（≤600s，state 载荷含已删 mapping_id，回调消费时 400 OAUTH_STATE_INVALID 兜底）、`ap:oauth:authz:{mapping_id}:{uid}`（≤600s，binding 查询先回源映射 404，残留无行为影响）、`ap:lock:refresh:{mapping_id}:{uid}`（≤30s，无凭证行后刷新路径不可达）。均有界自愈、无安全面泄漏（state 键值不含 token），不实现清理；如 M7 需要精确清键，随映射删除按前缀扫描。
 
 ## 自查记录（对照任务要求）
 

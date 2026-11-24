@@ -6,7 +6,7 @@ import httpx
 from sqlalchemy import select
 from urllib.parse import urlparse, parse_qs
 
-from agent_proxy.models import OAuthCredential
+from agent_proxy.models import OAuthClient, OAuthCredential
 from agent_proxy.oauth.client import state_key
 from agent_proxy.oauth.credential import decrypt_text
 from tests.integration.mock_oauth_as import as_state
@@ -213,11 +213,61 @@ async def test_callback_missing_code_redirects_failed(client):
     assert resp.status_code == 302
     assert "binding=failed&reason=missing_code" in resp.headers["location"]
 
+async def test_callback_as_error_reason_urlencoded(client):
+    """Task 4 评审携带批：AS error 为 AS 可控字符串，回跳 reason 必须 urlencode
+    ——特殊字符经编码后作为 reason 值整体回跳，不得注入为独立 query 参数。"""
+    mid = await _setup(client)
+    r = await _authorize(client, mid)
+    state = parse_qs(urlparse(r.json()["authorization_url"]).query)["state"][0]
+    resp = await client.get(
+        f"/oauth/callback/{mid}?error=access%20denied%26evil%3D1%23frag&state={state}",
+        follow_redirects=False)
+    assert resp.status_code == 302
+    query = parse_qs(urlparse(resp.headers["location"]).query)
+    # 解码后为 AS 原值；裸拼接会拆出 evil=1 独立参数且 #frag 丢失进 fragment
+    assert query == {"binding": ["failed"], "reason": ["access denied&evil=1#frag"]}
+
+
+async def test_callback_bogus_code_token_exchange_failed_no_credential(client, app):
+    """Task 4 评审携带批：code 换 token 失败分支（伪造 code → AS 400）→
+    302 binding=failed&reason=token_exchange，且不落任何凭证行。"""
+    mid = await _setup(client)
+    r = await _authorize(client, mid)
+    state = parse_qs(urlparse(r.json()["authorization_url"]).query)["state"][0]
+    resp = await client.get(f"/oauth/callback/{mid}?code=cd-bogus-forged&state={state}",
+                            follow_redirects=False)
+    assert resp.status_code == 302
+    assert "binding=failed&reason=token_exchange" in resp.headers["location"]
+    from agent_proxy.oauth.credential import load_credential
+    async with app.state.sessionmaker() as session:
+        assert await load_credential(session, app.state.redis, mid, "u888") is None
+
+
+async def test_full_flow_client_secret_basic(client, app):
+    """Task 4 评审携带批：client_secret_basic 形态端到端——token 请求走 HTTP Basic
+    （RFC 6749 §2.3.1），mock AS 按 Basic 解码校验，绑定成功落库。"""
+    mid = await _create_oauth(client)
+    resp = await client.put(f"/api/v1/builtin-mappings/{mid}/client",
+                            json={**CLIENT_BODY, "token_auth": "client_secret_basic"},
+                            headers=ADMIN)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["token_auth"] == "client_secret_basic"
+    cb, _ = await _bind(client, mid)
+    assert cb.status_code == 302
+    assert cb.headers["location"] == f"{FRONT}?binding=success"
+    async with app.state.sessionmaker() as session:
+        row = (await session.execute(select(OAuthClient).where(
+            OAuthClient.mapping_id == mid))).scalar_one()
+    assert row.token_auth == "client_secret_basic"       # basic 形态落库
+    b = await client.get(f"/api/v1/builtin-mappings/{mid}/binding", headers=U888)
+    assert b.json()["binding"] == "bound"
+
 
 async def test_front_redirect_whitelist_400(client):
     mid = await _setup(client)
     for bad in ("http://evil.example.com/cb", "http://testserver:8080/cb",
-                "javascript:alert(1)", "/relative"):
+                "javascript:alert(1)", "/relative",
+                "http://testserver/cb\r\nX-Inj: 1"):     # CRLF 注入（Task 4 评审携带批）
         resp = await _authorize(client, mid, front=bad)
         assert resp.status_code == 400 and resp.json()["code"] == "INVALID_PARAM"
 
