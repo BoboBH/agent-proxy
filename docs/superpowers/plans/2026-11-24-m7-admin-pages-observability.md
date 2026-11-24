@@ -2094,3 +2094,12 @@ git commit -m "docs(M7): README 管理页面快速开始/接口速览/指标清�
 ## 收尾批次（用户指令 2026-11-24，M7 任务全部完成后执行）
 
 **user_id 整数化迁移**：内部系统 user_id 为整数——`proxy_mapping.owner_uid` 与 `proxy_oauth_credential.uid` 由 VARCHAR(64) 迁移为 BIGINT（设计 §5.1/§5.3 已按 BIGINT 定型，fc5046a），`Identity.user_id: str → int`，StubVerifier 数字 token 返回 int，全链路（services/deps/session/审计/schemas/make_token 测试工具/既有库 ALTER）统一适配。执行前需与在途编辑无冲突（M7 各任务完成后进行）。
+
+## 收尾批次追加（用户确认 2026-11-24）
+
+**敏感字段统一强制加密**（复用 M6 已验证的 Fernet 基建，与 user_id 整数化迁移同批收尾执行）：
+- `proxy_mapping.upstream_headers` 由明文 JSON 迁移为 Fernet 密文落库（表 schema 评估：JSON→TEXT 密文列，非破坏 ALTER + 既有行一次性加密回写）
+- Redis `ap:mapping:{id}` 缓存同步改存密文形态（与 `ap:cred:*` 先例一致，Redis 侧不落明文）
+- 删除 `ENCRYPT_AT_REST` 可选开关（强制后无意义，`MASTER_KEY` 必填不变）
+- 覆盖面核对：OAuth credential/client_secret 已强制（M6 交付），本批补齐 upstream_headers 即三类敏感数据全密文
+- 读取路径透明：load_mapping 解密一次，转发/详情/resolve 对外行为零变化
