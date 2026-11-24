@@ -3,12 +3,13 @@
 builtin test 本人凭证与失效提示（§14.5 / §6.6）；终审遗留 6 补口：无轮换刷新
 分支、等待超时分支、manual basic 过期刷新、builtin test http 形态。"""
 import asyncio
+import re
 from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 
 import httpx
 
-from agent_proxy.models import OAuthCredential
+from agent_proxy.models import OAuthClient, OAuthCredential
 from agent_proxy.oauth import credential as cred_mod
 from agent_proxy.oauth.credential import (decrypt_text, encrypt_text,
                                           invalidate_credential,
@@ -239,6 +240,12 @@ async def test_refresh_transient_5xx_keeps_credential_and_retries(app):
     row = await _cred_row(app, mid)
     assert row.status == "active"                         # 瞬时失败不标 invalid
     assert len(as_state["refresh_events"]) == 0           # 未产生刷新事件
+    # /metrics 级断言（评审 Minor 5）：瞬时失败独立 transient 标签计数
+    async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+        m = await c.get(f"{PROXY}/metrics")
+    transient = re.search(r'^ap_oauth_actions_total\{action="transient"\} ([0-9.]+)$',
+                          m.text, re.M)
+    assert transient and float(transient.group(1)) >= 1.0
     as_state["refresh_status"] = 0                        # AS 恢复
     async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
         r2 = await c.get(f"{PROXY}/p/{mid}/orders", headers=U888)
@@ -331,6 +338,29 @@ async def test_builtin_test_unbound_user_401():
     async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
         r = await c.post(f"{PROXY}/api/v1/builtin-mappings/{mid}/test", headers=U999)
     assert r.status_code == 401 and r.json()["code"] == "OAUTH_BINDING_REQUIRED"
+
+
+async def test_refresh_corrupt_client_secret_401_not_500(app):
+    """评审修复（Critical）：manual 客户端 client_secret 密文不可解（MASTER_KEY
+    变更 / 行损坏）+ 凭证已过期（刷新分支不先解 access）→ 401 引导重新授权，
+    绝不 500 穿透；凭证行保持原状（配置恢复后仍可用）。"""
+    mid = await _setup_manual(f"{AS}/api")
+    await _bind(mid)
+    async with app.state.sessionmaker() as session:
+        cl = (await session.execute(select(OAuthClient).where(
+            OAuthClient.mapping_id == mid))).scalar_one()
+        cl.client_secret = "corrupted-client-secret-not-fernet"
+        row = (await session.execute(select(OAuthCredential).where(
+            OAuthCredential.mapping_id == mid,
+            OAuthCredential.uid == "u888"))).scalar_one()
+        row.expires_at = datetime.now(timezone.utc) - timedelta(seconds=120)
+        await session.commit()
+    await invalidate_credential(app.state.redis, mid, "u888")
+    async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+        r = await c.get(f"{PROXY}/p/{mid}/orders", headers=U888)
+    assert r.status_code == 401 and r.json()["code"] == "OAUTH_BINDING_REQUIRED"
+    row = await _cred_row(app, mid)
+    assert row.status == "active"                         # 凭证未被破坏（不清行）
 
 
 async def test_refresh_without_rotation_keeps_original_refresh_token(app):

@@ -3904,6 +3904,9 @@ git commit -m "test(M6): 安全专项（state 过期/白名单精确匹配/全�
 7. **refresh 审计双行**：同一 request_id 在触发刷新的请求下会有中间件行 + oauth_refresh 行两条（action 区分）；若 M7 审计看板按 request_id 唯一聚合，需按 action 过滤。
 8. **DCR 客户端失效**：AS 侧若丢掉 client 注册（重启清库等），代理侧 dcr 行已成孤儿 → authorize 时 AS 拒绝；处置为 admin PUT client 覆盖为 manual（upsert 已支持），自动化检测移交 M7+。
 9. **delete_mapping 的 TTL 残留键（Task 4 评审携带批债务注记）**：映射删除连带清理 OAuth client/credential 行与 cred 缓存，但三类 TTL 自愈键不主动清理——`ap:oauth:state:*`（≤600s，state 载荷含已删 mapping_id，回调消费时 400 OAUTH_STATE_INVALID 兜底）、`ap:oauth:authz:{mapping_id}:{uid}`（≤600s，binding 查询先回源映射 404，残留无行为影响）、`ap:lock:refresh:{mapping_id}:{uid}`（≤30s，无凭证行后刷新路径不可达）。均有界自愈、无安全面泄漏（state 键值不含 token），不实现清理；如 M7 需要精确清键，随映射删除按前缀扫描。
+10. **client 行密文损坏的用户提示精度（Task 7 评审 Minor 3）**：manual client 的 client_secret 密文不可解（MASTER_KEY 变更）时刷新按不清行处理、仅本请求 401 引导「重新授权」——但 client 行损坏重新授权无法自愈（需 admin 重新 PUT client 覆盖）；M7 页面对该形态区分提示（接口侧可后续细分 config_invalid 回告码）。
+11. **unbind 密文损坏分支代码重复（Task 7 评审 Minor 4）**：与正常解绑尾段的 metric/审计/mapping_id 三行重复，可提取 `_finish_unbind` 辅助函数；纯风格重构不急。
+12. **刷新锁属主校验的 e2e 形态（Task 7 评审 Minor 6）**：`release_refresh_lock` 属主语义目前仅直操 Redis 单元面钉住；慢 token 端点 >30s TTL 的真实属主窗口无 e2e（脚本化需 30s+ 级时延，测试成本高），并发刷新单飞用例间接覆盖释放路径。
 
 ## 自查记录（对照任务要求）
 

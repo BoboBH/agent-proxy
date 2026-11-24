@@ -25,6 +25,7 @@ import hashlib
 import json
 import logging
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -359,7 +360,9 @@ async def refresh_credential(session: AsyncSession, r, app_state, mapping_data: 
     返回新 access 或 None（→401）。"""
     mapping_id = mapping_data["mapping_id"]
     lock_key = refresh_lock_key(mapping_id, uid)
-    lock_token = request_id or "refresh"
+    # 无 request_id 的调用方回退随机值（评审 Minor 2）：常量回退会让多个匿名持有者
+    # 共享同一锁值 → 一方释放误删他方锁，部分击穿属主校验
+    lock_token = request_id or uuid.uuid4().hex
     try:
         acquired = await r.set(lock_key, lock_token, nx=True,
                                ex=REFRESH_LOCK_TTL)
@@ -423,10 +426,15 @@ async def _do_refresh(session: AsyncSession, r, app_state, mapping_data: dict,
         await mark_credential_invalid(session, r, mapping_id, uid)
         metrics.oauth_actions_total.labels(action="fail").inc()
         return None
-    row = await load_client_row(session, mapping_id)
-    client = _row_to_client(row, master_key) if row is not None else None
-    token_url = client.get("token_url") if client else None
     try:
+        # client 行解密入 try（评审 Critical）：manual 行 client_secret 密文不可解
+        # （MASTER_KEY 变更 / 行损坏）+ 凭证已过期（刷新分支不先解 access）时，
+        # 原在 try 外解密 → AppError(500) 穿透，违背 get_callable_credential
+        # 「密文不可解 → 401 引导而非 500」底线。按不清行处理：401 引导，
+        # admin 重新 PUT client / 重配 MASTER_KEY 后原凭证仍可用。
+        row = await load_client_row(session, mapping_id)
+        client = _row_to_client(row, master_key) if row is not None else None
+        token_url = client.get("token_url") if client else None
         if not token_url:
             # dcr 行两列留空（§5.3）：刷新时实时 discovery 取 token 端点
             meta = await discover_authorization_server(
@@ -462,9 +470,9 @@ async def _do_refresh(session: AsyncSession, r, app_state, mapping_data: dict,
         return None
     except (httpx.HTTPError, ValueError, DiscoveryError, AppError,
             _RefreshFailed) as exc:
-        # 非破坏性：凭证原状保留（AppError=密文不可解/加密配置异常，同不清行——
-        # 配置恢复后原凭证仍可用），本请求经 binding_required 401 重授权引导；
-        # metrics 计 transient（终审遗留 5：瞬时失败与业务拒绝分拆计数）
+        # 非破坏性：凭证原状保留（AppError=密文不可解/加密配置异常——凭证行或
+        # client 行，同不清行——配置恢复后原凭证仍可用），本请求经 binding_required
+        # 401 重授权引导；metrics 计 transient（终审遗留 5：瞬时失败与业务拒绝分拆）
         metrics.oauth_actions_total.labels(action="transient").inc()
         log.warning("OAuth 刷新瞬时失败 (%s/%s): %s", mapping_id, uid, type(exc).__name__)
         _audit_refresh(request_id, mapping_id, uid, ok=False)
