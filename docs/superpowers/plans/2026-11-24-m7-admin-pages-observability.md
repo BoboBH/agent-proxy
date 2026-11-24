@@ -2071,7 +2071,7 @@ git commit -m "docs(M7): README 管理页面快速开始/接口速览/指标清�
 ## M8+ 债务节（本计划明示移交）
 
 1. **company_sso Provider 真实对接**：票据格式/校验端点/登出单点（SLO）协议实现时定；实现为独立 Provider 类 + `build_login_provider` 白名单放行 + config.validate 白名单加 `company_sso`，页面与 API 零改动（设计 §15.1 对接抽象承诺）。
-2. **CSRF 强化**：页面写操作（POST/PUT/DELETE fetch）现依赖 SameSite=Lax（跨站 POST/子请求不携带 Cookie）+ 同源 fetch；如需强化加 double-submit token 或 Origin 校验——一期不做，随安全评审批次。
+2. **CSRF 强化**：页面写操作（POST/PUT/DELETE fetch）现依赖 SameSite=Lax（跨站 POST/子请求不携带 Cookie）+ 同源 fetch；登录 callback 为 GET（top-level 导航天然携带 Cookie，存在登录 CSRF/顶导面）——如需强化加 double-submit token 或 Origin 校验，一并覆盖「登录 CSRF（GET callback 顶导）」；一期不做，随安全评审批次。
 3. **前端增强**：映射列表分页/排序、错误提示细化（区分 INVALID_PARAM 细节）、编辑 diff 预览、绑定状态自动轮询（现为手动「刷新」）、公共映射列表分页。
 4. **会话滑动续期 / 并发登录策略**：一期固定 TTL 单会话（登出即删、过期惰性失效）；多设备/续期窗口需求出现时再引入。
 5. **SESSION_COOKIE_SECURE 部署核对项**：部署文档批次（Dockerfile/compose 同批）必须在生产 checklist 钉住「EXTERNAL_BASE 为 https → SESSION_COOKIE_SECURE=true」。
@@ -2080,6 +2080,7 @@ git commit -m "docs(M7): README 管理页面快速开始/接口速览/指标清�
 8. **/metrics 访问控制**：设计定位「无鉴权、仅内网可达」（与 /healthz、/readyz 一致）；网关侧隔离属部署交付，随部署文档批次。
 9. **Dockerfile 与 docker-compose**：部署交付（用户要求的部署文档单独批次），本计划不含。
 10. **trace 行为页面的覆盖**：管理页面流量（route=admin）的 trace 记录现为 metadata 模式默认行为（无 body 面板）；如需页面侧排障视图（按 request_id 查 trace/audit），属二期可观测性增强。
+11. **admin 模板打包声明**：`pyproject.toml` 已落 `[tool.setuptools.package-data]`（`agent_proxy = ["admin/*.html"]`，评审修复）——模板随包分发，wheel/容器打包缺失即运行期 TemplateNotFound；部署批次（Dockerfile/compose）核对打包产物含模板目录。
 
 ## 自查记录（对照任务要求）
 

@@ -35,10 +35,11 @@ class StubVerifier:
 
     纯数字 token 短路（M7 评审指令，仅 stub）：直接作 user_id（`Bearer 12345` →
     Identity(user_id="12345")）——stub 登录页「输入数字即身份」，免构造信封票据；
-    信封形态（stub.<b64url 载荷>.sig）走下方 JWT 解析，两路径并存。"""
+    isascii 门（评审修复）挡全角数字（"１２３".isdigit() 为 True 但非 ASCII），
+    其走下方 JWT 解析 → 401；信封形态（stub.<b64url 载荷>.sig）两路径并存。"""
 
     async def verify(self, token: str) -> Identity:
-        if token.isdigit():
+        if token.isascii() and token.isdigit():
             return Identity(user_id=token)
         try:
             payload = json.loads(_b64url_decode(token.split(".")[1]))

@@ -27,6 +27,11 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+# M7 管理页面 Jinja2 模板随包分发（src/agent_proxy/admin/）：wheel/容器打包必须
+# 携带，缺失即运行期 TemplateNotFound（部署批次需核对打包产物含模板）
+agent_proxy = ["admin/*.html"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"

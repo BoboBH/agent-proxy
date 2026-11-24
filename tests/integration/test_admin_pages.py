@@ -87,12 +87,29 @@ async def test_callback_invalid_ticket_redirects_login_without_session(client, a
 
 
 async def test_callback_return_to_open_redirect_neutralized(client):
-    """return_to 仅站内相对路径（/ 开头且非 //）：绝对地址 / 协议相对地址一律回 /admin。"""
-    for bad in ("//evil.com", "https://evil.com/x", "javascript:alert(1)"):
+    """return_to 仅站内相对路径（归一 \\ 后 / 开头且非 //）：绝对地址 / 协议相对地址
+    （含 WHATWG 反斜杠形态 /\\evil.com）/ CRLF 注入（%0d%0a）一律归一 /admin；
+    Location 组装前 quote，无原始 CR/LF 落头。"""
+    for bad in ("//evil.com", "/\\evil.com", "/\\/\\evil.com", "https://evil.com/x",
+                "javascript:alert(1)", "/admin\r\nX-Injected: 1"):
         r = await client.get(
             f"/admin/auth/callback?ticket={make_token('u1')}&return_to={quote(bad, safe='')}")
         assert r.status_code == 302
         assert r.headers["location"] == "/admin"
+        assert "\r" not in r.headers["location"] and "\n" not in r.headers["location"]
+
+
+def test_safe_return_to_backslash_and_crlf_normalization():
+    """_safe_return_to 单元钉（评审修复）：反斜杠归一后再判（WHATWG 相对态 \\ 视同
+    /，仅拒 // 挡不住 /\\evil.com）；CR/LF 拒收；归一后仍站内的路径放行。"""
+    from agent_proxy.api.admin_pages import _safe_return_to
+
+    assert _safe_return_to("/admin?p=1") == "/admin?p=1"      # 正常站内路径
+    assert _safe_return_to("/a\\b") == "/a/b"                 # 归一后仍站内 → 放行
+    assert _safe_return_to("/\\evil.com") == "/admin"         # 反斜杠协议相对地址
+    assert _safe_return_to("/\\/\\evil.com") == "/admin"      # 归一后 // 开头
+    assert _safe_return_to("//evil.com") == "/admin"
+    assert _safe_return_to("/admin\r\nX-Injected: 1") == "/admin"   # CRLF 拒收
 
 
 async def test_logout_deletes_server_session_and_cookie(client, app):

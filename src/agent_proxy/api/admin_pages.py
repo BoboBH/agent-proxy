@@ -40,10 +40,19 @@ templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent.parent
 
 
 def _safe_return_to(return_to: str) -> str:
-    """仅接受站内相对路径（/ 开头且非 //），防开放重定向；其余回 /admin。
+    """仅接受站内相对路径，防开放重定向；其余一律归一 /admin。
+
+    - 反斜杠归一后再判（评审修复）：WHATWG 相对态把 \\ 视同 /，`/\\evil.com` 是
+      协议相对地址，仅拒 `//` 挡不住——归一 `\\`→`/` 后即落 `//` 形态被拒；
+    - 含 CR/LF 拒收（CRLF 头注入面在入口掐掉，不交给下游转义兜底）；
+    - 组装 Location 前由调用方 quote(safe="/?=&")，成功/错误分支一致——不依赖
+      Starlette 版本相关的 RedirectResponse 再编码行为。
     （沿用 M6 front_redirect 评审结论：跳转目标必须是服务端可判定的白名单形态。）"""
-    if return_to.startswith("/") and not return_to.startswith("//"):
-        return return_to
+    normalized = return_to.replace("\\", "/")
+    if "\r" in normalized or "\n" in normalized:
+        return "/admin"
+    if normalized.startswith("/") and not normalized.startswith("//"):
+        return normalized
     return "/admin"
 
 
@@ -100,7 +109,10 @@ async def admin_auth_callback(request: Request, settings: Settings = Depends(get
     request.state.uid = identity.user_id
     request.state.user_name = identity.user_name or ""
     request.state.audit_action = "admin_login"
-    response = RedirectResponse(_safe_return_to(return_to), status_code=302)
+    # Location 组装前 quote（与错误分支一致）：防 CRLF/控制字符落头（评审修复，
+    # 不依赖 Starlette 版本相关的 RedirectResponse 再编码行为）
+    response = RedirectResponse(quote(_safe_return_to(return_to), safe="/?=&"),
+                                status_code=302)
     _set_session_cookie(response, settings, sid)
     return response
 

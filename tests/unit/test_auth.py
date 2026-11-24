@@ -33,10 +33,13 @@ async def test_stub_verify_garbage():
 async def test_stub_verify_pure_digit_token_shortcut():
     """纯数字 token 直接作 user_id（M7 stub 登录简化）：`Bearer 12345` →
     Identity(user_id="12345")（user_name/role 为 None），在 JWT 解析之前短路——
-    stub 登录页输入数字即身份，免构造信封；信封票据路径不受影响（上方既有用例）。"""
+    stub 登录页输入数字即身份，免构造信封；信封票据路径不受影响（上方既有用例）。
+    全角数字（isdigit=True 但 isascii=False）不短路，走 JWT 解析 → 401。"""
     identity = await StubVerifier().verify("12345")
     assert identity == Identity(user_id="12345")
     assert (await StubVerifier().verify("0")).user_id == "0"
+    with pytest.raises(TokenInvalidError):
+        await StubVerifier().verify("１２３")
 
 
 def test_build_verifier_unknown_impl():

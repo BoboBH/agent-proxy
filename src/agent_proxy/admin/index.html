@@ -201,6 +201,10 @@ function showAgentConfig(elId, data) {
 
 /* ---------- 我的映射 ---------- */
 
+/* 行内 onclick 传参仅限 mapping_id（三个视图同规）：mapping_id 为服务端生成的
+   base62，字符集安全；esc() 只防 HTML 上下文，对 JS 字符串上下文不充分——
+   此类插值槽位勿改放任何用户可控输入（name/upstream_url 等一律走 textContent
+   或 data-* 绑定，不走字符串拼 onclick）。 */
 async function loadMine() {
   var r = await api("GET", "/api/v1/mappings?page_size=100");
   var rows = (r.data || []).map(function (m) {
