@@ -17,7 +17,10 @@ async def test_get_missing_or_garbage_sid_returns_none(app):
     assert await get_session(app.state.redis, "") is None
     assert await get_session(app.state.redis, new_sid()) is None     # 不存在的 sid
     await app.state.redis.set(session_key("junk"), "not-json")
-    assert await get_session(app.state.redis, "junk") is None        # 载荷非法 → None
+    assert await get_session(app.state.redis, "junk") is None        # sid 格式非法 → None（不触达载荷）
+    sid = "0" * 32                                  # 合法形态 sid + 坏载荷 → 走 decode 分支
+    await app.state.redis.set(session_key(sid), "not-json")
+    assert await get_session(app.state.redis, sid) is None           # 载荷非法 → None
 
 
 async def test_destroy_session_removes_key_and_is_idempotent(app):

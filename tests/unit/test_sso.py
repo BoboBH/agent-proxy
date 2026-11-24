@@ -121,3 +121,38 @@ def test_stub_login_url_encodes_crlf_in_return_to():
     url = StubLoginProvider().login_url("/admin\r\nX-Injected: 1")
     assert "\r" not in url and "\n" not in url
     assert "%0D" in url and "%0A" in url
+
+
+# ---------- sid 格式校验（Task 2 评审加固：防键空间注入） ----------
+
+
+class _RecordingRedis:
+    """记录全部 Redis 命令的替身：非法 sid 必须在格式校验处短路（零命令触达）。
+    （不抛断言——get_session 的 except Exception 会吞掉 fake 内的异常。）"""
+
+    def __init__(self):
+        self.calls: list[tuple[str, str]] = []
+
+    async def get(self, key):
+        self.calls.append(("get", key))
+        return None
+
+    async def delete(self, key):
+        self.calls.append(("delete", key))
+
+
+async def test_get_session_rejects_non_32hex_sid_without_redis_access():
+    """sid 仅接受 new_sid() 形态（32 位小写 hex）：Cookie 是攻击者可控输入，
+    非 128bit-hex 一律按未登录处理（None），不触达 Redis。"""
+    for bad in ("junk", "a" * 31, "A" * 32, "g" * 40, f"{'a' * 32}/extra",
+                f"{'a' * 31} "):
+        r = _RecordingRedis()
+        assert await get_session(r, bad) is None
+        assert r.calls == []                             # 零 Redis 命令
+
+
+async def test_destroy_session_rejects_non_32hex_sid_without_redis_access():
+    for bad in ("junk", "A" * 32, f"{'b' * 32}/x"):
+        r = _RecordingRedis()
+        await destroy_session(r, bad)                    # 短路 no-op
+        assert r.calls == []                             # 零 Redis 命令

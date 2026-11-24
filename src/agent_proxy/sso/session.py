@@ -4,13 +4,16 @@ Cookie 仅存不透明 sid。
 - TTL 创建时定（ADMIN_SESSION_TTL，默认 28800s），Redis 惰性过期；不做滑动续期
   （登出即删；续期策略为 M8+ 债务）；
 - 载荷仅 Identity 三字段 JSON——不含任何凭证/敏感值；
-- sid = secrets.token_hex(16)（128bit 随机，与 OAuth state 同强度）；
+- sid = secrets.token_hex(16)（128bit 随机，与 OAuth state 同强度）；Cookie 是
+  攻击者可控输入，get/destroy 对非「32 位小写 hex」的 sid 一律短路（None / no-op），
+  不触达 Redis——防键空间注入；
 - 读取失败（Redis 异常）按未登录处理（WARN），不 500——页面场景宁可回登录页。
 """
 from __future__ import annotations
 
 import json
 import logging
+import re
 import secrets
 
 from ..auth import Identity
@@ -19,6 +22,13 @@ log = logging.getLogger("agent_proxy")
 
 SESSION_COOKIE = "ap_sess"
 SESSION_KEY_PREFIX = "ap:sess:"
+
+_SID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
+
+
+def _valid_sid(sid: str) -> bool:
+    """sid 仅接受 new_sid() 的产物形态：32 位小写 hex（128bit）。"""
+    return bool(_SID_PATTERN.match(sid))
 
 
 def session_key(sid: str) -> str:
@@ -65,9 +75,10 @@ async def create_session(r, identity: Identity, ttl: int) -> str:
 
 
 async def get_session(r, sid: str) -> Identity | None:
-    """sid → Identity；无 sid / 键不存在（过期或已登出）/ 载荷非法 / Redis 异常
-    → None（上层按未登录处理）。"""
-    if not sid:
+    """sid → Identity；无 sid / sid 形态非法（非 32 位小写 hex，直接短路不触达
+    Redis）/ 键不存在（过期或已登出）/ 载荷非法 / Redis 异常 → None（上层按
+    未登录处理）。"""
+    if not _valid_sid(sid):
         return None
     try:
         raw = await r.get(session_key(sid))
@@ -80,7 +91,10 @@ async def get_session(r, sid: str) -> Identity | None:
 
 
 async def destroy_session(r, sid: str) -> None:
-    """退出登录：删除服务端会话（Cookie 中的 sid 随即失效，重放无效）；幂等。"""
+    """退出登录：删除服务端会话（Cookie 中的 sid 随即失效，重放无效）；幂等。
+    sid 形态非法直接 no-op（无该键可删，且不触达 Redis）。"""
+    if not _valid_sid(sid):
+        return
     try:
         await r.delete(session_key(sid))
     except Exception as exc:
