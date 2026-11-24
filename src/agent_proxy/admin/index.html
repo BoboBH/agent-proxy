@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>agent-proxy 管理页面</title>
+<style>
+  body { font-family: system-ui, -apple-system, sans-serif; margin: 0; color: #1f2328; }
+  header { display: flex; align-items: center; gap: 16px; padding: 12px 24px; background: #1a7f64; color: #fff; }
+  header h1 { font-size: 18px; margin: 0; }
+  header span { flex: 1; }
+  header button { background: rgba(255,255,255,.15); color: #fff; border: 1px solid rgba(255,255,255,.4);
+                  border-radius: 6px; padding: 6px 14px; cursor: pointer; }
+  nav { display: flex; gap: 8px; padding: 12px 24px; border-bottom: 1px solid #d8dee4; }
+  nav button { border: 1px solid #d8dee4; background: #f6f8fa; border-radius: 6px; padding: 6px 16px; cursor: pointer; }
+  nav button.active { background: #1a7f64; color: #fff; border-color: #1a7f64; }
+  main { padding: 16px 24px; }
+  h2 { font-size: 16px; margin: 18px 0 8px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { border: 1px solid #d8dee4; padding: 6px 8px; text-align: left; vertical-align: top; }
+  th { background: #f6f8fa; }
+  code { background: #f6f8fa; padding: 1px 4px; border-radius: 4px; }
+  form.card, .card { border: 1px solid #d8dee4; border-radius: 8px; padding: 12px 16px; margin: 12px 0; max-width: 860px; }
+  label { display: block; margin: 8px 0 2px; font-size: 13px; color: #57606a; }
+  input, select, textarea { width: 100%; box-sizing: border-box; padding: 6px; font-size: 14px; }
+  textarea { min-height: 64px; font-family: monospace; }
+  button.act { border: 1px solid #d8dee4; background: #f6f8fa; border-radius: 6px; padding: 4px 10px;
+               cursor: pointer; margin: 2px; }
+  button.primary { background: #1a7f64; color: #fff; border-color: #1a7f64; padding: 8px 18px; }
+  .pre { background: #f6f8fa; border: 1px solid #d8dee4; border-radius: 6px; padding: 8px;
+         font-family: monospace; font-size: 13px; white-space: pre-wrap; word-break: break-all; }
+  .status { color: #57606a; font-size: 13px; margin: 6px 0; min-height: 16px; }
+  .ok { color: #1a7f64; } .bad { color: #cf222e; }
+  .row-actions { white-space: nowrap; }
+</style>
+</head>
+<body>
+<header>
+  <h1>agent-proxy 管理页面</h1>
+  <span>{{ user_name }}{% if is_admin %}（管理员）{% endif %}</span>
+  <button id="logout-btn" type="button">退出登录</button>
+</header>
+<nav>
+  <button class="tab active" data-view="mine" type="button">我的映射</button>
+  <button class="tab" data-view="builtin" type="button">内置 MCP</button>
+  {% if is_admin %}<button class="tab" data-view="public" type="button">公共映射管理</button>{% endif %}
+</nav>
+<main>
+  <!-- ============ 我的映射（§15.1：列表 / 注册表单含占位符预览 / resolve 回显编辑 / test / 删除） ============ -->
+  <section id="view-mine">
+    <h2>我的映射</h2>
+    <div id="mine-status" class="status"></div>
+    <table id="mine-table">
+      <thead><tr><th>mapping_id</th><th>名称</th><th>类型</th><th>上游地址</th><th>代理地址</th><th>状态</th><th>操作</th></tr></thead>
+      <tbody></tbody>
+    </table>
+
+    <form id="mine-form" class="card">
+      <h3 id="mine-form-title">注册映射</h3>
+      <button id="mine-cancel-edit" class="act" type="button" hidden>取消编辑</button>
+      <label>类型</label>
+      <select name="type"><option value="http">http</option><option value="mcp">mcp</option></select>
+      <label>名称（可选）</label>
+      <input name="name" placeholder="显示名">
+      <label>上游地址（mcp 建议完整端点，如 https://mcp.ex.com/sse）</label>
+      <input name="upstream_url" required placeholder="https://...">
+      <label>Header（每行一条 Name: value；注册后仅占位符回显，真实值只存代理侧）</label>
+      <textarea name="headers" placeholder="Authorization: Bearer sk-xxx&#10;X-User-Id: u888"></textarea>
+      {% if is_admin %}
+      <label>可见性</label>
+      <select name="visibility"><option value="private">private</option><option value="public">public</option></select>
+      {% endif %}
+      <label>test_request（可选，http 严格验证）</label>
+      <div style="display:flex; gap:8px;">
+        <input name="method" placeholder="GET" style="width:90px">
+        <input name="path" placeholder="/healthz">
+        <input name="expect_status" placeholder="200" style="width:100px">
+      </div>
+      <p><button id="mine-submit" class="primary" type="submit">注册映射</button></p>
+    </form>
+    <div id="mine-agent-config"></div>
+  </section>
+
+  <!-- ============ 内置 MCP（§15.1：列表含 auth_mode+绑定状态 / 授权绑定跳转 / test） ============ -->
+  <section id="view-builtin" hidden>
+    <h2>内置 MCP（公共映射）</h2>
+    <div id="builtin-status" class="status"></div>
+    <table id="builtin-table">
+      <thead><tr><th>名称</th><th>类型</th><th>代理地址</th><th>占位符 Header</th><th>auth_mode</th><th>绑定状态</th><th>状态</th><th>操作</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <p class="status">OAuth 型映射先「授权绑定」再调用；绑定/解绑后点操作里的「刷新」。</p>
+    <div id="builtin-agent-config"></div>
+  </section>
+
+  {% if is_admin %}
+  <!-- ============ 公共映射管理（仅 admin，§15.1：public 映射 CRUD + test + OAuth client 手动配置） ============ -->
+  <section id="view-public" hidden>
+    <h2>公共映射管理</h2>
+    <div id="public-status" class="status"></div>
+    <table id="public-table">
+      <thead><tr><th>mapping_id</th><th>名称</th><th>类型</th><th>上游地址</th><th>auth_mode</th><th>状态</th><th>操作</th></tr></thead>
+      <tbody></tbody>
+    </table>
+
+    <form id="public-form" class="card">
+      <h3 id="public-form-title">创建公共映射</h3>
+      <button id="public-cancel-edit" class="act" type="button" hidden>取消编辑</button>
+      <label>类型</label>
+      <select name="type"><option value="http">http</option><option value="mcp">mcp</option></select>
+      <label>名称</label>
+      <input name="name">
+      <label>上游地址</label>
+      <input name="upstream_url" required>
+      <label>Header（每行 Name: value）</label>
+      <textarea name="headers"></textarea>
+      <label>auth_mode</label>
+      <select name="auth_mode"><option value="static">static（共享静态凭据）</option><option value="oauth">oauth（按用户绑定）</option></select>
+      <p><button id="public-submit" class="primary" type="submit">创建</button></p>
+    </form>
+    <div id="public-agent-config"></div>
+
+    <form id="client-form" class="card" hidden>
+      <h3 id="client-form-title">OAuth 客户端手动配置</h3>
+      <p class="status">manual 模式（保存即覆盖既有 dcr 配置）；client_secret 加密落库、永不回显。</p>
+      <label>client_id</label><input name="client_id" required>
+      <label>client_secret（留空 = 公共客户端 token_auth=none 场景）</label><input name="client_secret">
+      <label>token_auth</label>
+      <select name="token_auth">
+        <option value="client_secret_post">client_secret_post</option>
+        <option value="client_secret_basic">client_secret_basic</option>
+        <option value="none">none</option>
+      </select>
+      <label>authorize_url</label><input name="authorize_url" required>
+      <label>token_url</label><input name="token_url" required>
+      <label>scopes（空格分隔，可选）</label><input name="scopes">
+      <p><button class="primary" type="submit">保存 client</button></p>
+    </form>
+    <div id="client-info" class="card" hidden></div>
+  </section>
+  {% endif %}
+</main>
+<script>
+"use strict";
+var IS_ADMIN = {{ is_admin | tojson }};
+var editMid = null;        // 我的映射：当前编辑的 mapping_id（null = 注册模式）
+var publicEditMid = null;  // 公共映射：当前编辑的 mapping_id
+var clientMid = null;      // OAuth client 表单目标 mapping_id
+
+function esc(s) {
+  return String(s === null || s === undefined ? "" : s)
+    .replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+}
+
+async function api(method, url, body) {
+  var opts = { method: method, headers: {} };
+  if (body !== undefined) {
+    opts.headers["Content-Type"] = "application/json";
+    opts.body = JSON.stringify(body);
+  }
+  var resp = await fetch(url, opts);
+  if (resp.status === 401) { location.href = "/admin"; throw new Error("未登录"); }
+  var data = resp.status === 204 ? null : await resp.json().catch(function () { return null; });
+  return { ok: resp.ok, status: resp.status, data: data };
+}
+
+function setStatus(id, text) {
+  var el = document.getElementById(id);
+  if (el) el.textContent = text;
+}
+
+function parseHeaders(text) {
+  var headers = {};
+  text.split("\n").forEach(function (line) {
+    var t = line.trim();
+    if (!t) return;
+    var i = t.indexOf(":");
+    if (i <= 0) throw new Error("header 行格式须为 Name: value");
+    headers[t.slice(0, i).trim()] = t.slice(i + 1).trim();
+  });
+  return headers;
+}
+
+function headersToText(headers) {
+  return Object.entries(headers || {}).map(function (kv) { return kv[0] + ": " + kv[1]; }).join("\n");
+}
+
+/* 占位符预览（§6.1：POST/PUT 响应 = 代理地址 + 占位符 header，「保存到 Agent」面） */
+function showAgentConfig(elId, data) {
+  var el = document.getElementById(elId);
+  if (!data || !data.proxy_url) { el.innerHTML = ""; return; }
+  var lines = Object.entries(data.headers || {}).map(function (kv) {
+    return '    "' + esc(kv[0]) + '": "' + esc(kv[1]) + '"';
+  }).join(",\n");
+  el.innerHTML = '<div class="card"><h3>保存到 Agent（占位符，不含真实值）</h3>' +
+    '<div class="pre">代理地址: ' + esc(data.proxy_url) + '\nHeader:\n{\n' + lines + '\n  }</div>' +
+    '<p class="status">PUT 更新过 upstream_url 时路径部分可能变化，请以本响应重新保存 Agent 配置（§6.1）。</p></div>';
+}
+
+/* ---------- 我的映射 ---------- */
+
+async function loadMine() {
+  var r = await api("GET", "/api/v1/mappings?page_size=100");
+  var rows = (r.data || []).map(function (m) {
+    return '<tr><td><code>' + esc(m.mapping_id) + '</code></td>' +
+      '<td>' + esc(m.name) + '</td><td>' + esc(m.type) + '</td>' +
+      '<td>' + esc(m.upstream_url) + '</td><td><code>' + esc(m.proxy_url) + '</code></td>' +
+      '<td>' + esc(m.status) + '</td>' +
+      '<td class="row-actions">' +
+      '<button class="act" onclick="editMine(\'' + esc(m.mapping_id) + '\')">编辑</button>' +
+      '<button class="act" onclick="testMapping(\'' + esc(m.mapping_id) + '\')">测试</button>' +
+      '<button class="act" onclick="delMapping(\'' + esc(m.mapping_id) + '\')">删除</button>' +
+      '</td></tr>';
+  }).join("");
+  document.querySelector("#mine-table tbody").innerHTML =
+    rows || '<tr><td colspan="7">暂无映射——用下方表单注册第一条。</td></tr>';
+}
+
+/* resolve 回显编辑（§6.4）：按 mapping_id 直查，真实 header 仅注册者/admin 可见 */
+async function editMine(mid) {
+  var r = await api("GET", "/api/v1/mappings/resolve?proxy_url=" + encodeURIComponent(mid));
+  var d = r.data;
+  var f = document.getElementById("mine-form");
+  f.type.value = d.type;
+  f.name.value = d.name || "";
+  f.upstream_url.value = d.upstream_url;
+  f.headers.value = headersToText(d.headers);
+  if (f.visibility) f.visibility.value = d.visibility;
+  f.method.value = (d.test_request && d.test_request.method) || "";
+  f.path.value = (d.test_request && d.test_request.path) || "";
+  f.expect_status.value = (d.test_request && d.test_request.expect_status) || "";
+  editMid = mid;
+  document.getElementById("mine-form-title").textContent = "编辑映射 " + mid;
+  document.getElementById("mine-submit").textContent = "保存修改";
+  document.getElementById("mine-cancel-edit").hidden = false;
+  setStatus("mine-status", "已回显 " + mid + "（resolve），修改后保存。");
+}
+
+async function submitMine(ev) {
+  ev.preventDefault();
+  var f = ev.target;
+  var payload;
+  try {
+    payload = { type: f.type.value, upstream_url: f.upstream_url.value.trim(),
+                headers: parseHeaders(f.headers.value) };
+    if (f.name.value.trim() || editMid) payload.name = f.name.value.trim() || null;
+    if (f.visibility && !editMid) payload.visibility = f.visibility.value;
+    if (f.method.value.trim() && f.path.value.trim()) {
+      payload.test_request = { method: f.method.value.trim(), path: f.path.value.trim() };
+      if (f.expect_status.value.trim()) {
+        payload.test_request.expect_status = parseInt(f.expect_status.value, 10);
+      }
+    }
+  } catch (e) { setStatus("mine-status", e.message); return; }
+  var r = editMid
+    ? await api("PUT", "/api/v1/mappings/" + editMid, payload)
+    : await api("POST", "/api/v1/mappings", payload);
+  if (!r.ok) { setStatus("mine-status", "失败: " + ((r.data && r.data.message) || r.status)); return; }
+  showAgentConfig("mine-agent-config", r.data);
+  setStatus("mine-status", editMid ? "已更新。" : "已注册。");
+  resetMineForm();
+  loadMine();
+}
+
+function resetMineForm() {
+  editMid = null;
+  var f = document.getElementById("mine-form");
+  f.reset();
+  document.getElementById("mine-form-title").textContent = "注册映射";
+  document.getElementById("mine-submit").textContent = "注册映射";
+  document.getElementById("mine-cancel-edit").hidden = true;
+}
+
+async function testMapping(mid) {
+  var r = await api("POST", "/api/v1/mappings/" + mid + "/test");
+  setStatus("mine-status", "test " + mid + ": " + (r.ok ? "通过 " : "失败 ") + JSON.stringify(r.data));
+}
+
+async function delMapping(mid) {
+  if (!confirm("删除映射 " + mid + "？删除后 Agent 侧代理地址立即 404，请同步清理已保存的代理配置。")) return;
+  var r = await api("DELETE", "/api/v1/mappings/" + mid);
+  setStatus("mine-status", r.status === 204 ? "已删除 " + mid + "。"
+    : "失败: " + ((r.data && r.data.message) || r.status));
+  if (editMid === mid) resetMineForm();
+  loadMine();
+}
+
+/* ---------- 内置 MCP ---------- */
+
+async function loadBuiltin() {
+  var r = await api("GET", "/api/v1/builtin-mappings");
+  var rows = (r.data || []).map(function (m) {
+    var binding = m.auth_mode === "oauth"
+      ? '<span class="' + (m.binding === "bound" ? "ok" : "bad") + '">' + esc(m.binding) + "</span>"
+      : "-";
+    var actions = m.auth_mode === "oauth"
+      ? '<button class="act" onclick="authorizeBuiltin(\'' + esc(m.mapping_id) + '\')">授权绑定</button>' +
+        '<button class="act" onclick="unbindBuiltin(\'' + esc(m.mapping_id) + '\')">解绑</button>'
+      : "";
+    return '<tr><td>' + esc(m.name) + '</td><td>' + esc(m.type) + '</td>' +
+      '<td><code>' + esc(m.proxy_url) + '</code></td>' +
+      '<td><code>' + esc(JSON.stringify(m.headers)) + '</code></td>' +
+      '<td>' + esc(m.auth_mode) + '</td><td>' + binding + '</td><td>' + esc(m.status) + '</td>' +
+      '<td class="row-actions">' + actions +
+      '<button class="act" onclick="testBuiltin(\'' + esc(m.mapping_id) + '\')">测试</button>' +
+      '<button class="act" onclick="refreshBuiltin()">刷新</button>' +
+      '<button class="act" onclick="saveBuiltinAgent(\'' + esc(m.mapping_id) + '\')">保存到 Agent</button>' +
+      '</td></tr>';
+  }).join("");
+  document.querySelector("#builtin-table tbody").innerHTML =
+    rows || '<tr><td colspan="8">暂无内置映射。</td></tr>';
+}
+
+function refreshBuiltin() { loadBuiltin(); }
+
+async function authorizeBuiltin(mid) {
+  var r = await api("POST", "/api/v1/builtin-mappings/" + mid + "/authorize",
+                    { front_redirect: location.origin + "/admin" });
+  if (!r.ok) { setStatus("builtin-status", "失败: " + ((r.data && r.data.message) || r.status)); return; }
+  setStatus("builtin-status", "已打开授权页；完成后回本页「刷新」查看绑定状态（§14.4 状态机）。");
+  window.open(r.data.authorization_url, "_blank");
+}
+
+async function unbindBuiltin(mid) {
+  if (!confirm("解绑 " + mid + "？提供方支持时同时吊销远端凭证。")) return;
+  var r = await api("DELETE", "/api/v1/builtin-mappings/" + mid + "/binding");
+  setStatus("builtin-status", r.status === 204 ? "已解绑。" : "失败: " + ((r.data && r.data.message) || r.status));
+  loadBuiltin();
+}
+
+async function testBuiltin(mid) {
+  var r = await api("POST", "/api/v1/builtin-mappings/" + mid + "/test");
+  setStatus("builtin-status", "test " + mid + ": " + (r.ok ? "通过 " : "失败 ") + JSON.stringify(r.data));
+}
+
+async function saveBuiltinAgent(mid) {
+  var r = await api("GET", "/api/v1/builtin-mappings");
+  var item = (r.data || []).find(function (x) { return x.mapping_id === mid; });
+  if (item) showAgentConfig("builtin-agent-config", item);
+}
+
+/* ---------- 公共映射（public 视图；入口与区块由模板按 is_admin 渲染） ---------- */
+
+async function loadPublic() {
+  var r = await api("GET", "/api/v1/builtin-mappings");
+  var rows = (r.data || []).map(function (m) {
+    return '<tr><td><code>' + esc(m.mapping_id) + '</code></td><td>' + esc(m.name) + '</td>' +
+      '<td>' + esc(m.type) + '</td><td>' + esc(m.proxy_url) + '</td>' +
+      '<td>' + esc(m.auth_mode) + '</td><td>' + esc(m.status) + '</td>' +
+      '<td class="row-actions">' +
+      '<button class="act" onclick="editPublic(\'' + esc(m.mapping_id) + '\')">编辑</button>' +
+      '<button class="act" onclick="testPublic(\'' + esc(m.mapping_id) + '\')">测试</button>' +
+      '<button class="act" onclick="delPublic(\'' + esc(m.mapping_id) + '\')">删除</button>' +
+      '<button class="act" onclick="editClient(\'' + esc(m.mapping_id) + '\')">OAuth client</button>' +
+      '</td></tr>';
+  }).join("");
+  document.querySelector("#public-table tbody").innerHTML =
+    rows || '<tr><td colspan="7">暂无公共映射。</td></tr>';
+}
+
+/* 详情（admin 可读 public，§14.2）回显 upstream_url/headers/auth_mode */
+async function editPublic(mid) {
+  var r = await api("GET", "/api/v1/mappings/" + mid);
+  var d = r.data;
+  var f = document.getElementById("public-form");
+  f.type.value = d.type;
+  f.name.value = d.name || "";
+  f.upstream_url.value = d.upstream_url;
+  f.headers.value = headersToText(d.headers);
+  f.auth_mode.value = d.auth_mode;
+  publicEditMid = mid;
+  document.getElementById("public-form-title").textContent = "编辑公共映射 " + mid;
+  document.getElementById("public-submit").textContent = "保存修改";
+  document.getElementById("public-cancel-edit").hidden = false;
+}
+
+async function submitPublic(ev) {
+  ev.preventDefault();
+  var f = ev.target;
+  var payload;
+  try {
+    payload = { type: f.type.value, upstream_url: f.upstream_url.value.trim(),
+                visibility: "public", auth_mode: f.auth_mode.value,
+                headers: parseHeaders(f.headers.value),
+                name: f.name.value.trim() || null };
+  } catch (e) { setStatus("public-status", e.message); return; }
+  var r = publicEditMid
+    ? await api("PUT", "/api/v1/mappings/" + publicEditMid, payload)
+    : await api("POST", "/api/v1/mappings", payload);
+  if (!r.ok) { setStatus("public-status", "失败: " + ((r.data && r.data.message) || r.status)); return; }
+  showAgentConfig("public-agent-config", r.data);
+  setStatus("public-status", publicEditMid ? "已更新。" : "已创建。");
+  resetPublicForm();
+  loadPublic();
+}
+
+function resetPublicForm() {
+  publicEditMid = null;
+  var f = document.getElementById("public-form");
+  f.reset();
+  document.getElementById("public-form-title").textContent = "创建公共映射";
+  document.getElementById("public-submit").textContent = "创建";
+  document.getElementById("public-cancel-edit").hidden = true;
+}
+
+async function delPublic(mid) {
+  if (!confirm("删除公共映射 " + mid + "？连同 OAuth client/凭证一并清理。")) return;
+  var r = await api("DELETE", "/api/v1/mappings/" + mid);
+  setStatus("public-status", r.status === 204 ? "已删除。" : "失败: " + ((r.data && r.data.message) || r.status));
+  loadPublic();
+}
+
+async function testPublic(mid) {
+  var r = await api("POST", "/api/v1/builtin-mappings/" + mid + "/test");
+  setStatus("public-status", "test " + mid + ": " + (r.ok ? "通过 " : "失败 ") + JSON.stringify(r.data));
+}
+
+/* OAuth client 手动配置（§14.3 降级路径；GET 404 = 尚未配置；secret 只回 configured 布尔） */
+async function editClient(mid) {
+  clientMid = mid;
+  var form = document.getElementById("client-form");
+  form.hidden = false;
+  document.getElementById("client-form-title").textContent = "OAuth 客户端（" + mid + "）";
+  var info = document.getElementById("client-info");
+  var r = await api("GET", "/api/v1/builtin-mappings/" + mid + "/client");
+  if (r.status === 404) {
+    info.hidden = true;
+    setStatus("public-status", mid + " 尚未配置 client；下方表单保存即 manual 模式。");
+    return;
+  }
+  form.client_id.value = r.data.client_id;
+  form.token_auth.value = r.data.token_auth;
+  form.authorize_url.value = r.data.authorize_url || "";
+  form.token_url.value = r.data.token_url || "";
+  form.scopes.value = r.data.scopes || "";
+  info.hidden = false;
+  info.innerHTML = '<h3>当前配置</h3><div class="pre">source=' + esc(r.data.source) +
+    '  client_id=' + esc(r.data.client_id) + '\ntoken_auth=' + esc(r.data.token_auth) +
+    '  client_secret=' + (r.data.client_secret_configured ? "已配置（不回显）" : "未配置") + "</div>";
+}
+
+async function submitClient(ev) {
+  ev.preventDefault();
+  var f = ev.target;
+  var payload = {
+    client_id: f.client_id.value.trim(),
+    client_secret: f.client_secret.value || null,
+    token_auth: f.token_auth.value,
+    authorize_url: f.authorize_url.value.trim(),
+    token_url: f.token_url.value.trim(),
+    scopes: f.scopes.value.trim() || null,
+  };
+  var r = await api("PUT", "/api/v1/builtin-mappings/" + clientMid + "/client", payload);
+  if (!r.ok) { setStatus("public-status", "失败: " + ((r.data && r.data.message) || r.status)); return; }
+  setStatus("public-status", "client 已保存（source=" + r.data.source + "）。");
+  f.hidden = true;
+  document.getElementById("client-info").hidden = true;
+  loadPublic();
+}
+
+/* ---------- 会话 / 导航 ---------- */
+
+document.getElementById("logout-btn").addEventListener("click", async function () {
+  await fetch("/admin/logout", { method: "POST" });
+  location.href = "/admin/login";
+});
+
+var loaders = { mine: loadMine, builtin: loadBuiltin, public: loadPublic };
+document.querySelectorAll(".tab").forEach(function (btn) {
+  btn.addEventListener("click", function () {
+    document.querySelectorAll(".tab").forEach(function (b) { b.classList.toggle("active", b === btn); });
+    document.querySelectorAll("main > section").forEach(function (s) {
+      s.hidden = s.id !== "view-" + btn.dataset.view;
+    });
+    var load = loaders[btn.dataset.view];
+    if (load) load();
+  });
+});
+
+document.getElementById("mine-form").addEventListener("submit", submitMine);
+document.getElementById("mine-cancel-edit").addEventListener("click", function () { resetMineForm(); });
+{% if is_admin %}
+document.getElementById("public-form").addEventListener("submit", submitPublic);
+document.getElementById("public-cancel-edit").addEventListener("click", function () { resetPublicForm(); });
+document.getElementById("client-form").addEventListener("submit", submitClient);
+{% endif %}
+loadMine();
+</script>
+</body>
+</html>

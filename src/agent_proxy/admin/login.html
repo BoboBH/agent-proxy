@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>agent-proxy 登录</title>
+<style>
+  body { font-family: system-ui, -apple-system, sans-serif; max-width: 420px; margin: 72px auto; color: #1f2328; }
+  h2 { font-size: 18px; }
+  .hint { color: #57606a; font-size: 13px; }
+  .error { color: #cf222e; }
+  label { display: block; margin: 12px 0 4px; font-size: 13px; color: #57606a; }
+  input, select, button { width: 100%; box-sizing: border-box; padding: 8px; font-size: 15px; }
+  button { margin-top: 18px; background: #1a7f64; color: #fff; border: 0; border-radius: 6px; cursor: pointer; }
+</style>
+</head>
+<body>
+<h2>agent-proxy 管理页面</h2>
+{% if error %}<p class="error">登录失败：票据无效或已过期，请重试。</p>{% endif %}
+<p class="hint">当前为 LOGIN_IMPL=stub 本地假登录（仅开发/测试）：填写用户与角色提交即换取
+服务端会话——用户 ID 为纯数字时直接作票据（输入数字即身份）；非数字用户 ID 则按
+StubVerifier 同格式构造信封票据。生产环境由公司统一登录（LoginProvider=company_sso）
+替换本页，本服务不提供注册。</p>
+<form id="login-form" action="/admin/auth/callback" method="get">
+  <input type="hidden" name="return_to" value="{{ return_to }}">
+  <label for="user_id">用户 ID（纯数字可直接作票据）</label>
+  <input id="user_id" required placeholder="如 u888 或 12345">
+  <label for="user_name">显示名（可选）</label>
+  <input id="user_name" placeholder="如 张三">
+  <label for="role">角色</label>
+  <select id="role">
+    <option value="">普通用户</option>
+    <option value="admin">admin（管理员）</option>
+  </select>
+  <button type="submit">登录</button>
+</form>
+<script>
+"use strict";
+// stub 票据两条路径（与 StubVerifier 语义一致），提交 /admin/auth/callback 由
+// LoginProvider.exchange 换取服务端会话（与公司 SSO「回跳携带票据」时序同构；
+// company_sso 接入后本页由外部登录页替代）：
+// 1) 纯数字用户 ID（且未填显示名/角色）→ 票据即数字本身（StubVerifier 短路，
+//    user_name/role 为 None）；
+// 2) 其余 → 按 StubVerifier 同格式构造信封：stub.<base64url(JSON)>.sig。
+document.getElementById("login-form").addEventListener("submit", function (ev) {
+  ev.preventDefault();
+  var uid = document.getElementById("user_id").value.trim();
+  var name = document.getElementById("user_name").value.trim();
+  var role = document.getElementById("role").value;
+  if (!uid) return;
+  var ticket;
+  if (/^\d+$/.test(uid) && !name && !role) {
+    ticket = uid;
+  } else {
+    var claims = { user_id: uid, user_name: name || null, role: role || null };
+    var b64 = btoa(unescape(encodeURIComponent(JSON.stringify(claims))))
+      .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    ticket = "stub." + b64 + ".sig";
+  }
+  var params = new URLSearchParams({
+    ticket: ticket,
+    return_to: document.getElementsByName("return_to")[0].value,
+  });
+  location.href = "/admin/auth/callback?" + params.toString();
+});
+</script>
+</body>
+</html>
