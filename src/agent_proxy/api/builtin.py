@@ -212,7 +212,9 @@ async def unbind_mapping(request: Request, mapping_id: str,
                          settings: Settings = Depends(get_settings)):
     """解绑（§14.4）：删除本地凭证；提供方支持时（dcr 客户端经 discovery 拿到
     revocation_endpoint）同时 best-effort 调用 revoke——revoke 失败仅 WARN，
-    不影响本地解绑；manual 模式无 revoke 端点配置 → 仅删本地凭证。"""
+    不影响本地解绑；manual 模式无 revoke 端点配置 → 仅删本地凭证。密文不可解
+    （MASTER_KEY 变更 / 行损坏）→ 删本地坏行 + 204 引导重新授权（终审遗留 4：
+    原为 500 死局）。"""
     data = await load_public_mapping(session, request.app.state.redis, mapping_id,
                                      settings.cache_ttl)
     require_oauth_mode(data)
@@ -220,14 +222,28 @@ async def unbind_mapping(request: Request, mapping_id: str,
     cred = await load_credential(session, r, mapping_id, identity.user_id)
     if cred is None:
         raise AppError(404, "MAPPING_NOT_FOUND", "尚未绑定，无需解绑")
-    access_plain = decrypt_text(cred["access_token"], settings.master_key)
-    refresh_plain = (decrypt_text(cred["refresh_token"], settings.master_key)
-                     if cred.get("refresh_token") else None)
+    try:
+        access_plain = decrypt_text(cred["access_token"], settings.master_key)
+        refresh_plain = (decrypt_text(cred["refresh_token"], settings.master_key)
+                         if cred.get("refresh_token") else None)
+    except AppError:
+        # 密文不可解：revoke 无从谈起（明文已不可得），本地删除坏行本就是更优
+        # 恢复路径——删行 + 204 + 引导重新授权，绝不 500 死局（凭证不可解 →
+        # 解绑也 500 → 用户被锁死在坏行上）
+        log.warning("解绑前解密失败（密文损坏？）：%s/%s 仅删本地凭证，请重新授权",
+                    mapping_id, identity.user_id)
+        await delete_credential(session, r, mapping_id, identity.user_id)
+        await drop_authz_index(r, mapping_id, identity.user_id)
+        metrics.oauth_actions_total.labels(action="unbind").inc()
+        request.state.audit_action = "oauth_unbind"
+        request.state.mapping_id = mapping_id
+        return Response(status_code=204)
     deleted = await delete_credential(session, r, mapping_id, identity.user_id)
     if not deleted:
         # 并发解绑窗口（load 与 delete 之间被并发请求删行）：显式 404——assert
         # 会被 python -O 剥离（评审 Minor a）
         raise AppError(404, "MAPPING_NOT_FOUND", "尚未绑定，无需解绑")
+    await drop_authz_index(r, mapping_id, identity.user_id)   # §5.3：解绑删 authorizing 索引
     # revoke best-effort ×2（access + refresh，评审 Important 3）：本地删除后
     # refresh token 明文已无处可寻，这是吊销它的最后机会；两者皆失败仅 WARN，
     # 不影响本地解绑（本地删除是不可回退语义）

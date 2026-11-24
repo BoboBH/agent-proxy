@@ -7,7 +7,11 @@
 - token 明文不入任何日志（本模块日志只记 mapping_id/uid/异常类型名）。
 
 刷新（§14.5）：expires_at - 60s 内即视为过期 → refresh_token 换新；
-Redis 锁 ap:lock:refresh:{mapping_id}:{uid}（SET NX EX 30）防并发刷新。
+Redis 锁 ap:lock:refresh:{mapping_id}:{uid}（SET NX EX 30）防并发刷新，释放带
+属主校验（Lua compare-and-delete，锁值 == 持锁 request_id 才删）。失败分级
+（评审 Important 2）：AS 业务拒绝（400/401/403）→ status=invalid 引导重新授权；
+瞬时失败（网络 / discovery / token 端点 5xx·429 / 响应畸形）→ 凭证原状保留，
+本请求 401、下轮重试。
 
 兼容性注记（实测钉死）：本地/测试 Redis 为 3.0.504，无 GETDEL 命令——凡需
 "原子取删"语义一律用 MULTI 事务管道（pipeline(transaction=True)），不得改写为
@@ -207,7 +211,8 @@ async def save_credential(session: AsyncSession, r, mapping_id: str, uid: str, *
 
 async def mark_credential_invalid(session: AsyncSession, r, mapping_id: str,
                                   uid: str) -> None:
-    """刷新失败 → invalid（§14.4：invalid 后调用一律 401，页面引导重新授权）。"""
+    """AS 业务性拒绝刷新后标记 invalid（§14.4：invalid 后调用一律 401，页面引导
+    重新授权）；瞬时失败不走本函数——凭证原状保留（评审 Important 2 分级）。"""
     row = (await session.execute(
         select(OAuthCredential).where(OAuthCredential.mapping_id == mapping_id,
                                       OAuthCredential.uid == uid)
@@ -300,8 +305,10 @@ async def get_callable_credential(session: AsyncSession, r, app_state,
                                   mapping_data: dict, uid: str, master_key: str,
                                   request_id: str = "") -> str:
     """调用时凭证获取（§14.5）：无 / invalid → 401 OAUTH_BINDING_REQUIRED；
-    expires_at - 60s 内 → 刷新（Redis 锁防并发）→ 返回新 access；刷新失败 →
-    status=invalid → 401。proxy 注入与 builtin test 共用本入口。"""
+    expires_at - 60s 内 → 刷新（Redis 锁防并发）→ 返回新 access；刷新失败分级：
+    AS 业务拒绝（400/401/403）→ status=invalid → 401 引导重新授权；瞬时失败
+    （网络 / discovery / 5xx / 响应畸形）→ 凭证原状保留 → 本请求 401、下轮重试
+    （评审 Important 2）。proxy 注入与 builtin test 共用本入口。"""
     mapping_id = mapping_data["mapping_id"]
     cred = await load_credential(session, r, mapping_id, uid)
     if cred is None or cred.get("status") != "active":
@@ -320,16 +327,41 @@ async def get_callable_credential(session: AsyncSession, r, app_state,
     return refreshed
 
 
+# 刷新锁释放属主校验（终审遗留 1）：Lua compare-and-delete——锁值 == 持锁 token
+# 才删。无条件 DEL 的缺陷：持锁超过 30s TTL（慢 token 端点）后锁已过期，继任者
+# 可重取新锁，原持有者完成刷新后的无条件 DEL 会删掉继任者的锁 → 第三方并发刷新
+# 失防（重复刷新）。Redis 3.0 支持 EVAL（2.6+），脚本原子性由 Redis 单线程保证。
+_RELEASE_LOCK_LUA = (
+    "if redis.call('get', KEYS[1]) == ARGV[1] then "
+    "return redis.call('del', KEYS[1]) else return 0 end"
+)
+
+
+async def release_refresh_lock(r, mapping_id: str, uid: str, token: str) -> bool:
+    """属主校验释放刷新锁：仅当锁值仍为 token（获取锁时写入的 request_id）才删除；
+    锁已过期且被继任者重取（值不同）→ 不动锁返回 False（继任者的锁由继任者自己
+    的 finally 释放）。脚本执行失败仅 WARN——锁 30s TTL 兜底自愈。"""
+    try:
+        return bool(await r.eval(_RELEASE_LOCK_LUA, 1,
+                                 refresh_lock_key(mapping_id, uid), token))
+    except Exception as exc:
+        log.warning("刷新锁释放失败（TTL 自愈兜底）: %s", exc)
+        return False
+
+
 async def refresh_credential(session: AsyncSession, r, app_state, mapping_data: dict,
                              uid: str, master_key: str,
                              request_id: str = "") -> str | None:
     """刷新互斥（§14.5）：抢锁成功者执行 refresh_token 换新（落库 + 失效缓存）；
     未抢到锁者轮询 cred（上限 8s）等他人刷新结果。锁 ap:lock:refresh:{mapping}:{uid}
-    SET NX EX 30（§5.3；Redis 3.0 支持 SET NX EX）。返回新 access 或 None（→401）。"""
+    SET NX EX 30（§5.3；Redis 3.0 支持 SET NX EX），锁值 = request_id，释放经
+    Lua compare-and-delete 属主校验（防超 TTL 后误删继任者新锁）。
+    返回新 access 或 None（→401）。"""
     mapping_id = mapping_data["mapping_id"]
     lock_key = refresh_lock_key(mapping_id, uid)
+    lock_token = request_id or "refresh"
     try:
-        acquired = await r.set(lock_key, request_id or "refresh", nx=True,
+        acquired = await r.set(lock_key, lock_token, nx=True,
                                ex=REFRESH_LOCK_TTL)
     except Exception as exc:
         log.warning("刷新锁获取失败（按未抢到处理）: %s", exc)
@@ -340,10 +372,7 @@ async def refresh_credential(session: AsyncSession, r, app_state, mapping_data: 
         return await _do_refresh(session, r, app_state, mapping_data, uid,
                                  master_key, request_id)
     finally:
-        try:
-            await r.delete(lock_key)
-        except Exception:
-            pass
+        await release_refresh_lock(r, mapping_id, uid, lock_token)
 
 
 async def _wait_for_others_refresh(session: AsyncSession, r, mapping_id: str,
@@ -380,9 +409,10 @@ class _RefreshFailed(Exception):
 async def _do_refresh(session: AsyncSession, r, app_state, mapping_data: dict,
                       uid: str, master_key: str, request_id: str = "") -> str | None:
     """持锁刷新：refresh_token 换新 → upsert 落库 + 失效缓存 + metrics/审计。
-    失败分级（评审 Important 2）：AS 业务拒绝（400/401/403）→ invalid；
-    网络/discovery/5xx/响应畸形 → 凭证原状保留（不 destroy），两态均 metrics
-    {action="fail"} + 审计 ok=false → 本请求 401。"""
+    失败分级（评审 Important 2）：AS 业务拒绝（400/401/403）→ invalid +
+    metrics {action="fail"}；网络/discovery/5xx/响应畸形 → 凭证原状保留
+    （不 destroy）+ metrics {action="transient"}（终审遗留 5：与业务拒绝分拆，
+    避免混计误导告警阈值）——两态均审计 ok=false → 本请求 401。"""
     from .client import build_token_request, load_client_row, _row_to_client
     from .discovery import DiscoveryError, discover_authorization_server, upstream_origin
 
@@ -433,8 +463,9 @@ async def _do_refresh(session: AsyncSession, r, app_state, mapping_data: dict,
     except (httpx.HTTPError, ValueError, DiscoveryError, AppError,
             _RefreshFailed) as exc:
         # 非破坏性：凭证原状保留（AppError=密文不可解/加密配置异常，同不清行——
-        # 配置恢复后原凭证仍可用），本请求经 binding_required 401 重授权引导
-        metrics.oauth_actions_total.labels(action="fail").inc()
+        # 配置恢复后原凭证仍可用），本请求经 binding_required 401 重授权引导；
+        # metrics 计 transient（终审遗留 5：瞬时失败与业务拒绝分拆计数）
+        metrics.oauth_actions_total.labels(action="transient").inc()
         log.warning("OAuth 刷新瞬时失败 (%s/%s): %s", mapping_id, uid, type(exc).__name__)
         _audit_refresh(request_id, mapping_id, uid, ok=False)
         return None

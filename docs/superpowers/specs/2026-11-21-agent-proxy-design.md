@@ -273,6 +273,7 @@ CREATE TABLE proxy_oauth_credential (
 |---|---|---|
 | `ap:oauth:state:{state}` | 授权流程 state（uid、mapping_id、code_verifier、front_redirect），一次性 | 600s |
 | `ap:lock:refresh:{mapping_id}:{uid}` | 凭证刷新互斥锁 | 30s |
+| `ap:oauth:authz:{mapping_id}:{uid}` | 授权进行中索引（binding 查询的 authorizing 态判定；authorize 写入、回调成功 / 解绑删除），M6 实现增量 | 600s |
 | `ap:cred:{mapping_id}:{uid}` | 凭证缓存（绑定 / 解绑 / 刷新时失效） | 60s |
 
 ---
@@ -376,6 +377,8 @@ HTTP 200
 | GET | `/oauth/callback` | 无（state 关联用户） | OAuth 回调：code 换 token、加密落库、302 回跳平台页面 |
 | GET | `/api/v1/builtin-mappings/{mapping_id}/binding` | JWT | 查询我的绑定状态（页面轮询） |
 | DELETE | `/api/v1/builtin-mappings/{mapping_id}/binding` | JWT | 解绑：删除本地凭证（提供方支持时同时调用 revoke 吊销） |
+| PUT | `/api/v1/builtin-mappings/{mapping_id}/client` | JWT + admin | OAuth 客户端手动配置（14.3 降级路径；client_secret 加密落库；重复 PUT 为 upsert，可将 dcr 配置覆盖为 manual） |
+| GET | `/api/v1/builtin-mappings/{mapping_id}/client` | JWT + admin | 查看 OAuth 客户端配置（client_secret 只回是否已配置，永不回显值） |
 | POST | `/api/v1/builtin-mappings/{mapping_id}/test` | admin 或已绑定用户 | 测试公共映射：admin 测静态配置；已绑定用户测本人 OAuth 凭证真实有效（见 6.6） |
 
 ### 6.6 配置有效性测试（test 接口，随 M2–M4 交付）
@@ -392,7 +395,7 @@ HTTP 200
 | http（严格，可选） | 注册参数 `test_request`（method / path / expect_status） | 实际状态码 == expect_status |
 | OAuth 绑定用户 | 以本人凭证执行对应 mcp 验证 | 同 mcp 规则；凭证失效提示重新授权 |
 
-**返回**：`{ok, status_code, latency_ms, detail}`；测试专用短超时 5s（**总挂钟期限**：连接建立与读流 / 读响应各阶段共享同一 deadline，后继阶段仅享剩余时间，最坏 5s 内必有结论）；上游失败反映为 `ok=false` + `detail` 说明，不产生代理自身的 502/504 错误响应。
+**返回**：`{ok, status_code, latency_ms, detail}`；测试专用短超时 5s（**总挂钟期限**：单一探测内连接建立与读流 / 读响应各阶段共享同一 deadline，后继阶段仅享剩余时间，最坏 5s 内必有结论）。**分阶段超时定稿（M4 交付后确认，按实现钉死）**：mcp 探测式 auto 的 Streamable 尝试与 SSE 回落是两个独立探测阶段，各享 5s 总期限——回落仅在端点拒绝 POST（405/404/406）时发生，常态单阶段 5s 内结论、最坏（两阶段全走满）~10s；http 探测单阶段，恒 5s 上界。上游失败反映为 `ok=false` + `detail` 说明，不产生代理自身的 502/504 错误响应。
 
 **mcp 类型形态细分（M4 定稿，探测式 auto）**：不新增 `transport` 注册字段（§5.1 无此列；端点路径 `/mcp` 仅为生态惯例，SSE 服务亦可注册于 `/mcp`）——test 时先按 Streamable 语义 POST 标准 `initialize`：Streamable initialize 返回 200 → 按「含 `serverInfo`」硬判定（上表第 1 行；响应为 SSE 形态时取首个 `message` 事件的 data 解析）；**其余非 2xx（含 401/500 等）不读响应体、不回落，直接判失败（detail=`上游拒绝（status=N）`）**——凭据失效/服务端错误显式暴露，不误报为形态问题；405/404/406 → 回落 SSE 握手探测（上表第 2 行，SSE-only 上游对注册端点 POST 的典型行为）。`detail` 回告实际判定的端点形态（`Streamable initialize 成功…` / `SSE 端点（回落）…`）供排障。
 
@@ -600,6 +603,10 @@ sequenceDiagram
 | 注册 / 更新参数非法 | 400 | `INVALID_PARAM` |
 | 代理子路径含 `..` 等非法段 | 400 | `INVALID_PARAM` |
 | 用户未完成 OAuth 绑定 / 凭证失效 | 401 | `OAUTH_BINDING_REQUIRED`（body 附授权引导信息） |
+| OAuth state 无效 / 过期 / 重放 / 与回调路径不匹配 | 400 | `OAUTH_STATE_INVALID` |
+| 对 static 公共映射发起 OAuth 语义操作（authorize / binding / client 配置） | 400 | `OAUTH_NOT_APPLICABLE` |
+| OAuth 客户端未配置（查询缺配置 / 回调缺配置） | 400 | `OAUTH_CLIENT_NOT_CONFIGURED` |
+| OAuth discovery / DCR 失败（body 提示管理员改用手动配置） | 502 | `OAUTH_CLIENT_SETUP_FAILED` |
 | 第三方 token 校验服务不可用 | 503 | `AUTH_SERVICE_UNAVAILABLE` |
 | 上游连接失败 | 502 | `UPSTREAM_ERROR` |
 | 上游超时 | 504 | `UPSTREAM_TIMEOUT` |
@@ -835,6 +842,8 @@ sequenceDiagram
 
 绑定状态机：`unbound → authorizing（state 存续期间）→ bound(active) → invalid（refresh 失败 / 提供方吊销）`；invalid 后调用一律 401，页面引导重新授权；用户可主动 DELETE 解绑（支持时同时调用上游 revoke）。
 
+> **代理实现注记（M6，随实现评审回写）**：state 一次性消费以 Redis MULTI 事务管道（GET+DEL）原子取删——兼容部署环境 Redis 3.0（无 `GETDEL` 命令；6.2+ 行为等价，实现机制在代码注释钉死）；`authorizing` 态判定依赖增量索引键 `ap:oauth:authz:{mapping_id}:{uid}`（§5.3 表已补；authorize 写入、回调成功 / 解绑删除）。刷新互斥锁 `ap:lock:refresh`（SET NX EX 30）释放带属主校验（Lua compare-and-delete：锁值 == 持锁 request_id 才删——防持锁超 TTL 后误删继任者新锁引发重复刷新）。刷新失败分级（评审定稿）：AS 业务拒绝（400/401/403）→ `invalid` 即调用 401，页面引导重新授权（upsert 重新授权复位 active）；瞬时失败（网络 / discovery / token 端点 5xx·429 / 响应畸形）→ 凭证原状保留，仅本请求 401、下轮重试（不强迫用户重新授权）。解绑双 revoke best-effort（access 与配对 refresh 各一次，任一吊销连带配对作废；manual 模式无 revoke 端点配置列 → 仅删本地凭证，dcr 客户端经 discovery 取 `revocation_endpoint`）。
+
 ### 14.5 调用时的凭证注入
 
 ```
@@ -842,7 +851,7 @@ sequenceDiagram
   鉴权 JWT → 任意有效用户放行（visibility=public）
   auth_mode=static → 出站 header = 公共静态 headers 还原（无需绑定）
   auth_mode=oauth  → 查凭证 (mapping_id, uid): 无 / invalid → 401 OAUTH_BINDING_REQUIRED
-                      expires_at - 60s < now → refresh_token 刷新（Redis 锁防并发；失败 → status=invalid → 401）
+                      expires_at - 60s < now → refresh_token 刷新（Redis 锁防并发；AS 业务拒绝 → status=invalid → 401；瞬时失败保留凭证仅本请求 401、下轮重试）
                       出站 header = 公共静态 headers + Authorization: Bearer <该用户 access_token>
 ```
 
@@ -922,7 +931,7 @@ sequenceDiagram
 | `ap_bytes_total` | Counter | direction（in/out） | 上下行字节数 |
 | `ap_sse_active_connections` | Gauge | — | SSE 活跃长连接数 |
 | `ap_inflight_requests` | Gauge | — | 在途请求数 |
-| `ap_oauth_actions_total` | Counter（M6） | action（bind / unbind / refresh / fail） | OAuth 凭证事件 |
+| `ap_oauth_actions_total` | Counter（M6） | action（bind / unbind / refresh / fail＝业务拒绝 / transient＝瞬时失败） | OAuth 凭证事件 |
 
 **基数控制**：标签仅用 route / type / status / code / direction / action 等低基数值，**不放 mapping_id / user_id**（映射可删、用户量大，防时间序列爆炸）；按映射 / 用户的维度排查走审计日志（request_id 关联）。
 

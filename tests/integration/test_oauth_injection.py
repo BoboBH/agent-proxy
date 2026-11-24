@@ -1,14 +1,19 @@
 """按用户注入端到端（真实 TCP 9910）：三形态 token 到达上游断言、未绑定/invalid
 401、过期自动刷新、并发刷新单飞（Redis 锁）、刷新失败→invalid→重新授权恢复、
-builtin test 本人凭证与失效提示（§14.5 / §6.6）。"""
+builtin test 本人凭证与失效提示（§14.5 / §6.6）；终审遗留 6 补口：无轮换刷新
+分支、等待超时分支、manual basic 过期刷新、builtin test http 形态。"""
 import asyncio
+from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 
 import httpx
 
 from agent_proxy.models import OAuthCredential
+from agent_proxy.oauth import credential as cred_mod
 from agent_proxy.oauth.credential import (decrypt_text, encrypt_text,
-                                          invalidate_credential)
+                                          invalidate_credential,
+                                          refresh_credential, refresh_lock_key)
+from agent_proxy.services import load_mapping
 from tests.integration.mock_mcp_sse import mock_state
 from tests.integration.mock_mcp_streamable import secure_state, streamable_state
 from tests.integration.mock_oauth_as import as_state
@@ -38,11 +43,11 @@ async def _create_oauth(upstream, type_="http"):
     return resp.json()["mapping_id"]
 
 
-async def _setup_manual(upstream, type_="http"):
+async def _setup_manual(upstream, type_="http", token_auth="client_secret_post"):
     mid = await _create_oauth(upstream, type_)
     async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
         resp = await c.put(f"{PROXY}/api/v1/builtin-mappings/{mid}/client",
-                           json=CLIENT_BODY, headers=ADMIN)
+                           json={**CLIENT_BODY, "token_auth": token_auth}, headers=ADMIN)
     assert resp.status_code == 200, resp.text
     return mid
 
@@ -326,3 +331,101 @@ async def test_builtin_test_unbound_user_401():
     async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
         r = await c.post(f"{PROXY}/api/v1/builtin-mappings/{mid}/test", headers=U999)
     assert r.status_code == 401 and r.json()["code"] == "OAUTH_BINDING_REQUIRED"
+
+
+async def test_refresh_without_rotation_keeps_original_refresh_token(app):
+    """终审遗留 6：AS 刷新响应不含 refresh_token（未轮换形态，RFC 6749 rt 可选
+    返回）→ 新 access 落库、原 refresh 密文原样保留——缺省不得清空（清空即永久
+    失去续期能力）。"""
+    as_state["expires_in"] = 2
+    mid = await _setup_manual(f"{AS}/api")
+    await _bind(mid)
+    original_rt_ct = (await _cred_row(app, mid)).refresh_token
+    assert original_rt_ct
+    as_state["expires_in"] = 3600                         # 刷新响应走正常有效期
+    await asyncio.sleep(2.3)
+    as_state["refresh_payload"] = {"access_token": "at-no-rotation-000001",
+                                   "token_type": "Bearer", "expires_in": 3600}
+    try:
+        async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+            r = await c.get(f"{PROXY}/p/{mid}/orders", headers=U888)
+        assert r.status_code == 200
+        assert r.json()["headers"]["authorization"] == "Bearer at-no-rotation-000001"
+        row = await _cred_row(app, mid)
+        assert decrypt_text(row.access_token, MASTER) == "at-no-rotation-000001"
+        assert row.refresh_token == original_rt_ct        # 未轮换：保留原密文
+    finally:
+        as_state["refresh_payload"] = None
+
+
+async def test_refresh_wait_timeout_returns_none_then_recovers(app, monkeypatch):
+    """终审遗留 6（等待超时分支）：锁被他人持有且轮询超过 REFRESH_WAIT_SECONDS
+    → None → 401 语义；凭证保持 active 未破坏，锁释放后下一请求自行刷新成功。
+    （进程内直调 refresh_credential：REFRESH_WAIT_SECONDS 是 9910 服务进程的
+    模块全局量，TCP 侧 monkeypatch 不可达，等待上限须进程内收缩。）"""
+    as_state["expires_in"] = 3600
+    mid = await _setup_manual(f"{AS}/api")
+    await _bind(mid)
+    # 直写过期（免 2.3s 真实等待）：expires_at 拨到 120s 前（skew 60s 内必判过期）
+    async with app.state.sessionmaker() as session:
+        row = (await session.execute(select(OAuthCredential).where(
+            OAuthCredential.mapping_id == mid,
+            OAuthCredential.uid == "u888"))).scalar_one()
+        row.expires_at = datetime.now(timezone.utc) - timedelta(seconds=120)
+        await session.commit()
+    await invalidate_credential(app.state.redis, mid, "u888")
+    async with app.state.sessionmaker() as session:
+        mapping_data = await load_mapping(session, app.state.redis, mid, 60)
+    monkeypatch.setattr(cred_mod, "REFRESH_WAIT_SECONDS", 0.3)
+    lock = refresh_lock_key(mid, "u888")
+    await app.state.redis.set(lock, "req-other-holder", ex=30)
+    async with app.state.sessionmaker() as session:
+        got = await refresh_credential(session, app.state.redis, app.state,
+                                       mapping_data, "u888", MASTER, "req-wait")
+    assert got is None                                    # 等待超时 → None（→401）
+    row = await _cred_row(app, mid)
+    assert row.status == "active"                         # 凭证未被等待路径破坏
+    assert len(as_state["refresh_events"]) == 0           # 持锁者从未刷新
+    await app.state.redis.delete(lock)
+    async with app.state.sessionmaker() as session:
+        token = await refresh_credential(session, app.state.redis, app.state,
+                                         mapping_data, "u888", MASTER, "req-go")
+    assert token and token.startswith("at-")              # 锁释放后正常刷新
+    assert len(as_state["refresh_events"]) == 1
+
+
+async def test_manual_basic_auth_expired_refresh_e2e(app):
+    """终审遗留 6：manual 客户端（client_secret_basic）过期刷新端到端——refresh
+    请求过 AS Basic 认证门（refresh_events.client_auth=basic 记录面），新 token
+    落库并到上游。"""
+    as_state["expires_in"] = 2
+    mid = await _setup_manual(f"{AS}/api", token_auth="client_secret_basic")
+    await _bind(mid)
+    token1 = await _cred_token(app, mid)
+    as_state["expires_in"] = 3600
+    await asyncio.sleep(2.3)
+    async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+        r = await c.get(f"{PROXY}/p/{mid}/orders", headers=U888)
+    assert r.status_code == 200
+    assert len(as_state["refresh_events"]) == 1
+    assert as_state["refresh_events"][-1]["client_id"] == "manual-cl"
+    assert as_state["refresh_events"][-1]["client_auth"] == "basic"   # Basic 认证门
+    token2 = await _cred_token(app, mid)
+    assert token2 != token1                               # 新 token 落库
+    assert r.json()["headers"]["authorization"] == f"Bearer {token2}"
+
+
+async def test_builtin_test_bound_user_http_form_uses_own_credential(app):
+    """终审遗留 6：§6.6 http 形态——已绑定用户 test 以本人凭证执行 http 探测
+    （默认 GET 任意响应即可达）；本人 token 到上游（SSE 上游 last_sse_headers
+    断言面：http 映射指向 9902 /sse，探测 GET 即建连一次）。"""
+    mock_state["last_sse_headers"] = {}
+    mid = await _setup_manual("http://127.0.0.1:9902/sse")
+    await _bind(mid)
+    token = await _cred_token(app, mid)
+    async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+        r = await c.post(f"{PROXY}/api/v1/builtin-mappings/{mid}/test", headers=U888)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True and body["status_code"] == 200
+    assert mock_state["last_sse_headers"]["authorization"] == f"Bearer {token}"

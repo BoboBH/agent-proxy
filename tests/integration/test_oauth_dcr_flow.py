@@ -9,7 +9,7 @@ import httpx
 from sqlalchemy import select
 
 from agent_proxy.models import OAuthCredential, OAuthClient
-from agent_proxy.oauth.credential import decrypt_text
+from agent_proxy.oauth.credential import decrypt_text, invalidate_credential
 from tests.integration.mock_oauth_as import as_state
 from tests.utils import make_token
 
@@ -21,6 +21,25 @@ ADMIN = {"Authorization": f"Bearer {make_token('uadmin', 'admin')}"}
 U888 = {"Authorization": f"Bearer {make_token('u888')}"}
 U999 = {"Authorization": f"Bearer {make_token('u999')}"}
 TCP_TIMEOUT = httpx.Timeout(connect=5, read=10, write=10, pool=5)
+
+MANUAL_CLIENT = {"client_id": "manual-cl", "client_secret": "manual-cs-123456",
+                 "token_auth": "client_secret_post",
+                 "authorize_url": f"{AS}/oauth/authorize",
+                 "token_url": f"{AS}/oauth/token", "scopes": "read"}
+
+
+async def _setup_manual_http():
+    """手动模式 preset client（manual 行无 revoke 端点配置列 → 解绑仅删本地）。"""
+    async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+        resp = await c.post(f"{PROXY}/api/v1/mappings", json={
+            "type": "http", "visibility": "public", "auth_mode": "oauth",
+            "upstream_url": f"{AS}/api", "headers": {}}, headers=ADMIN)
+        assert resp.status_code == 201, resp.text
+        mid = resp.json()["mapping_id"]
+        put = await c.put(f"{PROXY}/api/v1/builtin-mappings/{mid}/client",
+                          json=MANUAL_CLIENT, headers=ADMIN)
+    assert put.status_code == 200, put.text
+    return mid
 
 
 async def _create_oauth_http():
@@ -163,3 +182,50 @@ async def test_oauth_metrics_bind_unbind_counters(app):
     unbind = re.search(r'^ap_oauth_actions_total\{action="unbind"\} ([0-9.]+)$', text, re.M)
     assert bind and float(bind.group(1)) >= 1.0
     assert unbind and float(unbind.group(1)) >= 1.0
+
+
+async def test_unbind_manual_local_delete_only_no_revoke(app):
+    """终审遗留 6：manual 模式解绑——manual 行无 revoke 端点配置列（§14.4
+    「提供方支持时」）→ 仅删本地凭证返回 204，不发任何 revoke；解绑后调用 401。"""
+    mid = await _setup_manual_http()
+    await _complete_binding(await _authorize(mid))
+    revocations_before = len(as_state["revocations"])
+    async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+        r = await c.delete(f"{PROXY}/api/v1/builtin-mappings/{mid}/binding",
+                           headers=U888)
+    assert r.status_code == 204
+    async with app.state.sessionmaker() as session:
+        rows = (await session.execute(select(OAuthCredential).where(
+            OAuthCredential.mapping_id == mid))).scalars().all()
+    assert rows == []                                     # 本地凭证已删
+    assert len(as_state["revocations"]) == revocations_before   # 未发 revoke
+    r2 = await _proxy_call(mid, "orders", U888)
+    assert r2.status_code == 401 and r2.json()["code"] == "OAUTH_BINDING_REQUIRED"
+    async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+        b = await c.get(f"{PROXY}/api/v1/builtin-mappings/{mid}/binding", headers=U888)
+    assert b.json()["binding"] == "unbound"
+
+
+async def test_unbind_corrupt_ciphertext_204_reauth_guidance(app):
+    """终审遗留 4：解绑前解密失败（密文损坏 / MASTER_KEY 变更）→ 删本地坏行 +
+    204 引导重新授权，绝不 500 死局；revoke 无从谈起（明文已不可得）。"""
+    mid = await _create_oauth_http()
+    await _complete_binding(await _authorize(mid))
+    async with app.state.sessionmaker() as session:
+        row = (await session.execute(select(OAuthCredential).where(
+            OAuthCredential.mapping_id == mid,
+            OAuthCredential.uid == "u888"))).scalar_one()
+        row.access_token = "corrupted-not-fernet"
+        await session.commit()
+    await invalidate_credential(app.state.redis, mid, "u888")
+    async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+        r = await c.delete(f"{PROXY}/api/v1/builtin-mappings/{mid}/binding",
+                           headers=U888)
+    assert r.status_code == 204                           # 非 500（恢复路径）
+    async with app.state.sessionmaker() as session:
+        rows = (await session.execute(select(OAuthCredential).where(
+            OAuthCredential.mapping_id == mid))).scalars().all()
+    assert rows == []                                     # 坏行已本地删除
+    assert as_state["revocations"] == []                  # 明文不可得，未发 revoke
+    r2 = await _proxy_call(mid, "orders", U888)
+    assert r2.status_code == 401 and r2.json()["code"] == "OAUTH_BINDING_REQUIRED"

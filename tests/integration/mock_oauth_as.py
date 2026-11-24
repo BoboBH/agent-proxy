@@ -29,7 +29,10 @@ Resource Server 端点（http 形态注入验证面）：
 - 签发的 access token 同步登记 mock_mcp_streamable.secure_state["valid_tokens"]
   （9903 /mcp-secure 的 token 校验面），吊销时移除。
 
-与真实提供方的已知偏离（测试确定性优先）：refresh_token 不轮换（可复用）；
+与真实提供方的已知偏离（测试确定性优先）：_issue 每次签发（授权码与刷新均是）
+都返回**新的** refresh_token（轮换形态，代理按「响应含 rt 即存新值」落库），
+但旧 rt 不作废——真实提供方通常轮换后即失效旧值，此处保留旧值只为降低用例间
+耦合（旧 rt 可复用性不得被测试依赖，绑定/刷新用例始终直读最新签发值）；
 authorize 不渲染同意页（校验通过即视为"同意"）。
 
 注意：独立入口 scripts/mock_oauth_as_server.py 换端口联调时，本模块 BASE /
@@ -221,7 +224,7 @@ def build_oauth_as_app() -> FastAPI:
     @app.post("/oauth/token")
     async def token(request: Request):
         form = await _form(request)
-        client_id, _, client, _, err = await _authenticate_client(request, form)
+        client_id, _, client, client_auth, err = await _authenticate_client(request, form)
         if err is not None:
             return err
         grant = form.get("grant_type")
@@ -265,7 +268,10 @@ def build_oauth_as_app() -> FastAPI:
                 return JSONResponse(as_state["refresh_payload"], status_code=200)
             if as_state["refresh_sleep"]:           # 并发刷新锁用例的竞态窗口
                 await asyncio.sleep(as_state["refresh_sleep"])
-            as_state["refresh_events"].append({"refresh_token": rt, "client_id": client_id})
+            # client_auth 记录面（终审遗留 6）：manual client_secret_basic 过期刷新
+            # e2e 据此断言 refresh 请求确实走了 Basic 认证门
+            as_state["refresh_events"].append({"refresh_token": rt, "client_id": client_id,
+                                               "client_auth": client_auth})
             return await _issue(client_id, str(form.get("scope") or ""), grant)
         return JSONResponse({"error": "unsupported_grant_type"}, status_code=400)
 
