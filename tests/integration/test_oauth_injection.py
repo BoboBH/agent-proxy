@@ -1,0 +1,271 @@
+"""按用户注入端到端（真实 TCP 9910）：三形态 token 到达上游断言、未绑定/invalid
+401、过期自动刷新、并发刷新单飞（Redis 锁）、刷新失败→invalid→重新授权恢复、
+builtin test 本人凭证与失效提示（§14.5 / §6.6）。"""
+import asyncio
+from sqlalchemy import select
+
+import httpx
+
+from agent_proxy.models import OAuthCredential
+from agent_proxy.oauth.credential import (decrypt_text, encrypt_text,
+                                          invalidate_credential)
+from tests.integration.mock_mcp_sse import mock_state
+from tests.integration.mock_mcp_streamable import secure_state, streamable_state
+from tests.integration.mock_oauth_as import as_state
+from tests.utils import make_token
+
+PROXY = "http://127.0.0.1:9910"
+AS = "http://127.0.0.1:9904"
+FRONT = "http://127.0.0.1:9910/console"
+MASTER = "test-master-key"
+ADMIN = {"Authorization": f"Bearer {make_token('uadmin', 'admin')}"}
+U888 = {"Authorization": f"Bearer {make_token('u888')}"}
+U999 = {"Authorization": f"Bearer {make_token('u999')}"}
+TCP_TIMEOUT = httpx.Timeout(connect=5, read=10, write=10, pool=5)
+
+CLIENT_BODY = {"client_id": "manual-cl", "client_secret": "manual-cs-123456",
+               "token_auth": "client_secret_post",
+               "authorize_url": f"{AS}/oauth/authorize",
+               "token_url": f"{AS}/oauth/token", "scopes": "read"}
+
+
+async def _create_oauth(upstream, type_="http"):
+    async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+        resp = await c.post(f"{PROXY}/api/v1/mappings", json={
+            "type": type_, "visibility": "public", "auth_mode": "oauth",
+            "upstream_url": upstream, "headers": {}}, headers=ADMIN)
+    assert resp.status_code == 201, resp.text
+    return resp.json()["mapping_id"]
+
+
+async def _setup_manual(upstream, type_="http"):
+    mid = await _create_oauth(upstream, type_)
+    async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+        resp = await c.put(f"{PROXY}/api/v1/builtin-mappings/{mid}/client",
+                           json=CLIENT_BODY, headers=ADMIN)
+    assert resp.status_code == 200, resp.text
+    return mid
+
+
+async def _bind(mid, user_headers=U888, front=FRONT):
+    async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+        r = await c.post(f"{PROXY}/api/v1/builtin-mappings/{mid}/authorize",
+                         json={"front_redirect": front}, headers=user_headers)
+        assert r.status_code == 200, r.text
+        redir = await c.get(r.json()["authorization_url"], follow_redirects=False)
+        assert redir.status_code == 302, redir.text
+        cb = await c.get(redir.headers["location"], follow_redirects=False)
+    assert cb.status_code == 302, cb.text
+    assert "binding=success" in cb.headers["location"]
+
+
+async def _cred_row(app, mid, uid="u888"):
+    async with app.state.sessionmaker() as session:
+        return (await session.execute(select(OAuthCredential).where(
+            OAuthCredential.mapping_id == mid,
+            OAuthCredential.uid == uid))).scalar_one()
+
+
+async def _cred_token(app, mid, uid="u888") -> str:
+    return decrypt_text((await _cred_row(app, mid, uid)).access_token, MASTER)
+
+
+async def _set_cred_token_ct(app, mid, uid, plaintext):
+    """直写凭证（模拟 upstream 侧已吊销的 stale token）：密文形态合法、上游不认。
+    （落地修正：同一 session 内 SELECT——原稿经 _cred_row 另开 session 取行，
+    返回即 detach，本 session commit 无脏对象，stale 直写静默丢失。）"""
+    async with app.state.sessionmaker() as session:
+        row = (await session.execute(select(OAuthCredential).where(
+            OAuthCredential.mapping_id == mid,
+            OAuthCredential.uid == uid))).scalar_one()
+        row.access_token = encrypt_text(plaintext, MASTER)
+        await session.commit()
+    await invalidate_credential(app.state.redis, mid, uid)
+
+
+async def test_injection_http_form_token_reaches_upstream(app):
+    mid = await _create_oauth(f"{AS}/api")               # DCR 形态（http）
+    await _bind(mid)
+    token = await _cred_token(app, mid)
+    async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+        r = await c.get(f"{PROXY}/p/{mid}/orders?id=7", headers=U888)
+    assert r.status_code == 200
+    assert r.json()["headers"]["authorization"] == f"Bearer {token}"
+
+
+async def test_injection_streamable_form_token_reaches_upstream(app):
+    streamable_state["received"].clear()
+    mid = await _setup_manual("http://127.0.0.1:9903/mcp", type_="mcp")
+    await _bind(mid)
+    token = await _cred_token(app, mid)
+    async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+        r = await c.post(f"{PROXY}/p/{mid}/mcp", json={
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2025-06-18"}}, headers=U888)
+    assert r.status_code == 200
+    rec = streamable_state["received"][-1]
+    assert rec["headers"]["authorization"] == f"Bearer {token}"   # 本人 token 到上游
+    assert not any(v.startswith("stub.") for v in rec["headers"].values())  # JWT 不透传
+
+
+async def test_injection_sse_form_token_reaches_upstream(app):
+    mid = await _setup_manual("http://127.0.0.1:9902/sse", type_="mcp")
+    await _bind(mid)
+    token = await _cred_token(app, mid)
+    async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+        async with c.stream("GET", f"{PROXY}/p/{mid}/sse", headers=U888) as resp:
+            assert resp.status_code == 200
+            assert resp.headers["content-type"].startswith("text/event-stream")
+            saw_endpoint = False
+            async for line in resp.aiter_lines():
+                if line.startswith("data:") and "/messages" in line:
+                    saw_endpoint = True                   # endpoint 改写不受注入影响
+                    break
+    assert saw_endpoint
+    assert mock_state["last_sse_headers"]["authorization"] == f"Bearer {token}"
+
+
+async def test_unbound_call_401_with_authorize_guidance():
+    mid = await _create_oauth(f"{AS}/api")
+    async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+        r = await c.get(f"{PROXY}/p/{mid}/orders", headers=U999)
+    assert r.status_code == 401
+    body = r.json()
+    assert body["code"] == "OAUTH_BINDING_REQUIRED"
+    assert f"/builtin-mappings/{mid}/authorize" in body["message"]  # body 附授权引导（§10）
+
+
+async def test_invalid_status_call_401(app):
+    mid = await _create_oauth(f"{AS}/api")
+    await _bind(mid)
+    async with app.state.sessionmaker() as session:
+        row = (await session.execute(select(OAuthCredential).where(
+            OAuthCredential.mapping_id == mid,
+            OAuthCredential.uid == "u888"))).scalar_one()
+        row.status = "invalid"
+        await session.commit()
+    await invalidate_credential(app.state.redis, mid, "u888")
+    async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+        r = await c.get(f"{PROXY}/p/{mid}/orders", headers=U888)
+    assert r.status_code == 401 and r.json()["code"] == "OAUTH_BINDING_REQUIRED"
+
+
+async def test_expired_refresh_single(app):
+    """§14.5：expires_at - 60s 内即刷新（脚本化 expires_in=2 越线后首个请求触发；
+    刷新签发的新 token 改回 3600，避免 60s skew 内二次刷新干扰计数）。"""
+    as_state["expires_in"] = 2
+    mid = await _create_oauth(f"{AS}/api")
+    await _bind(mid)
+    token1 = await _cred_token(app, mid)
+    as_state["expires_in"] = 3600                         # 刷新签发的新 token 走正常有效期
+    await asyncio.sleep(2.3)                              # 越过过期线（skew 60s 内）
+    events_before = len(as_state["refresh_events"])
+    async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+        r1 = await c.get(f"{PROXY}/p/{mid}/orders", headers=U888)
+        assert r1.status_code == 200
+        assert len(as_state["refresh_events"]) == events_before + 1
+        token2 = await _cred_token(app, mid)
+        assert token2 != token1                           # 刷新后落库新 token
+        r2 = await c.get(f"{PROXY}/p/{mid}/orders", headers=U888)
+    assert r2.status_code == 200                          # 新 token 有效期内不再刷新
+    assert len(as_state["refresh_events"]) == events_before + 1
+    assert r2.json()["headers"]["authorization"] == f"Bearer {token2}"
+
+
+async def test_concurrent_refresh_lock_single_flight(app):
+    """并发刷新锁（§14.5）：6 并发请求越过过期线 → 仅 1 次 refresh（其余轮询等待
+    新 token），全部 200 且带同一新 token。refresh_sleep=0.8 拉宽竞态窗口。"""
+    as_state["refresh_sleep"] = 0.8
+    as_state["expires_in"] = 2
+    mid = await _create_oauth(f"{AS}/api")
+    await _bind(mid)
+    token1 = await _cred_token(app, mid)
+    as_state["expires_in"] = 3600                         # 刷新签发的新 token 走正常有效期
+    await asyncio.sleep(2.3)
+    before = len(as_state["refresh_events"])
+    async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+        rs = await asyncio.gather(*[c.get(f"{PROXY}/p/{mid}/orders?i={i}", headers=U888)
+                                    for i in range(6)])
+    assert all(r.status_code == 200 for r in rs), [r.status_code for r in rs]
+    assert len(as_state["refresh_events"]) == before + 1  # 锁防并发：仅一次刷新
+    token2 = await _cred_token(app, mid)
+    assert token2 != token1
+    for r in rs:
+        assert r.json()["headers"]["authorization"] == f"Bearer {token2}"
+    as_state["refresh_sleep"] = 0.0
+
+
+async def test_refresh_failure_marks_invalid_and_reauth_recovers(app):
+    as_state["fail_refresh"] = True
+    as_state["expires_in"] = 2
+    mid = await _create_oauth(f"{AS}/api")
+    await _bind(mid)
+    as_state["expires_in"] = 3600                         # 恢复后签发的 token 走正常有效期
+    await asyncio.sleep(2.3)
+    async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+        r = await c.get(f"{PROXY}/p/{mid}/orders", headers=U888)
+    assert r.status_code == 401 and r.json()["code"] == "OAUTH_BINDING_REQUIRED"
+    row = await _cred_row(app, mid)
+    assert row.status == "invalid"                        # 刷新失败 → invalid（§14.4）
+    async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+        b = await c.get(f"{PROXY}/api/v1/builtin-mappings/{mid}/binding", headers=U888)
+    assert b.json()["binding"] == "invalid"               # 状态机回告，页面引导重新授权
+    # 重新授权恢复（upsert 复位 active）
+    as_state["fail_refresh"] = False
+    as_state["expires_in"] = 3600
+    await _bind(mid)
+    async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+        r2 = await c.get(f"{PROXY}/p/{mid}/orders", headers=U888)
+    assert r2.status_code == 200
+
+
+async def test_builtin_test_bound_user_uses_own_credential(app):
+    """§6.6：已绑定用户 test = 本人凭证执行对应 mcp 验证；uk 每用户一份互不串用。"""
+    mid = await _setup_manual("http://127.0.0.1:9903/mcp-secure", type_="mcp")
+    await _bind(mid)
+    token = await _cred_token(app, mid)
+    async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+        r = await c.post(f"{PROXY}/api/v1/builtin-mappings/{mid}/test", headers=U888)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True and body["status_code"] == 200   # 有效凭证 → initialize 通过
+    assert secure_state["received"][-1]["headers"]["authorization"] == f"Bearer {token}"
+    await _bind(mid, U999)                                # 第二用户独立绑定
+    token999 = await _cred_token(app, mid, "u999")
+    assert token999 != token
+    async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+        r999 = await c.post(f"{PROXY}/api/v1/builtin-mappings/{mid}/test", headers=U999)
+    assert r999.json()["ok"] is True
+    assert secure_state["received"][-1]["headers"]["authorization"] == f"Bearer {token999}"
+
+
+async def test_builtin_test_stale_token_hints_reauth(app):
+    """§6.6：凭证失效提示重新授权——stale token 被 /mcp-secure 拒绝（401 短路，
+    不回落，M4 定稿），detail 追加「重新授权」提示。"""
+    mid = await _setup_manual("http://127.0.0.1:9903/mcp-secure", type_="mcp")
+    await _bind(mid)
+    await _set_cred_token_ct(app, mid, "u888", "at-stale-revoked-000000")
+    async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+        r = await c.post(f"{PROXY}/api/v1/builtin-mappings/{mid}/test", headers=U888)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is False and body["status_code"] == 401
+    assert body["detail"].startswith("上游拒绝")           # 非 2xx 不回落（M4 语义）
+    assert "重新授权" in body["detail"]
+
+
+async def test_builtin_test_admin_static_no_injection():
+    """admin 测静态配置（§6.5）：不注入本人凭证（secure 面 0 访问）。"""
+    mid = await _setup_manual("http://127.0.0.1:9903/mcp", type_="mcp")
+    secure_state["received"].clear()
+    async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+        r = await c.post(f"{PROXY}/api/v1/builtin-mappings/{mid}/test", headers=ADMIN)
+    assert r.status_code == 200 and r.json()["ok"] is True
+    assert secure_state["received"] == []
+
+
+async def test_builtin_test_unbound_user_401():
+    mid = await _setup_manual("http://127.0.0.1:9903/mcp-secure", type_="mcp")
+    async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+        r = await c.post(f"{PROXY}/api/v1/builtin-mappings/{mid}/test", headers=U999)
+    assert r.status_code == 401 and r.json()["code"] == "OAUTH_BINDING_REQUIRED"

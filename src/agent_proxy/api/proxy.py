@@ -19,6 +19,7 @@ from ..forward.http_forward import (assert_safe_sub_path, split_sub_path,
                                     stream_http_forward)
 from ..forward.mcp_sse import (build_origin_target, registered_endpoint_path,
                                stream_sse_forward)
+from ..oauth import credential as oauth_credential
 from ..services import load_mapping
 from .deps import get_current_identity
 
@@ -29,23 +30,34 @@ _PROXY_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
 
 async def _handle_proxy(request: Request, mapping_id: str, identity: Identity,
                         settings: Settings) -> Response:
-    # DB session 只包住 load_mapping（评审 Important 项）：不走 get_db 依赖——其
+    # DB session 只包住 load_mapping 与 OAuth 凭证获取（M6）：不走 get_db 依赖——其
     # teardown 在响应发完才执行，SSE/长流会把连接占死（池 10 → ~20 并发即排队）。
     # load_mapping 返回脱管 dict（row_to_dict），session 早关安全。
     async with request.app.state.sessionmaker() as session:
         data = await load_mapping(session, request.app.state.redis, mapping_id,
                                   settings.cache_ttl)
-    if data is None:
-        raise AppError(404, "MAPPING_NOT_FOUND", "映射不存在")
-    # 审计 mapping_id 对后续所有分支生效（含 403/禁用 404）
-    request.state.mapping_id = mapping_id
-    # metrics type 标签（§15.2 http/mcp；中间件回读 state）
-    request.state.proxy_type = "mcp" if data["type"] == "mcp" else "http"
-    if data["visibility"] == "private" and data["owner_uid"] != identity.user_id:
-        raise AppError(403, "FORBIDDEN", "仅注册者可调用该映射")
-    # visibility=public：任意有效身份放行（M6 内置映射场景；M3 数据中不出现 public 用户映射）
-    if data["status"] != "active":
-        raise AppError(404, "MAPPING_NOT_FOUND", "映射不存在或已禁用")
+        if data is None:
+            raise AppError(404, "MAPPING_NOT_FOUND", "映射不存在")
+        # 审计 mapping_id 对后续所有分支生效（含 403/禁用 404）
+        request.state.mapping_id = mapping_id
+        # metrics type 标签（§15.2 http/mcp；中间件回读 state）
+        request.state.proxy_type = "mcp" if data["type"] == "mcp" else "http"
+        if data["visibility"] == "private" and data["owner_uid"] != identity.user_id:
+            raise AppError(403, "FORBIDDEN", "仅注册者可调用该映射")
+        # visibility=public：任意有效身份放行（M6 内置映射场景；M3 数据中不出现 public 用户映射）
+        if data["status"] != "active":
+            raise AppError(404, "MAPPING_NOT_FOUND", "映射不存在或已禁用")
+        if data["auth_mode"] == "oauth":
+            # M6 按用户注入（§14.5）：查本人凭证（无/invalid → 401 OAUTH_BINDING_REQUIRED
+            # 附授权引导）；expires_at-60s 内刷新（Redis 锁防并发）；出站
+            # Authorization: Bearer <本人 access_token> 覆盖存储同名头——「仅还原注册者
+            # header」的唯一例外（§14.1）。小写键与 build_outbound_headers 归一一致。
+            # data 为本请求私有 dict（缓存 JSON 反序列化产物），写入不跨请求共享。
+            token = await oauth_credential.get_callable_credential(
+                session, request.app.state.redis, request.app.state, data,
+                identity.user_id, settings.master_key, request.state.request_id)
+            data = {**data, "upstream_headers": {**data["upstream_headers"],
+                                                 "authorization": f"Bearer {token}"}}
     if data["type"] == "mcp":
         # 路径分发（§8.3 表，M4 起同时服务 Streamable）：仅 GET/HEAD 且命中注册
         # 端点路径 → SSE 解析管线（stream_sse_forward 不转发请求体，故非 GET/HEAD

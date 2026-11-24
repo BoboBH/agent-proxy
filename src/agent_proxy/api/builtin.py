@@ -19,7 +19,7 @@ import logging
 from urllib.parse import urlencode
 
 import httpx
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,16 +28,20 @@ from .. import metrics, placeholder
 from ..auth import Identity
 from ..config import Settings, get_settings
 from ..errors import AppError
+from ..forward.http_forward import probe_http_mapping
+from ..forward.mcp_streamable import probe_mcp_mapping
 from ..models import OAuthClient, ProxyMapping
 from ..oauth.client import (build_authorization_url, build_redirect_uri,
                             build_token_request, consume_state, encode_state_payload,
-                            load_client_row, new_code_verifier, new_state,
-                            save_oauth_client_row, state_key, validate_front_redirect)
-from ..oauth.credential import (decrypt_text, drop_authz_index, encrypt_text,
-                                expires_at_from, get_binding_status, load_credential,
+                            ensure_client, load_client_row, new_code_verifier,
+                            new_state, save_oauth_client_row, state_key,
+                            validate_front_redirect)
+from ..oauth.credential import (decrypt_text, delete_credential, drop_authz_index,
+                                encrypt_text, expires_at_from, get_binding_status,
+                                get_callable_credential, load_credential,
                                 save_credential, set_authz_index)
 from ..schemas import (AuthorizeIn, AuthorizeOut, BindingOut, BuiltinItemOut,
-                       OAuthClientOut, OAuthClientSet)
+                       MappingTestOut, OAuthClientOut, OAuthClientSet)
 from ..services import build_proxy_url, load_mapping
 from ..ssrf import async_validate_upstream_url
 from .deps import get_current_identity, get_db, is_admin
@@ -159,11 +163,9 @@ async def authorize_mapping(request: Request, mapping_id: str, body: AuthorizeIn
     require_oauth_mode(data)
     front_redirect = validate_front_redirect(body.front_redirect,
                                              settings.cors_allowed_origins)
-    client_row = await load_client_row(session, mapping_id)
-    if client_row is None or not client_row.authorize_url:
-        # Task 5 起：无行时改走 ensure_client 的 DCR 分支（§14.3 DCR 优先）
-        raise AppError(400, "OAUTH_CLIENT_NOT_CONFIGURED",
-                       "该映射尚未配置 OAuth 客户端（管理员手动配置，或首次授权时 DCR）")
+    redirect_uri = build_redirect_uri(settings.external_base, mapping_id)
+    client = await ensure_client(session, request.app.state, data,
+                                 settings.master_key, redirect_uri)
     verifier = new_code_verifier()
     state = new_state()
     r = request.app.state.redis
@@ -173,9 +175,9 @@ async def authorize_mapping(request: Request, mapping_id: str, body: AuthorizeIn
         front_redirect=front_redirect), ex=ttl)
     await set_authz_index(r, mapping_id, identity.user_id, state, ttl)
     url = build_authorization_url(
-        client_row.authorize_url, client_id=client_row.client_id,
-        redirect_uri=build_redirect_uri(settings.external_base, mapping_id),
-        state=state, code_verifier=verifier, scopes=client_row.scopes)
+        client["authorize_url"], client_id=client["client_id"],
+        redirect_uri=redirect_uri, state=state, code_verifier=verifier,
+        scopes=client["scopes"])
     request.state.audit_action = "oauth_authorize"
     request.state.mapping_id = mapping_id
     return AuthorizeOut(authorization_url=url)
@@ -201,6 +203,82 @@ async def get_binding_route(request: Request, mapping_id: str,
     request.state.mapping_id = mapping_id
     return BindingOut(mapping_id=mapping_id, auth_mode=data["auth_mode"],
                       binding=binding, expires_at=expires_at, scope=scope)
+
+
+@router.delete("/{mapping_id}/binding", status_code=204)
+async def unbind_mapping(request: Request, mapping_id: str,
+                         identity: Identity = Depends(get_current_identity),
+                         session=Depends(get_db),
+                         settings: Settings = Depends(get_settings)):
+    """解绑（§14.4）：删除本地凭证；提供方支持时（dcr 客户端经 discovery 拿到
+    revocation_endpoint）同时 best-effort 调用 revoke——revoke 失败仅 WARN，
+    不影响本地解绑；manual 模式无 revoke 端点配置 → 仅删本地凭证。"""
+    data = await load_public_mapping(session, request.app.state.redis, mapping_id,
+                                     settings.cache_ttl)
+    require_oauth_mode(data)
+    r = request.app.state.redis
+    cred = await load_credential(session, r, mapping_id, identity.user_id)
+    if cred is None:
+        raise AppError(404, "MAPPING_NOT_FOUND", "尚未绑定，无需解绑")
+    access_plain = decrypt_text(cred["access_token"], settings.master_key)
+    deleted = await delete_credential(session, r, mapping_id, identity.user_id)
+    assert deleted                                        # 上一行已确认存在
+    # revoke best-effort（凭证已在本地删除，失败不回滚——本地删除是不可回退语义）
+    try:
+        client = await ensure_client(session, request.app.state, data,
+                                     settings.master_key,
+                                     build_redirect_uri(settings.external_base, mapping_id))
+        rev = client.get("revocation_endpoint")
+        if rev:
+            headers, form = build_token_request(
+                client["token_auth"], client_id=client["client_id"],
+                client_secret=client["client_secret"],
+                extra={"token": access_plain, "token_type_hint": "access_token"})
+            resp = await request.app.state.http_client.post(rev, data=form,
+                                                            headers=headers, timeout=10.0)
+            if resp.status_code != 200:
+                log.warning("revoke 非 200: status=%s（本地凭证已删除）", resp.status_code)
+    except AppError as exc:
+        log.warning("revoke 前置（discovery/ensure_client）失败（忽略）: %s", exc.message)
+    except httpx.HTTPError as exc:
+        log.warning("revoke 请求失败（忽略）: %s", type(exc).__name__)
+    metrics.oauth_actions_total.labels(action="unbind").inc()
+    request.state.audit_action = "oauth_unbind"
+    request.state.mapping_id = mapping_id
+    return Response(status_code=204)
+
+
+@router.post("/{mapping_id}/test", response_model=MappingTestOut)
+async def test_builtin_mapping(request: Request, mapping_id: str,
+                               identity: Identity = Depends(get_current_identity),
+                               session=Depends(get_db),
+                               settings: Settings = Depends(get_settings)):
+    """公共映射 test（§6.5 / §6.6）：admin 测静态配置（不注入）；其他用户必须已绑定，
+    以本人凭证执行对应验证（mcp 走探测式 auto）。无凭证用户 → 401
+    OAUTH_BINDING_REQUIRED（§6.6 安全边界）；上游以 401 拒绝 → ok=false + detail
+    追加「重新授权」提示（探测语义沿 M4：非 2xx 不回落直接判失败）。"""
+    data = await load_public_mapping(session, request.app.state.redis, mapping_id,
+                                     settings.cache_ttl)
+    request.state.audit_action = "test_mapping"
+    request.state.mapping_id = mapping_id
+    injected = False
+    if is_admin(identity, settings.admin_role):
+        probe_data = data                                 # admin：静态配置实测（不注入）
+    else:
+        token = await get_callable_credential(session, request.app.state.redis,
+                                              request.app.state, data,
+                                              identity.user_id, settings.master_key,
+                                              request.state.request_id)
+        probe_data = {**data, "upstream_headers": {**data["upstream_headers"],
+                                                   "authorization": f"Bearer {token}"}}
+        injected = True
+    if probe_data["type"] == "mcp":
+        result = await probe_mcp_mapping(request.app.state, probe_data)
+    else:
+        result = await probe_http_mapping(request.app.state, probe_data)
+    if injected and not result["ok"] and result.get("status_code") == 401:
+        result["detail"] += "（凭证可能已失效，请重新授权）"
+    return result
 
 
 async def _exchange_token(client, token_url: str, headers: dict,
@@ -252,19 +330,17 @@ async def oauth_callback(request: Request, mapping_id: str,
     data = await load_public_mapping(session, request.app.state.redis, mapping_id,
                                      settings.cache_ttl)
     require_oauth_mode(data)
-    client_row = await load_client_row(session, mapping_id)
-    if client_row is None or not client_row.token_url:
-        raise AppError(400, "OAUTH_CLIENT_NOT_CONFIGURED",
-                       "OAuth 客户端配置缺失，无法换取 token")
+    client = await ensure_client(session, request.app.state, data,
+                                 settings.master_key,
+                                 build_redirect_uri(settings.external_base, mapping_id))
     headers, form = build_token_request(
-        client_row.token_auth, client_id=client_row.client_id,
-        client_secret=(decrypt_text(client_row.client_secret, settings.master_key)
-                       if client_row.client_secret else None),
+        client["token_auth"], client_id=client["client_id"],
+        client_secret=client["client_secret"],
         extra={"grant_type": "authorization_code", "code": code,
                "redirect_uri": build_redirect_uri(settings.external_base, mapping_id),
                "code_verifier": payload["code_verifier"]})
     tokens = await _exchange_token(request.app.state.http_client,
-                                   client_row.token_url, headers, form)
+                                   client["token_url"], headers, form)
     if tokens is None or not tokens.get("access_token"):
         metrics.oauth_actions_total.labels(action="fail").inc()
         return RedirectResponse(

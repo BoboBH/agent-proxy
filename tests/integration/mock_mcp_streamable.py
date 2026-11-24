@@ -111,11 +111,14 @@ def build_mcp_streamable_app() -> FastAPI:
     async def mcp_secure(request: Request):
         # M6（§14.5）：仅接受 mock AS 签发且未吊销的 token；401 = 凭证失效面。
         # serverInfo.caller 回告到达上游的 Authorization——「本人凭证到达上游」断言面。
+        # （Task 6 落地修正：valid_tokens 登记的是 AS 签发的裸 token，比对前剥掉
+        # 「Bearer 」scheme——原稿拿完整 header 值比对恒 401，绑定用户测试全挂。）
         authz = request.headers.get("authorization", "")
+        token = authz[len("Bearer "):] if authz.startswith("Bearer ") else authz
         rpc = json.loads(await request.body())
         secure_state["received"].append({"rpc": rpc,
                                          "headers": dict(request.headers.items())})
-        if authz not in secure_state["valid_tokens"]:
+        if token not in secure_state["valid_tokens"]:
             return JSONResponse({"error": "invalid_token"}, status_code=401)
         params = rpc.get("params") or {}
         return JSONResponse({"jsonrpc": "2.0", "id": rpc.get("id"),

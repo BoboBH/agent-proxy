@@ -6,7 +6,7 @@
   Fernet（成本可忽略），换取 Redis 侧不落明文；
 - token 明文不入任何日志（本模块日志只记 mapping_id/uid/异常类型名）。
 
-刷新（§14.5，Task 6 交付）：expires_at - 60s 内即视为过期 → refresh_token 换新；
+刷新（§14.5）：expires_at - 60s 内即视为过期 → refresh_token 换新；
 Redis 锁 ap:lock:refresh:{mapping_id}:{uid}（SET NX EX 30）防并发刷新。
 
 兼容性注记（实测钉死）：本地/测试 Redis 为 3.0.504，无 GETDEL 命令——凡需
@@ -15,17 +15,21 @@ getdel（生产 Redis 6.2+ 虽支持，本地 3.0 会直接报 unknown command�
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 
+import httpx
 from cryptography.fernet import Fernet, InvalidToken
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from .. import metrics
 from ..errors import AppError
 from ..models import OAuthCredential
 
@@ -35,6 +39,14 @@ log = logging.getLogger("agent_proxy")
 REFRESH_SKEW_SECONDS = 60
 # 刷新互斥锁 TTL（§5.3：ap:lock:refresh 30s）
 REFRESH_LOCK_TTL = 30
+
+# 未抢到锁时等待他人刷新完成的上限（覆盖慢 token 端点）；0.1s 轮询 cred 缓存
+REFRESH_WAIT_SECONDS = 8.0
+_WAIT_POLL_INTERVAL = 0.1
+
+# 审计 logger（刷新事件入审计，§14.6；与 middleware 的 per-request 审计同一 logger，
+# action=oauth_refresh 区分，request_id 复用当前请求以便关联）
+audit_log = logging.getLogger("agent_proxy.audit")
 
 _fernet_cache: dict[str, Fernet] = {}
 
@@ -263,3 +275,160 @@ async def get_binding_status(session: AsyncSession, r, mapping_id: str, uid: str
     if await get_authz_index(r, mapping_id, uid) is not None:
         return "authorizing"
     return "unbound"
+
+
+# ---------- 调用时凭证获取与刷新（§14.5） ----------
+
+
+def binding_required(mapping_id: str) -> AppError:
+    """§10：401 OAUTH_BINDING_REQUIRED，body 附授权引导信息。"""
+    return AppError(401, "OAUTH_BINDING_REQUIRED",
+                    f"未完成 OAuth 授权绑定或凭证已失效：请先 POST "
+                    f"/api/v1/builtin-mappings/{mapping_id}/authorize 完成授权后重试")
+
+
+def _parse_expires(value) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+async def get_callable_credential(session: AsyncSession, r, app_state,
+                                  mapping_data: dict, uid: str, master_key: str,
+                                  request_id: str = "") -> str:
+    """调用时凭证获取（§14.5）：无 / invalid → 401 OAUTH_BINDING_REQUIRED；
+    expires_at - 60s 内 → 刷新（Redis 锁防并发）→ 返回新 access；刷新失败 →
+    status=invalid → 401。proxy 注入与 builtin test 共用本入口。"""
+    mapping_id = mapping_data["mapping_id"]
+    cred = await load_credential(session, r, mapping_id, uid)
+    if cred is None or cred.get("status") != "active":
+        raise binding_required(mapping_id)
+    if not is_expired(_parse_expires(cred.get("expires_at"))):
+        return decrypt_text(cred["access_token"], master_key)
+    refreshed = await refresh_credential(session, r, app_state, mapping_data, uid,
+                                         master_key, request_id)
+    if refreshed is None:
+        raise binding_required(mapping_id)
+    return refreshed
+
+
+async def refresh_credential(session: AsyncSession, r, app_state, mapping_data: dict,
+                             uid: str, master_key: str,
+                             request_id: str = "") -> str | None:
+    """刷新互斥（§14.5）：抢锁成功者执行 refresh_token 换新（落库 + 失效缓存）；
+    未抢到锁者轮询 cred（上限 8s）等他人刷新结果。锁 ap:lock:refresh:{mapping}:{uid}
+    SET NX EX 30（§5.3；Redis 3.0 支持 SET NX EX）。返回新 access 或 None（→401）。"""
+    mapping_id = mapping_data["mapping_id"]
+    lock_key = refresh_lock_key(mapping_id, uid)
+    try:
+        acquired = await r.set(lock_key, request_id or "refresh", nx=True,
+                               ex=REFRESH_LOCK_TTL)
+    except Exception as exc:
+        log.warning("刷新锁获取失败（按未抢到处理）: %s", exc)
+        acquired = None
+    if not acquired:
+        return await _wait_for_others_refresh(session, r, mapping_id, uid, master_key)
+    try:
+        return await _do_refresh(session, r, app_state, mapping_data, uid,
+                                 master_key, request_id)
+    finally:
+        try:
+            await r.delete(lock_key)
+        except Exception:
+            pass
+
+
+async def _wait_for_others_refresh(session: AsyncSession, r, mapping_id: str,
+                                   uid: str, master_key: str) -> str | None:
+    """锁被他人持有时轮询 cred：拿到非过期的 active token 即用；他人刷新失败
+    （invalid）→ None；等待超时 → None（该请求 401，下一请求重试刷新）。"""
+    deadline = time.monotonic() + REFRESH_WAIT_SECONDS
+    while time.monotonic() < deadline:
+        await asyncio.sleep(_WAIT_POLL_INTERVAL)
+        # 结束本 session 的 REPEATABLE READ 快照（首个 query——load_mapping——开的
+        # 事务）：不回滚则后续 SELECT 永远读到请求起点前的旧凭证，等不到他人
+        # 已提交的刷新结果（实测 6 并发 5 路轮询超时 401）。等待路径无未决写，
+        # rollback 纯粹是快照复位；下一轮 execute 自动开新事务新快照。
+        await session.rollback()
+        cred = await load_credential(session, r, mapping_id, uid)
+        if cred is not None and cred.get("status") != "active":
+            return None
+        if cred is not None and not is_expired(_parse_expires(cred.get("expires_at"))):
+            return decrypt_text(cred["access_token"], master_key)
+    return None
+
+
+class _RefreshFailed(Exception):
+    """token 端点业务失败（非 200 / 缺 access_token）。"""
+
+
+async def _do_refresh(session: AsyncSession, r, app_state, mapping_data: dict,
+                      uid: str, master_key: str, request_id: str = "") -> str | None:
+    """持锁刷新：refresh_token 换新 → upsert 落库 + 失效缓存 + metrics/审计；
+    失败 → mark_credential_invalid + {action="fail"} → None。"""
+    from .client import build_token_request, load_client_row, _row_to_client
+    from .discovery import DiscoveryError, discover_authorization_server, upstream_origin
+
+    mapping_id = mapping_data["mapping_id"]
+    cred = await load_credential(session, r, mapping_id, uid)
+    if cred is None or not cred.get("refresh_token"):
+        await mark_credential_invalid(session, r, mapping_id, uid)
+        metrics.oauth_actions_total.labels(action="fail").inc()
+        return None
+    row = await load_client_row(session, mapping_id)
+    client = _row_to_client(row, master_key) if row is not None else None
+    token_url = client.get("token_url") if client else None
+    try:
+        if not token_url:
+            # dcr 行两列留空（§5.3）：刷新时实时 discovery 取 token 端点
+            meta = await discover_authorization_server(
+                app_state.http_client, upstream_origin(mapping_data["upstream_url"]))
+            token_url = meta["token_endpoint"]
+        headers, form = build_token_request(
+            client["token_auth"] if client else "client_secret_post",
+            client_id=client["client_id"] if client else "",
+            client_secret=client.get("client_secret") if client else None,
+            extra={"grant_type": "refresh_token",
+                   "refresh_token": decrypt_text(cred["refresh_token"], master_key)})
+        resp = await app_state.http_client.post(token_url, data=form,
+                                                headers=headers, timeout=15.0)
+        if resp.status_code != 200:
+            raise _RefreshFailed(f"status={resp.status_code}")
+        tokens = resp.json()
+        access = tokens.get("access_token")
+        if not access:
+            raise _RefreshFailed("响应缺少 access_token")
+    except (httpx.HTTPError, ValueError, DiscoveryError, _RefreshFailed) as exc:
+        await mark_credential_invalid(session, r, mapping_id, uid)
+        metrics.oauth_actions_total.labels(action="fail").inc()
+        # 日志只记 mapping/uid/异常类型——token 不入任何日志（§14.6）
+        log.warning("OAuth 刷新失败 (%s/%s): %s", mapping_id, uid, type(exc).__name__)
+        _audit_refresh(request_id, mapping_id, uid, ok=False)
+        return None
+    expires_at = expires_at_from(tokens.get("expires_in"))
+    if tokens.get("refresh_token"):
+        refresh_ct = encrypt_text(tokens["refresh_token"], master_key)   # AS 轮换则存新值
+    else:
+        refresh_ct = cred.get("refresh_token")           # 未轮换：保留原密文
+    await save_credential(session, r, mapping_id, uid,
+                          access_token_ct=encrypt_text(access, master_key),
+                          refresh_token_ct=refresh_ct, expires_at=expires_at,
+                          scope=tokens.get("scope"), master_key=master_key)
+    metrics.oauth_actions_total.labels(action="refresh").inc()
+    _audit_refresh(request_id, mapping_id, uid, ok=True)
+    return access
+
+
+def _audit_refresh(request_id: str, mapping_id: str, uid: str, ok: bool) -> None:
+    """刷新入审计日志（§14.6）：复用当前请求 request_id 与中间件请求行关联；
+    action=oauth_refresh 区分（测试按 action 过滤；无请求上下文时 request_id 空串）。"""
+    audit_log.info(json.dumps({
+        "ts": datetime.now(timezone.utc).astimezone().isoformat(timespec="milliseconds"),
+        "request_id": request_id, "user_id": uid, "user_name": "",
+        "action": "oauth_refresh", "mapping_id": mapping_id, "method": "", "path": "",
+        "status": 200 if ok else 401, "duration_ms": 0, "bytes_in": 0, "bytes_out": 0,
+        "client_ip": "",
+    }, ensure_ascii=False))

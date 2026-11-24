@@ -67,6 +67,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title="agent-proxy", lifespan=lifespan,
                   docs_url=None, redoc_url=None, openapi_url=None)
     app.state.settings = settings
+    # 路由的 Depends(get_settings) 必须解析到本 app 的 Settings 实例（与
+    # app.state.settings 同源）：同一进程可能存在多个 app 实例（M6 起测试双夹具
+    # ASGI testserver / 真实 TCP 9910 的 EXTERNAL_BASE 不同），redirect_uri 组装、
+    # front_redirect 白名单等按宿主 app 生效。生产单实例时两来源本就一致，行为不变；
+    # 修复前 lru_cache 全局读 os.environ，第二实例的 EXTERNAL_BASE 覆盖被吞掉。
+    app.dependency_overrides[get_settings] = lambda: settings
     if settings.cors_allowed_origins:
         from fastapi.middleware.cors import CORSMiddleware
         app.add_middleware(CORSMiddleware, allow_origins=list(settings.cors_allowed_origins),

@@ -2,8 +2,8 @@
 
 本模块 Task 1 交付纯逻辑：PKCE(S256)、state 载荷、authorization_url /
 redirect_uri / token 请求 / DCR 载荷组装、token_auth 归一、front_redirect 域
-白名单；DB 行存取（load/save）、state 一次性消费（Redis MULTI）与 ensure_client
-（discovery → DCR）随 Task 3–5 增量交付。
+白名单；DB 行存取（load/save）、state 一次性消费（Redis MULTI）Task 3–4 交付，
+ensure_client（discovery → DCR 注册 / manual 直读）Task 5 交付。
 
 安全锚点（§14.6）：
 - PKCE(S256) 必须——challenge = BASE64URL(SHA256(verifier))（剥 '='）；
@@ -16,16 +16,21 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import re
 import secrets
 from urllib.parse import urlencode, urlparse
 
+import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..errors import AppError
 from ..models import OAuthClient
 from .credential import decrypt_text, encrypt_text
+from .discovery import DiscoveryError, discover_authorization_server, upstream_origin
+
+log = logging.getLogger("agent_proxy")
 
 STATE_KEY_PREFIX = "ap:oauth:state:"
 
@@ -213,3 +218,71 @@ async def consume_state(r, state: str) -> dict:
     if raw is None:
         raise AppError(400, "OAUTH_STATE_INVALID", "state 无效、已使用或已过期")
     return decode_state_payload(raw)
+
+
+# ---------- ensure_client：manual 直读 / DCR 注册（§14.3，authorize 时调用） ----------
+
+
+async def _discover_or_setup_failed(app_state, mapping_data: dict) -> dict:
+    """discovery 包装：失败映射 502 OAUTH_CLIENT_SETUP_FAILED（提示改手动配置）。"""
+    try:
+        return await discover_authorization_server(
+            app_state.http_client, upstream_origin(mapping_data["upstream_url"]))
+    except DiscoveryError as exc:
+        raise AppError(502, "OAUTH_CLIENT_SETUP_FAILED",
+                       f"OAuth discovery 失败（{exc}），请管理员改用手动配置") from exc
+
+
+async def ensure_client(session: AsyncSession, app_state, mapping_data: dict,
+                        master_key: str, redirect_uri: str) -> dict:
+    """取/建 OAuth 客户端（§14.3 DCR 优先 + 手动兼容）：
+    - proxy_oauth_client 有行 → 直读（secret 解密）；source=dcr 行的 authorize/token
+      端点实时 discovery（§5.3：DCR 模式两列留空，提供方改端点无需迁移数据）；
+    - 无行 → discovery → RFC 7591 注册（redirect_uris 精确单一值、PKCE S256 声明）
+      → 落行 source=dcr；
+    - discovery/DCR 失败 → 502 OAUTH_CLIENT_SETUP_FAILED（提示管理员改用手动配置）。
+    返回 dict：client_id / client_secret(解密) / token_auth / authorize_url /
+    token_url / scopes / source / revocation_endpoint。"""
+    mapping_id = mapping_data["mapping_id"]
+    row = await load_client_row(session, mapping_id)
+    if row is not None:
+        client = _row_to_client(row, master_key)
+        if row.source == "dcr":
+            meta = await _discover_or_setup_failed(app_state, mapping_data)
+            client["authorize_url"] = meta["authorization_endpoint"]
+            client["token_url"] = meta["token_endpoint"]
+            client["revocation_endpoint"] = meta.get("revocation_endpoint")
+        return client
+    meta = await _discover_or_setup_failed(app_state, mapping_data)
+    if not meta.get("registration_endpoint"):
+        raise AppError(502, "OAUTH_CLIENT_SETUP_FAILED",
+                       "AS 元数据无 registration_endpoint，请管理员改用手动配置")
+    payload = build_dcr_payload(f"agent-proxy-{mapping_id}", redirect_uri)
+    try:
+        resp = await app_state.http_client.post(meta["registration_endpoint"],
+                                                json=payload, timeout=15.0)
+    except httpx.HTTPError as exc:
+        raise AppError(502, "OAUTH_CLIENT_SETUP_FAILED",
+                       f"DCR 注册请求失败（{type(exc).__name__}），请改用手动配置") from exc
+    if resp.status_code != 200:
+        raise AppError(502, "OAUTH_CLIENT_SETUP_FAILED",
+                       f"DCR 注册被拒（status={resp.status_code}），请改用手动配置")
+    try:
+        reg = resp.json()
+    except ValueError as exc:
+        raise AppError(502, "OAUTH_CLIENT_SETUP_FAILED",
+                       "DCR 响应非 JSON，请改用手动配置") from exc
+    if not reg.get("client_id"):
+        raise AppError(502, "OAUTH_CLIENT_SETUP_FAILED",
+                       "DCR 响应缺少 client_id，请改用手动配置")
+    token_auth = normalize_token_auth(reg.get("token_endpoint_auth_method"))
+    secret_plain = reg.get("client_secret")
+    scopes = reg.get("scope")
+    await save_oauth_client_row(session, mapping_id, client_id=reg["client_id"],
+                                client_secret_plain=secret_plain, token_auth=token_auth,
+                                authorize_url=None, token_url=None,
+                                scopes=scopes, source="dcr", master_key=master_key)
+    return {"client_id": reg["client_id"], "client_secret": secret_plain,
+            "token_auth": token_auth, "authorize_url": meta["authorization_endpoint"],
+            "token_url": meta["token_endpoint"], "scopes": scopes,
+            "source": "dcr", "revocation_endpoint": meta.get("revocation_endpoint")}

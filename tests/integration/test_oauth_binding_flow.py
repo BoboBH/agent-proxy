@@ -213,6 +213,7 @@ async def test_callback_missing_code_redirects_failed(client):
     assert resp.status_code == 302
     assert "binding=failed&reason=missing_code" in resp.headers["location"]
 
+
 async def test_callback_as_error_reason_urlencoded(client):
     """Task 4 评审携带批：AS error 为 AS 可控字符串，回跳 reason 必须 urlencode
     ——特殊字符经编码后作为 reason 值整体回跳，不得注入为独立 query 参数。"""
@@ -283,12 +284,13 @@ async def test_authorize_on_static_public_400(client):
     assert resp.status_code == 400 and resp.json()["code"] == "OAUTH_NOT_APPLICABLE"
 
 
-async def test_authorize_without_client_400(client):
-    # Task 5 起本用例迁移为 502 OAUTH_CLIENT_SETUP_FAILED（无行 → DCR，上游无元数据）
-    mid = await _create_oauth(client)
+async def test_authorize_without_client_dcr_setup_failed(client):
+    """Task 5 迁移：无 client 行不再 400 NOT_CONFIGURED——先走 DCR（§14.3）；
+    上游 9901 无 well-known → 502 OAUTH_CLIENT_SETUP_FAILED。"""
+    mid = await _create_oauth(client, upstream="http://127.0.0.1:9901/api/v1")
     resp = await _authorize(client, mid)
-    assert resp.status_code == 400
-    assert resp.json()["code"] == "OAUTH_CLIENT_NOT_CONFIGURED"
+    assert resp.status_code == 502
+    assert resp.json()["code"] == "OAUTH_CLIENT_SETUP_FAILED"
 
 
 async def test_authorize_private_or_missing_404(client):
