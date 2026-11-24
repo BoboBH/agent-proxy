@@ -503,3 +503,30 @@ async def test_gzip_sse_upstream_plain_passthrough_no_rewrite_no_sse_active():
                         break                # 首 endpoint+message 事件解压完成即断开
         assert "data: /messages?session_id=gzipstream" in plain.decode("utf-8")
         assert f"/p/{mid}/" not in plain.decode("utf-8")             # 压缩体上无改写
+
+
+async def test_identity_sse_upstream_rewrite_branch_counts_sse_active():
+    """M4 Task 2 评审携带项（identity 豁免）：上游显式声明 content-encoding:
+    identity（RFC 9110 合法的「无压缩」声明，体为明文）+ event-stream —— 不得
+    降级 plain 分支（否则丢 endpoint 改写），照常进改写管线：endpoint 事件改写、
+    流保持打开期间计 sse_active（与 gzip 防御用例互为对称的豁免面）。"""
+    created = await _register_mcp(upstream_url=f"{UPSTREAM_BASE}/sse-identity-stream")
+    mid = created["mapping_id"]
+    async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as mc:
+        async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+            async with c.stream("GET", f"{PROXY}/p/{mid}/sse-identity-stream",
+                                headers={**AUTH, "Accept": "text/event-stream"}) as resp:
+                assert resp.status_code == 200
+                assert resp.headers["content-type"].startswith("text/event-stream")
+                assert resp.headers["content-encoding"].lower() == "identity"  # 头保真
+                # 流保持打开期间采样 gauge：改写分支计 sse_active（=1.0）
+                m = await mc.get(f"{PROXY}/metrics")
+                assert _sse_active_gauge(m.text) == 1.0, \
+                    "identity 声明的 SSE 应进改写分支（计 sse_active）"
+                # 改写分支活体证明：endpoint 事件被改写为代理地址
+                rewritten = False
+                async for line in resp.aiter_lines():
+                    if line.startswith("data: /p/"):
+                        rewritten = True
+                        break
+                assert rewritten, "identity 声明的 SSE 仍须改写 endpoint 事件"

@@ -28,6 +28,9 @@
 - GET /sse-gzip-stream：协商式 gzip SSE 上游——请求 accept-encoding 含 gzip 时
   返回压缩的**长驻** event-stream（content-encoding: gzip，zlib 同步 flush 逐块
   压缩；probe identity 钉 / gzip SSE 防御透传用例），否则明文长驻 event-stream；
+- GET /sse-identity-stream：显式 content-encoding: identity 的**长驻** event-stream
+  （identity = RFC 9110 合法「无压缩」声明，体为明文）——SSE 管线 identity 豁免
+  用例：不得据此降级 plain 分支（照常改写 + 计 sse_active）；
 - GET /sse-slow-hello：响应头迟到 3s + endpoint 事件再迟 3s（probe 总挂钟期限
   定稿用例：分阶段语义 ~6s 误报 ok=true，总期限语义 ~5s 即决 ok=false）；
 - GET /_connections：调试端点，返回当前活跃 SSE 连接数（客户端断开→上游取消
@@ -166,6 +169,24 @@ def build_mcp_sse_app() -> FastAPI:
                 await asyncio.sleep(0.2)
 
         return StreamingResponse(gen_plain(), media_type="text/event-stream")
+
+    @app.get("/sse-identity-stream")
+    async def sse_identity_stream():
+        # M4 Task 2 评审携带项（identity 豁免）：显式 content-encoding: identity
+        # 是 RFC 9110 合法的「无压缩」声明，体为明文——SSE 管线不得据此降级 plain
+        # 分支（否则丢 endpoint 改写）。长驻形态同 /sse-gzip-stream：流保持打开
+        # 期间采样 sse_active gauge（改写分支 +1、plain 分支不计数），单发短流采样必竞态。
+        first = (b"event: endpoint\ndata: /messages?session_id=identitystream\n\n"
+                 b"event: message\ndata: {\"ok\":1}\n\n")
+
+        async def gen():
+            yield first
+            while True:
+                yield b": ping\n\n"
+                await asyncio.sleep(0.2)
+
+        return StreamingResponse(gen(), media_type="text/event-stream",
+                                 headers={"content-encoding": "identity"})
 
     @app.get("/sse-no-endpoint")
     async def sse_no_endpoint():

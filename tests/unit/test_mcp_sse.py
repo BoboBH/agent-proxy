@@ -1,6 +1,8 @@
 """mcp_sse 纯逻辑单测：路径分发辅助（§8.3 路径分发表）+ SseEndpointRewriter
 增量行解析器（§8.3 实现要点——保留行尾、跟踪 event 名、endpoint data 行改写、
 其余行字节级透传、跨 chunk 半行缓冲、空行复位事件名）。"""
+import pytest
+
 from agent_proxy.forward.mcp_sse import (MAX_LINE_BYTES, SseEndpointRewriter,
                                          build_origin_target, registered_endpoint_path)
 
@@ -185,3 +187,22 @@ def test_rewriter_flush_after_overflow_passthrough_remaining():
     rw.feed(b"y" * (MAX_LINE_BYTES + 4))         # 超限冲出 + 进入透传模式
     assert rw.feed(b"tail-no-newline") == []
     assert rw.flush() == [b"tail-no-newline"]
+
+
+@pytest.mark.parametrize("size", [MAX_LINE_BYTES, MAX_LINE_BYTES + 1],
+                         ids=["exact-1MB-buffered-not-flushed", "over-1MB-flushed"])
+def test_rewriter_max_line_bytes_exact_boundary(size):
+    """单行缓冲上限恰边界钉住（M4 Task 2 评审携带项）：缓冲 == 1MB **不冲出**
+    （判定为严格大于 `>`，仍正常缓冲、EOF flush 走正常解析路径产出）；+1 即触发
+    冲出降级透传——防 `>=` 式 off-by-one 回归。"""
+    rw = SseEndpointRewriter("m1m2m3m4m5m6")
+    blob = b"x" * size
+    out = rw.feed(blob)                          # 无换行单喂
+    if size == MAX_LINE_BYTES:
+        assert out == []                         # 恰达上限：仍缓冲（未冲出）
+        assert rw.flush() == [blob]              # EOF 残余走正常解析路径原样产出
+        assert rw.take_trace_records() == []
+    else:
+        assert out == [blob]                     # 越界 1 字节：立即冲出降级透传
+        assert rw.flush() == []                  # 缓冲已空
+        assert rw.take_trace_records() == []     # 降级行不产 trace 记录

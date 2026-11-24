@@ -234,9 +234,13 @@ async def stream_sse_forward(app_state, mapping_data: dict, request: Request) ->
                     if k.lower() == "content-encoding"), "")
     # M4 评审携带项（gzip SSE 防御）：非空 content-encoding 的「SSE 形态」响应
     # 降级 plain 分支——aiter_raw 透传压缩字节，rewriter 无法在压缩体上按行解析
-    # （不可能改写）且会把压缩噪声记进 trace；原样透传头体一致，压缩流照常增量下发
+    # （不可能改写）且会把压缩噪声记进 trace；原样透传头体一致，压缩流照常增量下发。
+    # identity 豁免（M4 Task 2 评审）：显式 content-encoding: identity 是 RFC 9110
+    # 合法的「无压缩」声明，体为明文、rewriter 可正常解析——不降级（与 trace.py
+    # 刚建立的 identity=无压缩二进制语义一致），照常进改写管线计 sse_active。
+    # 即降级条件为 resp_ce.lower() not in ("", "identity")（真压缩编码才降级）
     is_sse = (status == 200 and "text/event-stream" in resp_ct.lower()
-              and not resp_ce)
+              and resp_ce.lower() in ("", "identity"))
 
     if not is_sse:
         # 同源重定向防护（§8.1 第 7 条「同源 Location 永不回传」，评审 Issue 1）：
@@ -338,7 +342,15 @@ async def probe_sse_mapping(app_state, mapping_data: dict) -> dict:
     探测出站钉 accept-encoding: identity（M4 评审携带项）：转发管线 aiter_raw
     不解压，上游若按协商压缩 SSE，probe 读到压缩体无法解析 endpoint 事件（误报
     ok=false）；probe 是唯一要解析响应体的路径，钉 identity 读明文即「测的即真实
-    路径」——与转发侧压缩字节透传（不解析载荷）不冲突。
+    路径」——与转发侧压缩字节透传（不解析载荷）不冲突。该钉直接覆盖存储
+    upstream_headers 中的 accept-encoding（若有）：探测需明文解析，存储的协商值
+    不适用于 probe 语义（转发出站仍以存储/调用方协商为准，见 build_outbound_headers）。
+
+    已知限制（identity 钉下的探测盲区，M4 Task 2 评审注明）：上游「对 gzip 协商
+    压缩 event-stream」的形态无法检测——probe 钉 identity 读到明文判 ok=true，
+    但真实客户端协商 gzip 时上游回压缩 event-stream，转发侧由 gzip SSE 防御降级
+    plain 透传（endpoint 不改写），该类客户端实际不可用。即 probe ok=true 只证明
+    identity 形态可用，不排除压缩协商形态不可用（探测面窄于真实转发面）。
     """
     stored = mapping_data["upstream_headers"] or {}
     headers = build_outbound_headers(stored, {"Accept": "text/event-stream"},
