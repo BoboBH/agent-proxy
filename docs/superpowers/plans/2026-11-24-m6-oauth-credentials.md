@@ -3907,6 +3907,8 @@ git commit -m "test(M6): 安全专项（state 过期/白名单精确匹配/全�
 10. **client 行密文损坏的用户提示精度（Task 7 评审 Minor 3）**：manual client 的 client_secret 密文不可解（MASTER_KEY 变更）时刷新按不清行处理、仅本请求 401 引导「重新授权」——但 client 行损坏重新授权无法自愈（需 admin 重新 PUT client 覆盖）；M7 页面对该形态区分提示（接口侧可后续细分 config_invalid 回告码）。
 11. **unbind 密文损坏分支代码重复（Task 7 评审 Minor 4）**：与正常解绑尾段的 metric/审计/mapping_id 三行重复，可提取 `_finish_unbind` 辅助函数；纯风格重构不急。
 12. **刷新锁属主校验的 e2e 形态（Task 7 评审 Minor 6）**：`release_refresh_lock` 属主语义目前仅直操 Redis 单元面钉住；慢 token 端点 >30s TTL 的真实属主窗口无 e2e（脚本化需 30s+ 级时延，测试成本高），并发刷新单飞用例间接覆盖释放路径。
+13. **等待路径 decrypt_text 未包裹（M6 Task 5/6 评审 Minor 3）**：`_wait_for_others_refresh` 轮询读到的新刷新行解密失败（密钥轮换窗口）→ 500；几乎不可达，M4 前统一处理或加 try 兜底。
+14. **front_redirect origin 大小写敏感（M6 Task 5/6 评审 Minor 6）**：非本次引入，仅可用性误伤；如需收敛改 host.lower() 比较。
 
 ## 自查记录（对照任务要求）
 
