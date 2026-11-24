@@ -1,6 +1,6 @@
 # agent-proxy 部署文档
 
-> 适用版本：main 分支（M7 完成 + 收尾批次，pytest 479 基线）。
+> 适用版本：main 分支（M7 完成 + 收尾批次，pytest 480 基线）。
 > 对应设计：`docs/superpowers/specs/2026-11-21-agent-proxy-design.md` §12.1（部署形态）。
 
 ## 1. 架构与组件

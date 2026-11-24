@@ -926,7 +926,7 @@ sequenceDiagram
 
 | 指标 | 类型 | 标签 | 说明 |
 |---|---|---|---|
-| `ap_requests_total` | Counter | route（mgmt/proxy/builtin/admin）、type（http/mcp）、status | 请求计数 |
+| `ap_requests_total` | Counter | route（mgmt/proxy/builtin/admin）、type（http/mcp）、status | 请求计数 |（实现注记：route 另有 ops/other 兜底枚举；非代理路由 type="-"——实现如实，设计表列主流值）
 | `ap_request_duration_seconds` | Histogram | route、type | 端到端延迟 |
 | `ap_upstream_duration_seconds` | Histogram | type | 上游耗时（剔除代理自身开销） |
 | `ap_upstream_errors_total` | Counter | type、code | 上游连接失败 / 超时计数 |
