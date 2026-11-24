@@ -36,16 +36,24 @@ def encode_identity(identity: Identity) -> str:
 
 
 def decode_identity(raw: str | bytes) -> Identity | None:
-    """载荷非法（坏 JSON / 缺 user_id / user_id 非 str）→ None（按未登录处理，
-    不抛——会话数据损坏不该变成 500）。"""
+    """载荷非法（坏 JSON / 非对象 / 缺或空 user_id / user_name-role 类型不符）
+    → None（按未登录处理，不抛——会话数据损坏不该变成 500）。"""
     try:
         payload = json.loads(raw)
     except (TypeError, ValueError):
         return None
-    if not isinstance(payload, dict) or not isinstance(payload.get("user_id"), str):
+    if not isinstance(payload, dict):
         return None
-    return Identity(user_id=payload["user_id"],
-                    user_name=payload.get("user_name"), role=payload.get("role"))
+    user_id = payload.get("user_id")
+    user_name = payload.get("user_name")
+    role = payload.get("role")
+    if not user_id or not isinstance(user_id, str):
+        return None                                   # 空 / 缺 / 非 str 一律拒收
+    if user_name is not None and not isinstance(user_name, str):
+        return None
+    if role is not None and not isinstance(role, str):
+        return None
+    return Identity(user_id=user_id, user_name=user_name, role=role)
 
 
 async def create_session(r, identity: Identity, ttl: int) -> str:

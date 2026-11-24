@@ -1,13 +1,16 @@
 """sso 基础层单测（M7，设计 §15.1）：LoginProvider 抽象与 stub 实现、会话键与
 Identity 载荷编解码、Cookie 常量。Redis 存取的集成面见
 tests/integration/test_sso_session.py（真实 Redis）。"""
+import logging
+
 import pytest
 
 from agent_proxy.auth import Identity, TokenInvalidError
 from agent_proxy.sso.login import StubLoginProvider, build_login_provider
 from agent_proxy.sso.session import (SESSION_COOKIE, SESSION_KEY_PREFIX,
-                                     decode_identity, encode_identity,
-                                     new_sid, session_key)
+                                     decode_identity, destroy_session,
+                                     encode_identity, get_session, new_sid,
+                                     session_key)
 
 
 # ---------- LoginProvider 抽象 + stub（§15.1 对接抽象） ----------
@@ -45,6 +48,20 @@ def test_build_login_provider_unknown_impl_not_implemented():
         build_login_provider("banana")                 # 白名单在 config.validate，双保险
 
 
+def test_get_login_provider_returns_same_instance():
+    """进程级单例（评审补充）：两次调用返回同一实例；首尾重置 _provider 做隔离，
+    避免污染其他用例/其他测试文件的 get_settings 缓存面。"""
+    import agent_proxy.sso.login as login_mod
+
+    login_mod._provider = None                         # 重置隔离准备
+    try:
+        first = login_mod.get_login_provider()
+        assert login_mod.get_login_provider() is first
+        assert isinstance(first, StubLoginProvider)
+    finally:
+        login_mod._provider = None                     # 还原，不带走缓存状态
+
+
 # ---------- 会话键 / Cookie 常量 / Identity 载荷 ----------
 
 
@@ -68,3 +85,39 @@ def test_decode_identity_rejects_malformed_payload():
     assert decode_identity('{"no_user_id": 1}') is None
     assert decode_identity('{"user_id": 123}') is None              # user_id 必须 str
     assert decode_identity(b'{"user_id": "bin"}') == Identity(user_id="bin")   # bytes 兼容
+
+
+def test_decode_identity_rejects_non_dict_json():
+    """JSON 合法但非对象（数组 / null）同样按非法载荷处理（评审补充）。"""
+    assert decode_identity("[1]") is None
+    assert decode_identity("null") is None
+
+
+def test_decode_identity_rejects_non_string_fields():
+    assert decode_identity('{"user_id": "u1", "user_name": 123}') is None   # user_name 必须 str
+    assert decode_identity('{"user_id": "u1", "role": 5}') is None          # role 同型校验
+
+
+def test_decode_identity_rejects_empty_user_id():
+    assert decode_identity('{"user_id": ""}') is None               # 空 user_id = 未认证
+
+
+async def test_get_session_redis_error_returns_none_with_warning(caplog):
+    """Redis 异常 → None + WARN 日志（评审补充：fake-Redis 单测钉住降级路径，
+    不抛 500——集成面为 test_sso_session.py / test_cookie_channel.py）。"""
+
+    class _BoomRedis:
+        async def get(self, key):
+            raise RuntimeError("redis down")
+
+    with caplog.at_level(logging.WARNING, logger="agent_proxy"):
+        assert await get_session(_BoomRedis(), "a" * 32) is None
+    assert any(r.levelno == logging.WARNING and "会话读取失败" in r.getMessage()
+               for r in caplog.records)
+
+
+def test_stub_login_url_encodes_crlf_in_return_to():
+    """return_to 组装前 quote(safe='')（评审补充钉住）：\r\n 被编码，无 CRLF 头注入面。"""
+    url = StubLoginProvider().login_url("/admin\r\nX-Injected: 1")
+    assert "\r" not in url and "\n" not in url
+    assert "%0D" in url and "%0A" in url
