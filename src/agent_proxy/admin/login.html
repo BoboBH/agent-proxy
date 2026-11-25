@@ -44,15 +44,15 @@
 // 2) 其余 → 按 StubVerifier 同格式构造信封：stub.<base64url(JSON)>.sig。
 document.getElementById("login-form").addEventListener("submit", function (ev) {
   ev.preventDefault();
-  var uid = document.getElementById("user_id").value.trim();
+  var user_id = document.getElementById("user_id").value.trim();
   var name = document.getElementById("user_name").value.trim();
   var role = document.getElementById("role").value;
-  if (!uid) return;
+  if (!user_id) return;
   var ticket;
-  if (/^\d+$/.test(uid) && !name && !role) {
-    ticket = uid;
+  if (/^\d+$/.test(user_id) && !name && !role) {
+    ticket = user_id;
   } else {
-    var claims = { user_id: /^\d+$/.test(uid) ? parseInt(uid, 10) : uid,
+    var claims = { user_id: /^\d+$/.test(user_id) ? parseInt(user_id, 10) : user_id,
                    user_name: name || null, role: role || null };
     var b64 = btoa(unescape(encodeURIComponent(JSON.stringify(claims))))
       .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");

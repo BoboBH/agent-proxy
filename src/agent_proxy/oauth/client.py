@@ -7,7 +7,7 @@ ensure_client（discovery → DCR 注册 / manual 直读）Task 5 交付。
 
 安全锚点（§14.6）：
 - PKCE(S256) 必须——challenge = BASE64URL(SHA256(verifier))（剥 '='）；
-- state 一次性、600s TTL、绑定 uid（防 CSRF / 顶号）；
+- state 一次性、600s TTL、绑定 user_id（防 CSRF / 顶号）；
 - redirect_uri 精确等于 {EXTERNAL_BASE}/oauth/callback/{mapping_id}；
 - front_redirect 仅允许 CORS_ALLOWED_ORIGINS 精确 origin（防开放重定向）。
 """
@@ -47,7 +47,7 @@ def code_challenge_s256(verifier: str) -> str:
     return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
 
 
-# ---------- state（ap:oauth:state:{state}，一次性 600s 绑 uid） ----------
+# ---------- state（ap:oauth:state:{state}，一次性 600s 绑 user_id） ----------
 
 def new_state() -> str:
     return secrets.token_hex(16)                       # 128bit，URL 安全
@@ -57,9 +57,9 @@ def state_key(state: str) -> str:
     return f"{STATE_KEY_PREFIX}{state}"
 
 
-def encode_state_payload(*, uid: int, mapping_id: str, code_verifier: str,
+def encode_state_payload(*, user_id: int, mapping_id: str, code_verifier: str,
                          front_redirect: str) -> str:
-    return json.dumps({"uid": uid, "mapping_id": mapping_id,
+    return json.dumps({"user_id": user_id, "mapping_id": mapping_id,
                        "code_verifier": code_verifier,
                        "front_redirect": front_redirect}, ensure_ascii=False)
 
@@ -69,12 +69,12 @@ def decode_state_payload(raw: str | bytes) -> dict:
         payload = json.loads(raw)
     except (ValueError, TypeError) as exc:
         raise AppError(400, "OAUTH_STATE_INVALID", "state 载荷非法") from exc
-    required = ("uid", "mapping_id", "code_verifier", "front_redirect")
-    # 类型守卫：uid 必须为 int（收尾批次整数化：拼缓存键 / 落库 proxy_oauth_credential.uid
+    required = ("user_id", "mapping_id", "code_verifier", "front_redirect")
+    # 类型守卫：user_id 必须为 int（收尾批次整数化：拼缓存键 / 落库 proxy_oauth_credential.user_id
     # BIGINT 的输入；str/bool/容器等畸形一律 OAUTH_STATE_INVALID），mapping_id 必须为 str。
     if (not isinstance(payload, dict)
             or not all(k in payload for k in required)
-            or not isinstance(payload["uid"], int) or isinstance(payload["uid"], bool)
+            or not isinstance(payload["user_id"], int) or isinstance(payload["user_id"], bool)
             or not isinstance(payload["mapping_id"], str)):
         raise AppError(400, "OAUTH_STATE_INVALID", "state 载荷非法")
     return payload

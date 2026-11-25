@@ -90,7 +90,7 @@ class RequestContextMiddleware:
                 audit.info(json.dumps({
                     "ts": datetime.now(timezone.utc).astimezone().isoformat(timespec="milliseconds"),
                     "request_id": request_id,
-                    "user_id": state.get("uid", ""),
+                    "user_id": state.get("user_id", ""),
                     "user_name": state.get("user_name", ""),
                     "action": state.get("audit_action", route),
                     "mapping_id": state.get("mapping_id", ""),

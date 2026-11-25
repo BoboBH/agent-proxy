@@ -22,7 +22,7 @@ class TokenServiceError(AppError):
 @dataclass(frozen=True)
 class Identity:
     """user_id 为 int（收尾批次：内部系统 user_id 整数化——proxy_mapping.owner_uid /
-    proxy_oauth_credential.uid 均为 BIGINT，整条传递链保持 int，杜绝 str/int 混比）。"""
+    proxy_oauth_credential.user_id 均为 BIGINT，整条传递链保持 int，杜绝 str/int 混比）。"""
     user_id: int
     user_name: str | None = None
     role: str | None = None
@@ -53,13 +53,11 @@ class StubVerifier:
         if not isinstance(payload, dict):
             raise TokenInvalidError("token 格式非法")
         user_id = payload.get("user_id")
-        if isinstance(user_id, int) and not isinstance(user_id, bool):
-            uid = user_id
-        elif isinstance(user_id, str) and user_id.isascii() and user_id.isdigit():
-            uid = int(user_id)
-        else:
+        if isinstance(user_id, str) and user_id.isascii() and user_id.isdigit():
+            user_id = int(user_id)
+        elif not isinstance(user_id, int) or isinstance(user_id, bool):
             raise TokenInvalidError("user_id claim 必须为整数")
-        return Identity(user_id=uid,
+        return Identity(user_id=user_id,
                         user_name=payload.get("user_name"), role=payload.get("role"))
 
 

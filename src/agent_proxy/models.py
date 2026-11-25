@@ -42,7 +42,9 @@ class OAuthClient(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     mapping_id: Mapped[str] = mapped_column(String(16), unique=True, index=True)
     client_id: Mapped[str] = mapped_column(String(256))
-    client_secret: Mapped[str | None] = mapped_column(Text)
+    # 终审后精修：Fernet base64 膨胀 4/3，VARCHAR(512) 覆盖明文 secret（超长写库
+    # 显式 1406 fail-fast，可接受）；不用无界 TEXT
+    client_secret: Mapped[str | None] = mapped_column(String(512))
     token_auth: Mapped[str] = mapped_column(
         Enum("client_secret_basic", "client_secret_post", "none", name="oauth_token_auth"),
         default="client_secret_post")
@@ -58,16 +60,20 @@ class OAuthClient(Base):
 class OAuthCredential(Base):
     __tablename__ = "proxy_oauth_credential"
     __table_args__ = (
-        UniqueConstraint("mapping_id", "uid", name="uk_mapping_uid"),
+        UniqueConstraint("mapping_id", "user_id", name="uk_mapping_user_id"),
         {"mysql_engine": "InnoDB", "mysql_charset": "utf8mb4"},
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     mapping_id: Mapped[str] = mapped_column(String(16))
-    # 收尾批次整数化：与 proxy_mapping.owner_uid 同型（BIGINT，索引保留）
-    uid: Mapped[int] = mapped_column(BigInteger, index=True)
-    access_token: Mapped[str] = mapped_column(Text)
-    refresh_token: Mapped[str | None] = mapped_column(Text)
+    # 收尾批次整数化：与 proxy_mapping.owner_uid 同型（BIGINT，索引保留）；
+    # 精修批改名 uid → user_id（与 Identity.user_id / 审计字段名全链统一）
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    # 终审后精修：加密列 VARCHAR 化（Fernet base64 膨胀 4/3——access_token 4096
+    # 覆盖明文 ~3KB 长 JWT；refresh_token 2000）。超长写库显式 1406 fail-fast
+    # 可接受；upstream_headers（整个 JSON 变长）是唯一保留 TEXT 的列。
+    access_token: Mapped[str] = mapped_column(String(4096))
+    refresh_token: Mapped[str | None] = mapped_column(String(2000))
     expires_at: Mapped[datetime | None] = mapped_column(DateTime)
     scope: Mapped[str | None] = mapped_column(String(512))
     status: Mapped[str] = mapped_column(

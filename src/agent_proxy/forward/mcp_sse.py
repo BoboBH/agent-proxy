@@ -170,7 +170,7 @@ async def stream_sse_forward(app_state, mapping_data: dict, request: Request) ->
     client: httpx.AsyncClient = app_state.http_client
     mapping_id = mapping_data["mapping_id"]
     request_id = request.state.request_id
-    uid = request.state.uid
+    user_id = request.state.user_id
 
     sub_path = split_sub_path(request.scope["path"], mapping_id)  # 与 api 层同检（双保险）
     assert_safe_sub_path(sub_path)
@@ -195,7 +195,7 @@ async def stream_sse_forward(app_state, mapping_data: dict, request: Request) ->
     outbound["connection"] = "close"
 
     def _log_request() -> None:
-        trace.log_request(request_id, uid, mapping_id, request.method, target, outbound,
+        trace.log_request(request_id, user_id, mapping_id, request.method, target, outbound,
                           body=b"", body_bytes=0)
 
     start = time.monotonic()

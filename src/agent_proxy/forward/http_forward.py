@@ -87,7 +87,7 @@ async def stream_http_forward(app_state, mapping_data: dict, request: Request,
     client: httpx.AsyncClient = app_state.http_client
     mapping_id = mapping_data["mapping_id"]
     request_id = request.state.request_id
-    uid = request.state.uid
+    user_id = request.state.user_id
 
     sub_path = split_sub_path(request.scope["path"], mapping_id)
     assert_safe_sub_path(sub_path)
@@ -123,7 +123,7 @@ async def stream_http_forward(app_state, mapping_data: dict, request: Request,
             yield chunk
 
     def _log_request() -> None:
-        trace.log_request(request_id, uid, mapping_id, request.method, target, outbound,
+        trace.log_request(request_id, user_id, mapping_id, request.method, target, outbound,
                           body=bytes(req_capture), body_bytes=body_size,
                           content_type=request.headers.get("content-type", ""),
                           content_encoding=request.headers.get("content-encoding", ""))
@@ -192,7 +192,7 @@ async def stream_http_forward(app_state, mapping_data: dict, request: Request,
         hop_headers = {k: v for k, v in outbound.items() if k.lower() != "content-length"}
         # M2 遗留债务 3/Minor 2：跳间 URL 写 trace（phase=request，与首跳共用
         # request_id，可回放整条重定向链）；置于 send 之前——跳间连接失败同样留痕
-        trace.log_request(request_id, uid, mapping_id, method, target, hop_headers,
+        trace.log_request(request_id, user_id, mapping_id, method, target, hop_headers,
                           body=b"", body_bytes=0)
         try:
             # 真流式（评审 Critical）：跟随跳必须 build_request + send(stream=True)，

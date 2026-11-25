@@ -30,8 +30,8 @@ def _request(headers: list[tuple[bytes, bytes]], redis: _FakeRedis | None = None
 
 
 def _session(sid: str, **claims) -> _FakeRedis:
-    uid = claims.pop("user_id")
-    return _FakeRedis({session_key(sid): encode_identity(Identity(user_id=uid, **claims))})
+    user_id = claims.pop("user_id")
+    return _FakeRedis({session_key(sid): encode_identity(Identity(user_id=user_id, **claims))})
 
 
 async def test_missing_authorization_header():
@@ -49,13 +49,13 @@ async def test_non_bearer_scheme_rejected():
 
 
 async def test_valid_bearer_writes_state():
-    """身份 user_id 为 int（收尾批次整数化）：Bearer 信封票据 → int 身份 → state.uid。"""
+    """身份 user_id 为 int（收尾批次整数化）：Bearer 信封票据 → int 身份 → state.user_id。"""
     req = _request([(b"authorization", f"Bearer {make_token(777, role='admin')}".encode())])
     identity = await get_current_identity(req)
     assert identity.user_id == 777 and isinstance(identity.user_id, int)
     assert identity.role == "admin"
     assert identity.user_name == "张三"
-    assert req.state.uid == 777
+    assert req.state.user_id == 777
     assert req.state.user_name == "张三"
 
 
@@ -75,7 +75,7 @@ async def test_cookie_session_fallback_resolves_identity():
     req = _request([(b"cookie", f"{SESSION_COOKIE}={sid}".encode())], redis=redis)
     identity = await get_current_identity(req)
     assert identity.user_id == 555 and identity.user_name == "李四"
-    assert req.state.uid == 555 and req.state.user_name == "李四"   # 审计身份照常写入
+    assert req.state.user_id == 555 and req.state.user_name == "李四"   # 审计身份照常写入
 
 
 async def test_bearer_precedence_over_cookie_session():
@@ -123,7 +123,7 @@ async def test_basic_scheme_with_valid_cookie_uses_session_identity():
                     (b"cookie", f"{SESSION_COOKIE}={sid}".encode())], redis=redis)
     identity = await get_current_identity(req)
     assert identity.user_id == 555 and identity.user_name == "李四"
-    assert req.state.uid == 555
+    assert req.state.user_id == 555
 
 
 def test_is_admin_matches_role():

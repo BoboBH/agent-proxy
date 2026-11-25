@@ -82,7 +82,7 @@ async def test_full_manual_flow_success_redirect_and_encrypted_storage(client, a
     async with app.state.sessionmaker() as session:
         row = (await session.execute(select(OAuthCredential).where(
             OAuthCredential.mapping_id == mid))).scalar_one()
-    assert row.uid == 888 and row.access_token.startswith("gAAAA")
+    assert row.user_id == 888 and row.access_token.startswith("gAAAA")
     assert "at-" not in row.access_token                  # 明文不落库
     assert decrypt_text(row.access_token, MASTER) == as_state["issued"][-1]["access_token"]
     assert row.refresh_token.startswith("gAAAA")
@@ -97,7 +97,7 @@ async def test_binding_authorizing_then_bound(client):
     b = await client.get(f"/api/v1/builtin-mappings/{mid}/binding", headers=U888)
     assert b.json()["binding"] == "authorizing"          # state 存续期间
     b999 = await client.get(f"/api/v1/builtin-mappings/{mid}/binding", headers=U999)
-    assert b999.json()["binding"] == "unbound"           # 绑定按 uid 隔离
+    assert b999.json()["binding"] == "unbound"           # 绑定按 user_id 隔离
     cb, _ = await _bind(client, mid)
     assert cb.status_code == 302
     b = await client.get(f"/api/v1/builtin-mappings/{mid}/binding", headers=U888)
@@ -121,7 +121,7 @@ async def test_authorization_url_shape_and_state_in_redis(client, app):
     assert 0 < ttl <= 600                                # OAUTH_STATE_TTL
     import json as jsonlib
     payload = jsonlib.loads(await app.state.redis.get(key))
-    assert payload["uid"] == 888 and payload["mapping_id"] == mid
+    assert payload["user_id"] == 888 and payload["mapping_id"] == mid
     assert len(payload["code_verifier"]) == 43
     assert payload["front_redirect"] == FRONT
 
@@ -135,7 +135,7 @@ async def test_rebind_upserts_single_credential_row(client, app):
     async with app.state.sessionmaker() as session:
         rows = (await session.execute(select(OAuthCredential).where(
             OAuthCredential.mapping_id == mid))).scalars().all()
-    assert len(rows) == 1                                # uk(mapping_id, uid) upsert
+    assert len(rows) == 1                                # uk(mapping_id, user_id) upsert
     assert decrypt_text(rows[0].access_token, MASTER) != first_token
 
 

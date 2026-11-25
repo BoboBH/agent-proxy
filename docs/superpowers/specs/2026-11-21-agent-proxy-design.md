@@ -240,7 +240,7 @@ CREATE TABLE proxy_oauth_client (
   id             BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   mapping_id     VARCHAR(16)  NOT NULL COMMENT '关联的公共映射',
   client_id      VARCHAR(256) NOT NULL,
-  client_secret  TEXT         NULL COMMENT '加密存储；公共客户端可空',
+  client_secret  VARCHAR(512)  NULL COMMENT '加密存储；公共客户端可空（Fernet base64 4/3 膨胀，定长上限显式 fail-fast）',
   token_auth     ENUM('client_secret_basic','client_secret_post','none') NOT NULL DEFAULT 'client_secret_post',
   authorize_url  VARCHAR(2048) NULL COMMENT '手动模式填写；DCR 模式留空',
   token_url      VARCHAR(2048) NULL COMMENT '手动模式填写；DCR 模式留空',
@@ -254,16 +254,16 @@ CREATE TABLE proxy_oauth_client (
 CREATE TABLE proxy_oauth_credential (
   id            BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   mapping_id    VARCHAR(16) NOT NULL,
-  uid           BIGINT      NOT NULL COMMENT '内部系统 user_id 为整数',
-  access_token  TEXT NOT NULL COMMENT '强制加密存储（MASTER_KEY）',
-  refresh_token TEXT NULL COMMENT '加密存储',
+  user_id       BIGINT      NOT NULL COMMENT '内部系统用户标识（整数）',
+  access_token  VARCHAR(4096) NOT NULL COMMENT '强制加密存储（MASTER_KEY）；Fernet base64 4/3 膨胀，覆盖明文 ~3KB 长 JWT，超长写库 1406 fail-fast',
+  refresh_token VARCHAR(2000) NULL COMMENT '加密存储',
   expires_at    DATETIME NULL,
   scope         VARCHAR(512) NULL,
   status        ENUM('active','invalid') NOT NULL DEFAULT 'active',
   created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  UNIQUE KEY uk_mapping_uid (mapping_id, uid),
-  KEY idx_uid (uid)
+  UNIQUE KEY uk_mapping_user_id (mapping_id, user_id),
+  KEY ix_proxy_oauth_credential_user_id (user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户对公共映射的 OAuth 凭证（每用户一份）';
 ```
 
@@ -271,10 +271,10 @@ CREATE TABLE proxy_oauth_credential (
 
 | key | 用途 | TTL |
 |---|---|---|
-| `ap:oauth:state:{state}` | 授权流程 state（uid、mapping_id、code_verifier、front_redirect），一次性 | 600s |
-| `ap:lock:refresh:{mapping_id}:{uid}` | 凭证刷新互斥锁 | 30s |
-| `ap:oauth:authz:{mapping_id}:{uid}` | 授权进行中索引（binding 查询的 authorizing 态判定；authorize 写入、回调成功 / 解绑删除），M6 实现增量 | 600s |
-| `ap:cred:{mapping_id}:{uid}` | 凭证缓存（绑定 / 解绑 / 刷新时失效） | 60s |
+| `ap:oauth:state:{state}` | 授权流程 state（user_id、mapping_id、code_verifier、front_redirect），一次性 | 600s |
+| `ap:lock:refresh:{mapping_id}:{user_id}` | 凭证刷新互斥锁 | 30s |
+| `ap:oauth:authz:{mapping_id}:{user_id}` | 授权进行中索引（binding 查询的 authorizing 态判定；authorize 写入、回调成功 / 解绑删除），M6 实现增量 | 600s |
+| `ap:cred:{mapping_id}:{user_id}` | 凭证缓存（绑定 / 解绑 / 刷新时失效） | 60s |
 
 ---
 
@@ -362,7 +362,7 @@ HTTP 200
 
 规则：
 
-1. **鉴权**：必须系统 JWT，且 uid = owner_uid；非注册者一律 404（隐藏存在性），与其他管理接口一致；
+1. **鉴权**：必须系统 JWT，且 user_id = owner_uid；非注册者一律 404（隐藏存在性），与其他管理接口一致；
 2. **参数解析**：`proxy_url` 为 URL 编码后的代理地址，服务端解析 `/p/{mapping_id}` 段定位映射；也接受直接传 12 位 mapping_id；无法解析为本服务代理地址 → 400 `INVALID_PARAM`；
 3. **加载**：与详情/转发共用 cache-aside 加载逻辑（Redis → MySQL 回填）；
 4. **审计**：详情（`GET /{mapping_id}`）与 resolve 两个接口都会输出真实 header，是管理域中仅有的两个；每次调用均记审计日志（`action=view_credentials`）；
@@ -412,7 +412,7 @@ HTTP 200
 ```python
 @dataclass(frozen=True)
 class Identity:
-    user_id: int            # 必须，全局唯一（内部系统 user_id 为整数）；即映射归属 owner_uid 的来源（下文 uid ≡ user_id）
+    user_id: int            # 必须，全局唯一（内部系统 user_id 为整数）；即映射归属 owner_uid 的来源
     user_name: str | None   # 显示名，仅用于审计
     role: str | None        # 角色；== ADMIN_ROLE（默认 "admin"）时为管理员（见 14.2）
 
@@ -474,7 +474,7 @@ sequenceDiagram
     participant X as agent-proxy
     participant S as 真实HTTP服务
     A->>X: POST /p/kL8zN2vQ7wR1/orders?status=paid（JWT）
-    X->>X: 验 JWT，uid=owner？查缓存/回源取映射
+    X->>X: 验 JWT，user_id=owner_uid？查缓存/回源取映射
     Note over X: 还原 URL：http://bobo.com/api/v1 + /orders?status=paid<br/>出站 header = 存储 header 重建
     X->>S: POST http://bobo.com/api/v1/orders?status=paid
     S-->>X: 200 JSON（流式）
@@ -587,7 +587,7 @@ sequenceDiagram
 | 8 | CORS | 管理接口供浏览器配置页直连时需跨域：`CORS_ALLOWED_ORIGINS` 配置平台页面域名白名单（仅管理域开启）；`/p/*` 默认不开 CORS（Agent 运行时为服务端直连，如需浏览器直连再单独开启） |
 | 9 | 重定向 | 同源重定向内部跟随、`Location` 永不回传；跨源原样透传（见 8.1 第 7 条） |
 | 10 | 已知限制（一期接受） | ① HTTP 响应体不解析不改写：上游响应体中若含真实地址绝对链接（如分页 `next`）会原样到达 Agent——**凭据（header）不受影响**，建议上游返回相对路径；MCP JSON-RPC 载荷不含 URL，不受影响。② DNS rebinding（注册时校验、请求时重新解析）一期不做强防护。③ SSE 半开连接（客户端异常消失）依赖 TCP keepalive 检测，一期不设最长连接时长 |
-| 11 | OAuth 凭证（M6） | PKCE(S256) 必须；state 一次性 + 600s TTL + 绑定 uid；redirect_uri 精确等于 `{EXTERNAL_BASE}/oauth/callback/{mapping_id}`；access/refresh token 强制加密落库；回跳页仅允许 `CORS_ALLOWED_ORIGINS` 域（防开放重定向）；token 与 client_secret 不入任何日志，绑定/解绑/刷新入审计日志 |
+| 11 | OAuth 凭证（M6） | PKCE(S256) 必须；state 一次性 + 600s TTL + 绑定 user_id；redirect_uri 精确等于 `{EXTERNAL_BASE}/oauth/callback/{mapping_id}`；access/refresh token 强制加密落库；回跳页仅允许 `CORS_ALLOWED_ORIGINS` 域（防开放重定向）；token 与 client_secret 不入任何日志，绑定/解绑/刷新入审计日志 |
 
 ---
 
@@ -645,7 +645,7 @@ sequenceDiagram
 **格式（JSON 行，同 request_id 可完整回放一次调用）**：
 
 ```json
-{"ts":"2026-11-21T10:00:00.123+08:00","request_id":"9f8e7d","uid":"u999","mapping_id":"aB3xK9mQ2wR4","phase":"request","method":"POST","url":"https://bobo.com/api/v1/orders","headers":{"X-API-Key":"sk-a****-key(len=13)","Content-Type":"appl****json(len=16)"},"body_bytes":212}
+{"ts":"2026-11-21T10:00:00.123+08:00","request_id":"9f8e7d","user_id":888,"mapping_id":"aB3xK9mQ2wR4","phase":"request","method":"POST","url":"https://bobo.com/api/v1/orders","headers":{"X-API-Key":"sk-a****-key(len=13)","Content-Type":"appl****json(len=16)"},"body_bytes":212}
 （metadata 模式所有 header 值均为指纹——上例 Content-Type 亦不例外；body 模式下非敏感头才显示原值）
 {"ts":"...","request_id":"9f8e7d","phase":"response","status":200,"duration_ms":123,"body":"{\"orders\":[...]}","body_truncated":false}
 {"ts":"...","request_id":"...","phase":"sse_event","event":"message","data":"{\"jsonrpc\":\"2.0\",...}","data_truncated":false}
@@ -790,7 +790,7 @@ Agent 内置若干外部 MCP：地址固定、不因人而变；但 MCP 提供�
 三个角色变化：
 
 - **公共映射**：平台管理员（agent 配置管理后台）一次性创建，地址固定，任意有效用户可调用；
-- **用户绑定**：用户对某公共映射完成一次 OAuth 授权后，凭证（access/refresh token）存于代理，`(mapping_id, uid)` 唯一；
+- **用户绑定**：用户对某公共映射完成一次 OAuth 授权后，凭证（access/refresh token）存于代理，`(mapping_id, user_id)` 唯一；
 - **按用户注入**：调用时代理注入**该调用者**的 `Authorization: Bearer <token>`——这是「仅还原注册者 header」原则（8.1）的唯一例外。
 
 ### 14.2 公共映射与鉴权矩阵
@@ -800,7 +800,7 @@ Agent 内置若干外部 MCP：地址固定、不因人而变；但 MCP 提供�
 | | private（现有默认） | public（内置 MCP） |
 |---|---|---|
 | 创建 / 改 / 删 | 注册者本人 | 仅管理员（`Identity.role` == `ADMIN_ROLE`，默认 `admin`） |
-| 调用（`/p/{id}/...`） | 仅注册者（uid=owner） | 任意有效 JWT 用户 |
+| 调用（`/p/{id}/...`） | 仅注册者（user_id=owner_uid） | 任意有效 JWT 用户 |
 | upstream_url | 用户填写，因人而异 | 固定地址 |
 | auth_mode | `static`（默认） | `static`（共享静态凭据，无需绑定）或 `oauth`（按用户绑定注入） |
 | resolve / 详情回显 | 注册者 | 仅 admin（普通用户信息由列表接口提供） |
@@ -826,15 +826,15 @@ sequenceDiagram
     U->>P: 点击连接内置 MCP
     P->>X: POST /builtin-mappings/{id}/authorize（JWT, front_redirect）
     X->>X: 取/创建 OAuth client（DCR 或手动）
-    X->>X: 生成 state + PKCE verifier 入 Redis（600s，含 uid、mapping_id、front_redirect）
+    X->>X: 生成 state + PKCE verifier 入 Redis（600s，含 user_id、mapping_id、front_redirect）
     X-->>P: authorization_url
     P->>U: 浏览器跳转提供方授权页
     U->>A: 登录并同意授权
     A->>X: GET /oauth/callback?code&state
-    X->>X: 校验 state（一次性）→ 取 uid 与 verifier
+    X->>X: 校验 state（一次性）→ 取 user_id 与 verifier
     X->>A: POST token 端点（code + code_verifier + client 凭证）
     A-->>X: access_token / refresh_token / expires_in
-    X->>X: 加密落库 proxy_oauth_credential(mapping_id, uid)
+    X->>X: 加密落库 proxy_oauth_credential(mapping_id, user_id)
     X-->>U: 302 → front_redirect?binding=success（域白名单校验）
     P->>X: GET .../binding 轮询 → bound
     P->>U: 页面把内置 MCP 的公共 proxy_url 存入 Agent
@@ -842,7 +842,7 @@ sequenceDiagram
 
 绑定状态机：`unbound → authorizing（state 存续期间）→ bound(active) → invalid（refresh 失败 / 提供方吊销）`；invalid 后调用一律 401，页面引导重新授权；用户可主动 DELETE 解绑（支持时同时调用上游 revoke）。
 
-> **代理实现注记（M6，随实现评审回写）**：state 一次性消费以 Redis MULTI 事务管道（GET+DEL）原子取删——兼容部署环境 Redis 3.0（无 `GETDEL` 命令；6.2+ 行为等价，实现机制在代码注释钉死）；`authorizing` 态判定依赖增量索引键 `ap:oauth:authz:{mapping_id}:{uid}`（§5.3 表已补；authorize 写入、回调成功 / 解绑删除）。刷新互斥锁 `ap:lock:refresh`（SET NX EX 30）释放带属主校验（Lua compare-and-delete：锁值 == 持锁 request_id 才删——防持锁超 TTL 后误删继任者新锁引发重复刷新）。刷新失败分级（评审定稿）：AS 业务拒绝（400/401/403）→ `invalid` 即调用 401，页面引导重新授权（upsert 重新授权复位 active）；瞬时失败（网络 / discovery / token 端点 5xx·429 / 响应畸形）→ 凭证原状保留，仅本请求 401、下轮重试（不强迫用户重新授权）。解绑双 revoke best-effort（access 与配对 refresh 各一次，任一吊销连带配对作废；manual 模式无 revoke 端点配置列 → 仅删本地凭证，dcr 客户端经 discovery 取 `revocation_endpoint`）。
+> **代理实现注记（M6，随实现评审回写）**：state 一次性消费以 Redis MULTI 事务管道（GET+DEL）原子取删——兼容部署环境 Redis 3.0（无 `GETDEL` 命令；6.2+ 行为等价，实现机制在代码注释钉死）；`authorizing` 态判定依赖增量索引键 `ap:oauth:authz:{mapping_id}:{user_id}`（§5.3 表已补；authorize 写入、回调成功 / 解绑删除）。刷新互斥锁 `ap:lock:refresh`（SET NX EX 30）释放带属主校验（Lua compare-and-delete：锁值 == 持锁 request_id 才删——防持锁超 TTL 后误删继任者新锁引发重复刷新）。刷新失败分级（评审定稿）：AS 业务拒绝（400/401/403）→ `invalid` 即调用 401，页面引导重新授权（upsert 重新授权复位 active）；瞬时失败（网络 / discovery / token 端点 5xx·429 / 响应畸形）→ 凭证原状保留，仅本请求 401、下轮重试（不强迫用户重新授权）。解绑双 revoke best-effort（access 与配对 refresh 各一次，任一吊销连带配对作废；manual 模式无 revoke 端点配置列 → 仅删本地凭证，dcr 客户端经 discovery 取 `revocation_endpoint`）。
 
 ### 14.5 调用时的凭证注入
 
@@ -850,7 +850,7 @@ sequenceDiagram
 公共映射调用（/p/{id}/...）:
   鉴权 JWT → 任意有效用户放行（visibility=public）
   auth_mode=static → 出站 header = 公共静态 headers 还原（无需绑定）
-  auth_mode=oauth  → 查凭证 (mapping_id, uid): 无 / invalid → 401 OAUTH_BINDING_REQUIRED
+  auth_mode=oauth  → 查凭证 (mapping_id, user_id): 无 / invalid → 401 OAUTH_BINDING_REQUIRED
                       expires_at - 60s < now → refresh_token 刷新（Redis 锁防并发；AS 业务拒绝 → status=invalid → 401；瞬时失败保留凭证仅本请求 401、下轮重试）
                       出站 header = 公共静态 headers + Authorization: Bearer <该用户 access_token>
 ```
@@ -859,7 +859,7 @@ SSE 长连接建连时注入一次；连接存续期间 token 过期不影响已
 
 ### 14.6 安全要点
 
-- PKCE(S256) 必须；state 一次性、600s TTL、绑定 uid（防 CSRF / 顶号）；
+- PKCE(S256) 必须；state 一次性、600s TTL、绑定 user_id（防 CSRF / 顶号）；
 - redirect_uri 精确等于 `{EXTERNAL_BASE}/oauth/callback/{mapping_id}`；
 - access / refresh token **强制**加密落库（复用 `MASTER_KEY`，不受 `ENCRYPT_AT_REST` 开关影响）；
 - 回跳 front_redirect 仅允许 `CORS_ALLOWED_ORIGINS` 白名单域，防开放重定向；
@@ -976,7 +976,7 @@ sequenceDiagram
 | 公共映射（内置 MCP） | proxy_mapping 增加 visibility（private/public）、name 与 auth_mode（static 共享静态凭据 / oauth 按用户绑定）；public 由管理员创建、任意有效用户可调；复用同一转发管线 |
 | OAuth 客户端模式 | DCR（RFC 7591）优先，自动 discovery AS 元数据；不支持 DCR 的提供方由管理员手动配置 client；redirect_uri 回调到代理 |
 | 管理员标识 | `Identity.role` == `ADMIN_ROLE`（默认 `admin`）即为管理员；身份由第三方校验接口解码提供（user_id / user_name / role） |
-| OAuth 凭证托管 | 每用户一份凭证 (mapping_id, uid) 唯一，强制加密落库；调用时注入 Authorization: Bearer（「仅还原注册者 header」的唯一例外）；过期自动刷新（Redis 锁防并发） |
+| OAuth 凭证托管 | 每用户一份凭证 (mapping_id, user_id) 唯一，强制加密落库；调用时注入 Authorization: Bearer（「仅还原注册者 header」的唯一例外）；过期自动刷新（Redis 锁防并发） |
 | 里程碑归属 | 公共映射 + OAuth 凭证托管为一期 M6；Web 管理页面 + Prometheus 指标完善为一期 M7（M1 建表预留全部字段并接 /metrics 基础埋点） |
 | 配置测试接口 | 个人映射与公共映射均提供 test（6.6）：复用转发管线实测真实路径；MCP 用 initialize / SSE 握手硬判定，HTTP 默认连通判定 + 可选 test_request 严格判定；仅限已注册映射，随 M2–M4 交付 |
 | 管理页面 | 本服务托管（Jinja2 + 原生 JS，无前端构建链），**无注册 / 登录页面**；认证复用公司统一登录（`LoginProvider` 抽象 + stub 先行，协议实现时对接）；服务端会话（Redis + HttpOnly Cookie）；`get_current_identity` 双通道：Bearer 优先、Cookie 回退，既有 API 零破坏 |

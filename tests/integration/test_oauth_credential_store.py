@@ -1,5 +1,5 @@
 """OAuth 凭证存取层集成（app 夹具 + 真实 MySQL/Redis，设计 §5.3）：
-加密 upsert（uk mapping_id+uid）/ cred 缓存 cache-aside（密文形态）/ 失效 /
+加密 upsert（uk mapping_id+user_id）/ cred 缓存 cache-aside（密文形态）/ 失效 /
 invalid 标记 / 删除 / 并发 upsert 竞态。"""
 import json
 
@@ -16,21 +16,21 @@ MID = "m1m2m3m4m5m6"
 UID = 888
 
 
-async def _save(app, uid=UID, expires=None, access="at-plain-123456",
+async def _save(app, user_id=UID, expires=None, access="at-plain-123456",
                 refresh="rt-plain-123456", mapping_id=MID):
     async with app.state.sessionmaker() as session:
-        await save_credential(session, app.state.redis, mapping_id, uid,
+        await save_credential(session, app.state.redis, mapping_id, user_id,
                               access_token_ct=encrypt_text(access, MASTER),
                               refresh_token_ct=(encrypt_text(refresh, MASTER)
                                                 if refresh else None),
                               expires_at=expires, scope="read", master_key=MASTER)
 
 
-async def _raw_row(app, uid=UID, mapping_id=MID):
+async def _raw_row(app, user_id=UID, mapping_id=MID):
     async with app.state.sessionmaker() as session:
         return (await session.execute(
             select(OAuthCredential).where(OAuthCredential.mapping_id == mapping_id,
-                                          OAuthCredential.uid == uid))).scalar_one()
+                                          OAuthCredential.user_id == user_id))).scalar_one()
 
 
 async def test_save_stores_ciphertext_and_load_decrypts(app):
@@ -95,7 +95,7 @@ async def test_save_with_null_refresh_and_expiry(app):
 
 
 async def test_save_credential_concurrent_upsert_race_resolves_as_update(app):
-    """并发授权同 (mapping_id, uid) 竞态：A 请求先在其事务里做一次一致性读固定
+    """并发授权同 (mapping_id, user_id) 竞态：A 请求先在其事务里做一次一致性读固定
     REPEATABLE READ 快照（此刻表内无行），B 请求并发完成 INSERT 并提交；A 随后
     save 时 SELECT 仍看不见 B 的行（快照读）→ 走 INSERT 撞 uk → 必须捕获
     IntegrityError 按 uk 重试为 UPDATE（真原子 upsert），而非 IntegrityError→500。"""
@@ -115,7 +115,7 @@ async def test_save_credential_concurrent_upsert_race_resolves_as_update(app):
                               access_token_ct=encrypt_text(access_a, MASTER),
                               refresh_token_ct=None, expires_at=None,
                               scope="read", master_key=MASTER)
-    row = await _raw_row(app, uid=901)            # 恰好一行（uk 保证），A 的值胜出
+    row = await _raw_row(app, user_id=901)        # 恰好一行（uk 保证），A 的值胜出
     assert decrypt_text(row.access_token, MASTER) == access_a
     assert row.status == "active"
 

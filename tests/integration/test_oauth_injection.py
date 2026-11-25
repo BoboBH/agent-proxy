@@ -65,28 +65,28 @@ async def _bind(mid, user_headers=U888, front=FRONT):
     assert "binding=success" in cb.headers["location"]
 
 
-async def _cred_row(app, mid, uid=888):
+async def _cred_row(app, mid, user_id=888):
     async with app.state.sessionmaker() as session:
         return (await session.execute(select(OAuthCredential).where(
             OAuthCredential.mapping_id == mid,
-            OAuthCredential.uid == uid))).scalar_one()
+            OAuthCredential.user_id == user_id))).scalar_one()
 
 
-async def _cred_token(app, mid, uid=888) -> str:
-    return decrypt_text((await _cred_row(app, mid, uid)).access_token, MASTER)
+async def _cred_token(app, mid, user_id=888) -> str:
+    return decrypt_text((await _cred_row(app, mid, user_id)).access_token, MASTER)
 
 
-async def _set_cred_token_ct(app, mid, uid, plaintext):
+async def _set_cred_token_ct(app, mid, user_id, plaintext):
     """直写凭证（模拟 upstream 侧已吊销的 stale token）：密文形态合法、上游不认。
     （落地修正：同一 session 内 SELECT——原稿经 _cred_row 另开 session 取行，
     返回即 detach，本 session commit 无脏对象，stale 直写静默丢失。）"""
     async with app.state.sessionmaker() as session:
         row = (await session.execute(select(OAuthCredential).where(
             OAuthCredential.mapping_id == mid,
-            OAuthCredential.uid == uid))).scalar_one()
+            OAuthCredential.user_id == user_id))).scalar_one()
         row.access_token = encrypt_text(plaintext, MASTER)
         await session.commit()
-    await invalidate_credential(app.state.redis, mid, uid)
+    await invalidate_credential(app.state.redis, mid, user_id)
 
 
 async def test_injection_http_form_token_reaches_upstream(app):
@@ -147,7 +147,7 @@ async def test_invalid_status_call_401(app):
     async with app.state.sessionmaker() as session:
         row = (await session.execute(select(OAuthCredential).where(
             OAuthCredential.mapping_id == mid,
-            OAuthCredential.uid == 888))).scalar_one()
+            OAuthCredential.user_id == 888))).scalar_one()
         row.status = "invalid"
         await session.commit()
     await invalidate_credential(app.state.redis, mid, 888)
@@ -279,7 +279,7 @@ async def test_unreadable_ciphertext_401_reauth_guidance(app):
     async with app.state.sessionmaker() as session:
         row = (await session.execute(select(OAuthCredential).where(
             OAuthCredential.mapping_id == mid,
-            OAuthCredential.uid == 888))).scalar_one()
+            OAuthCredential.user_id == 888))).scalar_one()
         row.access_token = "not-a-fernet-payload"
         await session.commit()
     await invalidate_credential(app.state.redis, mid, 888)
@@ -352,7 +352,7 @@ async def test_refresh_corrupt_client_secret_401_not_500(app):
         cl.client_secret = "corrupted-client-secret-not-fernet"
         row = (await session.execute(select(OAuthCredential).where(
             OAuthCredential.mapping_id == mid,
-            OAuthCredential.uid == 888))).scalar_one()
+            OAuthCredential.user_id == 888))).scalar_one()
         row.expires_at = datetime.now(timezone.utc) - timedelta(seconds=120)
         await session.commit()
     await invalidate_credential(app.state.redis, mid, 888)
@@ -400,7 +400,7 @@ async def test_refresh_wait_timeout_returns_none_then_recovers(app, monkeypatch)
     async with app.state.sessionmaker() as session:
         row = (await session.execute(select(OAuthCredential).where(
             OAuthCredential.mapping_id == mid,
-            OAuthCredential.uid == 888))).scalar_one()
+            OAuthCredential.user_id == 888))).scalar_one()
         row.expires_at = datetime.now(timezone.utc) - timedelta(seconds=120)
         await session.commit()
     await invalidate_credential(app.state.redis, mid, 888)

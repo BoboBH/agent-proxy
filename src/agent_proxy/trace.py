@@ -94,14 +94,14 @@ def _write(record: dict) -> None:
     _trace.info(json.dumps(line, ensure_ascii=False))
 
 
-def log_request(request_id: str, uid: int | str, mapping_id: str, method: str, url: str,
+def log_request(request_id: str, user_id: int | str, mapping_id: str, method: str, url: str,
                 headers: dict[str, str], body: bytes = b"",
                 body_bytes: int | None = None, content_type: str = "",
                 content_encoding: str = "") -> None:
     if _mode == "off":
         return
     record: dict = {
-        "request_id": request_id, "uid": uid, "mapping_id": mapping_id,
+        "request_id": request_id, "user_id": user_id, "mapping_id": mapping_id,
         "phase": "request", "method": method, "url": redact_query(url),
         "headers": _headers_for_log(headers, body_mode=(_mode == "body")),
         # 流式转发无法预知 body 长度：body_bytes 由转发层传入实际计数（缺省=len(body)）

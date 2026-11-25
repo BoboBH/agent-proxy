@@ -43,7 +43,7 @@ async def get_current_identity(request: Request) -> Identity:
         identity = await _session_identity(request)
         if identity is None:
             raise TokenInvalidError("缺少 Authorization: Bearer token 或登录会话")
-    request.state.uid = identity.user_id
+    request.state.user_id = identity.user_id
     request.state.user_name = identity.user_name or ""
     return identity
 

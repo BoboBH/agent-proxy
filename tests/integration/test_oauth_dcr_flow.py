@@ -74,11 +74,11 @@ async def _proxy_call(mid, path, headers):
         return await c.get(f"{PROXY}/p/{mid}/{path}", headers=headers)
 
 
-async def _cred_token(app, mid, uid=888) -> str:
+async def _cred_token(app, mid, user_id=888) -> str:
     async with app.state.sessionmaker() as session:
         row = (await session.execute(select(OAuthCredential).where(
             OAuthCredential.mapping_id == mid,
-            OAuthCredential.uid == uid))).scalar_one()
+            OAuthCredential.user_id == user_id))).scalar_one()
     return decrypt_text(row.access_token, MASTER)
 
 
@@ -135,7 +135,7 @@ async def test_unbind_revokes_and_401_afterwards(app):
     async with app.state.sessionmaker() as session:
         row = (await session.execute(select(OAuthCredential).where(
             OAuthCredential.mapping_id == mid,
-            OAuthCredential.uid == 888))).scalar_one()
+            OAuthCredential.user_id == 888))).scalar_one()
     refresh = decrypt_text(row.refresh_token, MASTER)
     async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
         r = await c.delete(f"{PROXY}/api/v1/builtin-mappings/{mid}/binding", headers=U888)
@@ -214,7 +214,7 @@ async def test_unbind_corrupt_ciphertext_204_reauth_guidance(app):
     async with app.state.sessionmaker() as session:
         row = (await session.execute(select(OAuthCredential).where(
             OAuthCredential.mapping_id == mid,
-            OAuthCredential.uid == 888))).scalar_one()
+            OAuthCredential.user_id == 888))).scalar_one()
         row.access_token = "corrupted-not-fernet"
         await session.commit()
     await invalidate_credential(app.state.redis, mid, 888)

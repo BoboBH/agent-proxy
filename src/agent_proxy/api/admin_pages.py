@@ -74,7 +74,7 @@ async def admin_index(request: Request, settings: Settings = Depends(get_setting
     identity = await _page_identity(request)
     if identity is None:
         return RedirectResponse(get_login_provider().login_url("/admin"), status_code=302)
-    request.state.uid = identity.user_id                       # 审计身份（middleware 行）
+    request.state.user_id = identity.user_id                       # 审计身份（middleware 行）
     request.state.user_name = identity.user_name or ""
     request.state.audit_action = "view_admin_page"
     return templates.TemplateResponse(request, "index.html", {
@@ -106,7 +106,7 @@ async def admin_auth_callback(request: Request, settings: Settings = Depends(get
         return RedirectResponse(back, status_code=302)
     sid = await create_session(request.app.state.redis, identity,
                                settings.admin_session_ttl)
-    request.state.uid = identity.user_id
+    request.state.user_id = identity.user_id
     request.state.user_name = identity.user_name or ""
     request.state.audit_action = "admin_login"
     # Location 组装前 quote（与错误分支一致）：防 CRLF/控制字符落头（评审修复，

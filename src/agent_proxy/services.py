@@ -4,7 +4,7 @@
 密文（复用 oauth.credential 的 encrypt_text/decrypt_text，SHA256(MASTER_KEY) 派生）；
 读取方（转发/详情/test）经 load_mapping 解密为明文 dict。损坏密文 fail-closed：
 解密失败 WARN + 按映射不可用（None → 404 语义），绝不返回部分明文。
-owner_uid / OAuth uid 为 int（收尾批次整数化，列 BIGINT，整链 int 比较）。"""
+owner_uid / OAuth user_id 为 int（收尾批次整数化，列 BIGINT，整链 int 比较）。"""
 from __future__ import annotations
 
 import json
@@ -152,14 +152,14 @@ async def load_mapping(session: AsyncSession, r, mapping_id: str, ttl: int,
     return plain
 
 
-async def get_owned(session: AsyncSession, r, mapping_id: str, uid: int, ttl: int,
+async def get_owned(session: AsyncSession, r, mapping_id: str, user_id: int, ttl: int,
                     master_key: str, admin_override: bool = False) -> dict | None:
     """加载并校验归属；非注册者返回 None（404 隐藏存在性）。
     M6（§14.2）：admin_override 时 public 映射对任意 admin 可见（详情/resolve/test）。"""
     data = await load_mapping(session, r, mapping_id, ttl, master_key)
     if data is None:
         return None
-    if data["owner_uid"] == uid:
+    if data["owner_uid"] == user_id:
         return data
     if admin_override and data["visibility"] == "public":
         return data
@@ -265,14 +265,14 @@ async def delete_mapping(session: AsyncSession, r, mapping_id: str, owner_uid: i
         return False
     # M6（§14.6）：连带清理 OAuth client/credential 行——加密 client_secret 与用户
     # token 随宿主映射删除（映射没了绑定/客户端配置即无意义，行含密文越早清越安全）；
-    # 先按行内 uid 失效各自 cred 缓存，再同批删行（避免删行后无法反查 uid）。
+    # 先按行内 user_id 失效各自 cred 缓存，再同批删行（避免删行后无法反查 uid）。
     client_rows = (await session.execute(
         select(OAuthClient).where(OAuthClient.mapping_id == mapping_id))).scalars().all()
     cred_rows = (await session.execute(
         select(OAuthCredential).where(OAuthCredential.mapping_id == mapping_id)
     )).scalars().all()
     for cred_row in cred_rows:
-        await invalidate_credential(r, mapping_id, cred_row.uid)
+        await invalidate_credential(r, mapping_id, cred_row.user_id)
     for client_row in client_rows:
         await session.delete(client_row)
     for cred_row in cred_rows:

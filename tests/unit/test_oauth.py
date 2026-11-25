@@ -94,39 +94,39 @@ def test_pkce_verifier_shape_and_randomness():
     assert code_challenge_s256(v1) != code_challenge_s256(v2)
 
 
-# ---------- state（一次性 600s 绑 uid 的载荷，§14.4） ----------
+# ---------- state（一次性 600s 绑 user_id 的载荷，§14.4） ----------
 
 def test_state_roundtrip_and_key_prefix():
     state = new_state()
     assert len(state) == 32                            # token_hex(16)
     assert state_key(state) == f"ap:oauth:state:{state}"
-    payload = encode_state_payload(uid=888, mapping_id="m1m2m3m4m5m6",
+    payload = encode_state_payload(user_id=888, mapping_id="m1m2m3m4m5m6",
                                    code_verifier="v" * 43, front_redirect="http://t/c")
     restored = decode_state_payload(payload)
-    assert restored == {"uid": 888, "mapping_id": "m1m2m3m4m5m6",
+    assert restored == {"user_id": 888, "mapping_id": "m1m2m3m4m5m6",
                         "code_verifier": "v" * 43, "front_redirect": "http://t/c"}
 
 
 def test_state_payload_missing_fields_rejected():
     from agent_proxy.errors import AppError
     with pytest.raises(AppError) as ei:
-        decode_state_payload('{"uid": 888}')
+        decode_state_payload('{"user_id": 888}')
     assert ei.value.code == "OAUTH_STATE_INVALID"
     with pytest.raises(AppError):
         decode_state_payload("not-json")
 
 
 def test_state_payload_uid_must_be_int_and_mapping_id_str():
-    """类型守卫（收尾批次整数化后）：uid 必须 int（落库 proxy_oauth_credential.uid
+    """类型守卫（收尾批次整数化后）：user_id 必须 int（落库 proxy_oauth_credential.user_id
     BIGINT / 拼缓存键的输入），mapping_id 必须 str——str/bool/None/容器等畸形一律
     OAUTH_STATE_INVALID，不让畸形类型流入鉴权决策。"""
     base = {"code_verifier": "v" * 43, "front_redirect": "http://t/c"}
-    for bad in ({"uid": "888", "mapping_id": "m1", **base},     # str 残留形态拒收
-                {"uid": True, "mapping_id": "m1", **base},      # bool 不是 int 身份
-                {"uid": None, "mapping_id": "m1", **base},
-                {"uid": [888], "mapping_id": "m1", **base},
-                {"uid": 888, "mapping_id": None, **base},
-                {"uid": 888, "mapping_id": 12, **base}):
+    for bad in ({"user_id": "888", "mapping_id": "m1", **base},     # str 残留形态拒收
+                {"user_id": True, "mapping_id": "m1", **base},      # bool 不是 int 身份
+                {"user_id": None, "mapping_id": "m1", **base},
+                {"user_id": [888], "mapping_id": "m1", **base},
+                {"user_id": 888, "mapping_id": None, **base},
+                {"user_id": 888, "mapping_id": 12, **base}):
         with pytest.raises(AppError) as ei:
             decode_state_payload(json.dumps(bad))
         assert ei.value.code == "OAUTH_STATE_INVALID"

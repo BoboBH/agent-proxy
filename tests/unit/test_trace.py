@@ -34,6 +34,7 @@ def test_metadata_mode_fingerprint_no_body(tmp_path):
     trace.log_response("r1", 200, 123)
     recs = _read(path)
     assert recs[0]["phase"] == "request"
+    assert recs[0]["user_id"] == 1                      # 键名与 Identity.user_id 统一（精修）
     assert recs[0]["headers"]["X-API-Key"].startswith("sk-v****") and "(len=" in recs[0]["headers"]["X-API-Key"]
     assert "body" not in recs[0] and "body" not in recs[1]
     assert recs[1]["request_id"] == "r1" and recs[1]["phase"] == "response"

@@ -170,7 +170,7 @@ async def authorize_mapping(request: Request, mapping_id: str, body: AuthorizeIn
                             session=Depends(get_db),
                             settings: Settings = Depends(get_settings)):
     """发起授权（§14.4）：任意有效用户；front_redirect 域白名单校验 → state +
-    PKCE verifier 入 Redis（600s，绑 uid）→ 返回 authorization_url。"""
+    PKCE verifier 入 Redis（600s，绑 user_id）→ 返回 authorization_url。"""
     data = await load_public_mapping(session, request.app.state.redis, mapping_id,
                                      settings.cache_ttl, settings.master_key)
     require_oauth_mode(data)
@@ -184,7 +184,7 @@ async def authorize_mapping(request: Request, mapping_id: str, body: AuthorizeIn
     r = request.app.state.redis
     ttl = settings.oauth_state_ttl
     await r.set(state_key(state), encode_state_payload(
-        uid=identity.user_id, mapping_id=mapping_id, code_verifier=verifier,
+        user_id=identity.user_id, mapping_id=mapping_id, code_verifier=verifier,
         front_redirect=front_redirect), ex=ttl)
     await set_authz_index(r, mapping_id, identity.user_id, state, ttl)
     url = build_authorization_url(
@@ -357,13 +357,13 @@ async def oauth_callback(request: Request, mapping_id: str,
     """OAuth 回调（§14.4，无 JWT——身份由一次性 state 关联）：
     state 原子取删（重放/过期/伪造 → 400 OAUTH_STATE_INVALID）→ 路径 mapping_id
     与 state 载荷一致性校验（防跨映射伪造）→ AS 错误/缺 code → 302 binding=failed →
-    code+verifier 换 token → 强制加密落库 uk(mapping_id,uid)（§14.6）→ 302
+    code+verifier 换 token → 强制加密落库 uk(mapping_id,user_id)（§14.6）→ 302
     front_redirect?binding=success。front_redirect 为 authorize 时已过白名单的存储值。"""
     state = request.query_params.get("state", "")
     code = request.query_params.get("code", "")
     as_error = request.query_params.get("error", "")
     payload = await consume_state(request.app.state.redis, state)
-    request.state.uid = payload["uid"]                   # 审计身份来自 state（无 JWT）
+    request.state.user_id = payload["user_id"]                   # 审计身份来自 state（无 JWT）
     request.state.mapping_id = payload["mapping_id"]
     request.state.audit_action = "oauth_bind"
     if payload["mapping_id"] != mapping_id:
@@ -397,7 +397,7 @@ async def oauth_callback(request: Request, mapping_id: str,
         return RedirectResponse(
             f"{front_redirect}{sep}binding=failed&reason=token_exchange",
             status_code=302)
-    await save_credential(session, request.app.state.redis, mapping_id, payload["uid"],
+    await save_credential(session, request.app.state.redis, mapping_id, payload["user_id"],
                           access_token_ct=encrypt_text(tokens["access_token"],
                                                        settings.master_key),
                           refresh_token_ct=(encrypt_text(tokens["refresh_token"],
@@ -405,6 +405,6 @@ async def oauth_callback(request: Request, mapping_id: str,
                                             if tokens.get("refresh_token") else None),
                           expires_at=expires_at_from(tokens.get("expires_in")),
                           scope=tokens.get("scope"), master_key=settings.master_key)
-    await drop_authz_index(request.app.state.redis, mapping_id, payload["uid"])
+    await drop_authz_index(request.app.state.redis, mapping_id, payload["user_id"])
     metrics.oauth_actions_total.labels(action="bind").inc()
     return RedirectResponse(f"{front_redirect}{sep}binding=success", status_code=302)
