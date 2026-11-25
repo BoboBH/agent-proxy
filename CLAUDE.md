@@ -12,3 +12,4 @@
 
 - 测试/开发环境：stub 认证——`X-Proxy-Authorization: Bearer <纯数字>` 的数字即 user_id（设计 v2：`Authorization` 已让位上游语义，调用方可透传）；企业 token 校验接口文档后续提供（`third_party` 保持抽象，勿提前实现）。
 - 测试运行：`.venv/Scripts/python.exe -m pytest`；真实 TCP 用端口 9901-9910，勿与其他进程并发跑测试。
+- **临时测试数据（用户指令 2026-11-25）**：临时测试跑的数据统一放项目 `temp/` 目录下，目录不存在时可直接创建；该目录**不要加入 .gitignore**。
