@@ -88,6 +88,9 @@ def _fresh_state() -> dict:
         "fail_refresh": False,
         "refresh_status": 0,      # 评审 Important 2：>0 → 刷新返回该状态码（503/429 瞬时失败）
         "refresh_payload": None,  # 评审 Minor c：非 None → 刷新返回该载荷（非 dict JSON 畸形）
+        # 精修批评审 Important 1/2：超长载荷脚本位——密文超出列上限（1406）语义用例
+        "oversize_token": False,  # True → access_token 4000 字符（Fernet 后 ~5.4KB > 4096）
+        "oversize_secret": False, # True → DCR 下发 client_secret 600 字符（密文 > 512）
     }
 
 
@@ -133,7 +136,9 @@ def build_oauth_as_app() -> FastAPI:
         client_id = f"cl-{secrets.token_hex(8)}"
         secret = None
         if body.get("token_endpoint_auth_method") != "none":
-            secret = f"cs-{secrets.token_hex(16)}"
+            # oversize_secret：模拟提供方下发异常超长 secret（落库 1406 面）
+            secret = (("cs-" + "x" * 600) if as_state["oversize_secret"]
+                      else f"cs-{secrets.token_hex(16)}")
         as_state["clients"][client_id] = {
             "client_secret": secret,
             "redirect_uris": list(body.get("redirect_uris") or []),
@@ -182,7 +187,9 @@ def build_oauth_as_app() -> FastAPI:
     async def _issue(client_id: str, scope: str, grant: str) -> JSONResponse:
         if as_state["token_sleep"]:
             await asyncio.sleep(as_state["token_sleep"])
-        access = f"at-{secrets.token_hex(16)}"
+        # oversize_token：模拟提供方下发异常超大 access token（落库 1406 面）
+        access = (("at-" + "x" * 4000) if as_state["oversize_token"]
+                  else f"at-{secrets.token_hex(16)}")
         refresh = f"rt-{secrets.token_hex(16)}"
         as_state["refresh_tokens"][refresh] = client_id
         as_state["issued"].append({"grant": grant, "client_id": client_id,

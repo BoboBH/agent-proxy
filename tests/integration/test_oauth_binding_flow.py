@@ -139,6 +139,21 @@ async def test_rebind_upserts_single_credential_row(client, app):
     assert decrypt_text(rows[0].access_token, MASTER) != first_token
 
 
+async def test_callback_oversize_token_302_failed_not_500(client, app):
+    """评审 Important 1（精修批）：AS 下发异常超大 access token（密文超
+    VARCHAR(4096) 列上限 → 落库 DataError）→ 回调 302 binding=failed（fail 回跳，
+    与既有 token_exchange 失败分支同语义），绝不 500 穿透；超长凭证不落库。"""
+    mid = await _setup(client)
+    as_state["oversize_token"] = True
+    cb, _ = await _bind(client, mid)
+    assert cb.status_code == 302
+    assert cb.headers["location"] == f"{FRONT}?binding=failed&reason=token_too_large"
+    async with app.state.sessionmaker() as session:
+        rows = (await session.execute(select(OAuthCredential).where(
+            OAuthCredential.mapping_id == mid))).scalars().all()
+    assert rows == []
+
+
 async def test_builtin_list_items_binding_and_masked_headers(client):
     static_mid = (await client.post("/api/v1/mappings", json={
         "type": "http", "visibility": "public", "auth_mode": "static",

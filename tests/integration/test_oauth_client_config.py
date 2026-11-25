@@ -9,7 +9,7 @@
 """
 from urllib.parse import quote
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from agent_proxy.models import OAuthClient, OAuthCredential
 from agent_proxy.oauth.credential import (encrypt_text, load_credential,
@@ -108,6 +108,35 @@ async def test_put_client_replaces_existing_row(client, app):
         rows = (await session.execute(
             select(OAuthClient).where(OAuthClient.mapping_id == mid))).scalars().all()
     assert len(rows) == 1                                # uk_mapping upsert，不堆行
+
+
+async def test_put_client_secret_over_entry_cap_400(client):
+    """评审 Important 1（精修批）：client_secret 入口上限收敛 256——Fernet base64
+    4/3 膨胀后必落 VARCHAR(512) 内，超限在 Pydantic 校验前置拒绝（400
+    INVALID_PARAM），绝不放行到落库撞 1406 DataError → 500。"""
+    mid = (await _create(client))["mapping_id"]
+    resp = await _put_client(client, mid,
+                             body={**CLIENT_BODY, "client_secret": "s" * 320})
+    assert resp.status_code == 400 and resp.json()["code"] == "INVALID_PARAM"
+
+
+async def test_put_client_secret_entry_boundary_256_lands_within_column(client, app):
+    """评审 Important 2（schema 边界断言）：入口上限 256 恰为有效明文上限——
+    256 字符 secret 加密落库成功且密文 ≤512 字符；257 字符即 400（边界钉住）。"""
+    mid = (await _create(client))["mapping_id"]
+    ok = await _put_client(client, mid,
+                           body={**CLIENT_BODY, "client_secret": "s" * 256})
+    assert ok.status_code == 200 and ok.json()["client_secret_configured"] is True
+    async with app.state.sessionmaker() as session:
+        row = (await session.execute(
+            select(OAuthClient).where(OAuthClient.mapping_id == mid))).scalar_one()
+        stored_len = (await session.execute(
+            select(func.char_length(OAuthClient.client_secret))
+            .where(OAuthClient.mapping_id == mid))).scalar_one()
+    assert row.client_secret.startswith("gAAAA") and stored_len <= 512
+    over = await _put_client(client, mid,
+                             body={**CLIENT_BODY, "client_secret": "s" * 257})
+    assert over.status_code == 400 and over.json()["code"] == "INVALID_PARAM"
 
 
 async def test_put_client_on_static_mapping_400(client):

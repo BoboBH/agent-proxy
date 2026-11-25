@@ -32,7 +32,7 @@ from datetime import datetime, timedelta, timezone
 import httpx
 from cryptography.fernet import Fernet, InvalidToken
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DataError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import metrics
@@ -483,11 +483,21 @@ async def _do_refresh(session: AsyncSession, r, app_state, mapping_data: dict,
         refresh_ct = encrypt_text(tokens["refresh_token"], master_key)   # AS 轮换则存新值
     else:
         refresh_ct = cred.get("refresh_token")           # 未轮换：保留原密文
-    await save_credential(session, r, mapping_id, user_id,
-                          access_token_ct=encrypt_text(access, master_key),
-                          refresh_token_ct=refresh_ct, expires_at=expires_at,
-                          scope=(tokens.get("scope") or cred.get("scope")),
-                          master_key=master_key)
+    try:
+        await save_credential(session, r, mapping_id, user_id,
+                              access_token_ct=encrypt_text(access, master_key),
+                              refresh_token_ct=refresh_ct, expires_at=expires_at,
+                              scope=(tokens.get("scope") or cred.get("scope")),
+                              master_key=master_key)
+    except DataError as exc:
+        # 评审 Important 1（精修批）：新 token 密文超列上限（提供方下发异常超大
+        # token）→ 按瞬时失败分级——凭证原状保留（旧 token 仍可解/可重试），本请求
+        # 经 binding_required 401，绝不 500 穿透代理热路径
+        metrics.oauth_actions_total.labels(action="transient").inc()
+        log.warning("OAuth 刷新落库超长 (%s/%s): %s", mapping_id, user_id,
+                    type(exc).__name__)
+        _audit_refresh(request_id, mapping_id, user_id, ok=False)
+        return None
     metrics.oauth_actions_total.labels(action="refresh").inc()
     _audit_refresh(request_id, mapping_id, user_id, ok=True)
     return access

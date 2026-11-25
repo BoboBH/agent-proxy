@@ -114,7 +114,10 @@ class OAuthClientSet(BaseModel):
     """PUT /api/v1/builtin-mappings/{id}/client 请求（admin，手动模式，§14.3）。
     client_secret 可空（公共客户端 token_auth=none）。"""
     client_id: str = Field(min_length=1, max_length=256)
-    client_secret: str | None = Field(default=None, max_length=1024)
+    # 评审 Important 1（精修批）：入口上限收敛 256——Fernet base64 4/3 膨胀后
+    # （256B 明文 → ~418 字符密文）必落存储列 VARCHAR(512) 内；原 1024 会让
+    # 320+ 字符 secret 放行到落库撞 1406 DataError → 500
+    client_secret: str | None = Field(default=None, max_length=256)
     token_auth: Literal["client_secret_basic", "client_secret_post", "none"] = \
         "client_secret_post"
     authorize_url: str = Field(min_length=1, max_length=2048)

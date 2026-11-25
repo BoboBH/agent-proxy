@@ -108,6 +108,23 @@ async def test_dcr_registers_on_first_authorize_and_binds(app):
     assert b.json()["binding"] == "bound"
 
 
+async def test_dcr_oversize_client_secret_maps_502_not_500(app):
+    """评审 Important 1（精修批）：DCR 下发异常超长 client_secret（密文超
+    VARCHAR(512) 列上限 → DataError）→ 502 OAUTH_CLIENT_SETUP_FAILED（提示改
+    手动配置），绝不 500；失败后无 client 行残留，修正后可重试。"""
+    as_state["oversize_secret"] = True
+    mid = await _create_oauth_http()
+    async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+        resp = await c.post(f"{PROXY}/api/v1/builtin-mappings/{mid}/authorize",
+                            json={"front_redirect": FRONT}, headers=U888)
+    assert resp.status_code == 502
+    assert resp.json()["code"] == "OAUTH_CLIENT_SETUP_FAILED"
+    async with app.state.sessionmaker() as session:
+        rows = (await session.execute(select(OAuthClient).where(
+            OAuthClient.mapping_id == mid))).scalars().all()
+    assert rows == []                                    # 半途行不残留（事务回滚）
+
+
 async def test_dcr_injected_call_reaches_upstream_with_own_token(app):
     mid = await _create_oauth_http()
     cb = await _complete_binding(await _authorize(mid))

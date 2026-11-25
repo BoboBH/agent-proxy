@@ -3,6 +3,7 @@
 invalid 标记 / 删除 / 并发 upsert 竞态。"""
 import json
 
+import pytest
 from sqlalchemy import func, select
 
 from agent_proxy.models import OAuthCredential
@@ -136,3 +137,19 @@ async def test_delete_false_path_still_invalidates_cache(app):
     async with app.state.sessionmaker() as session:
         assert await delete_credential(session, app.state.redis, MID, UID) is False
     assert await app.state.redis.get(cred_cache_key(MID, UID)) is None
+
+
+async def test_credential_column_length_limit_rejects_oversize_write(app):
+    """评审 Important 2（精修批，schema 边界）：加密列 VARCHAR 定长由 DB 兜底强制
+    ——超限密文直写 → DataError（MySQL 1406 fail-fast，严格模式默认开启），
+    不存在静默截断；入口层 schemas 上限 256/列 512、token 列 4096 的组合以此收口。"""
+    from sqlalchemy import text as sql_text
+    from sqlalchemy.exc import DataError
+    async with app.state.sessionmaker() as session:
+        with pytest.raises(DataError):
+            await session.execute(sql_text(
+                "INSERT INTO proxy_oauth_credential "
+                "(mapping_id, user_id, access_token, status) "
+                "VALUES ('m1m2m3m4m5m6', 999, :tok, 'active')"),
+                {"tok": "gAAAA" + "x" * 4096})           # 4097 字符 > 列上限
+        await session.rollback()                          # 失败事务复位，不污染后续用例

@@ -22,6 +22,7 @@ import httpx
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
+from sqlalchemy.exc import DataError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import metrics, placeholder
@@ -135,12 +136,20 @@ async def set_oauth_client(request: Request, mapping_id: str, body: OAuthClientS
                                                       settings.ssrf_allow_private)
     except ValueError as exc:  # 含 UpstreamNotAllowed（其子类）
         raise AppError(400, "INVALID_PARAM", str(exc))
-    await save_oauth_client_row(session, mapping_id, client_id=body.client_id,
-                                client_secret_plain=body.client_secret,
-                                token_auth=body.token_auth,
-                                authorize_url=authorize_url,
-                                token_url=token_url, scopes=body.scopes,
-                                source="manual", master_key=settings.master_key)
+    try:
+        await save_oauth_client_row(session, mapping_id, client_id=body.client_id,
+                                    client_secret_plain=body.client_secret,
+                                    token_auth=body.token_auth,
+                                    authorize_url=authorize_url,
+                                    token_url=token_url, scopes=body.scopes,
+                                    source="manual", master_key=settings.master_key)
+    except DataError as exc:
+        # 纵深防御（评审 Important 1）：入口已收敛 256（加密后必落 VARCHAR(512)），
+        # 仍捕获列超长 DataError 显式 400——绝不 500 穿透（列上限漂移/直改库兜底）
+        await session.rollback()
+        raise AppError(400, "INVALID_PARAM",
+                       "client_secret 加密后超出存储上限 VARCHAR(512)"
+                       "（入口上限 256 字符）") from exc
     request.state.audit_action = "oauth_client_set"
     request.state.mapping_id = mapping_id
     row = await load_client_row(session, mapping_id)
@@ -397,14 +406,26 @@ async def oauth_callback(request: Request, mapping_id: str,
         return RedirectResponse(
             f"{front_redirect}{sep}binding=failed&reason=token_exchange",
             status_code=302)
-    await save_credential(session, request.app.state.redis, mapping_id, payload["user_id"],
-                          access_token_ct=encrypt_text(tokens["access_token"],
-                                                       settings.master_key),
-                          refresh_token_ct=(encrypt_text(tokens["refresh_token"],
-                                                         settings.master_key)
-                                            if tokens.get("refresh_token") else None),
-                          expires_at=expires_at_from(tokens.get("expires_in")),
-                          scope=tokens.get("scope"), master_key=settings.master_key)
+    try:
+        await save_credential(session, request.app.state.redis, mapping_id,
+                              payload["user_id"],
+                              access_token_ct=encrypt_text(tokens["access_token"],
+                                                           settings.master_key),
+                              refresh_token_ct=(encrypt_text(tokens["refresh_token"],
+                                                             settings.master_key)
+                                                if tokens.get("refresh_token") else None),
+                              expires_at=expires_at_from(tokens.get("expires_in")),
+                              scope=tokens.get("scope"), master_key=settings.master_key)
+    except DataError as exc:
+        # 评审 Important 1（精修批）：AS 下发异常超大 token，密文超列上限
+        # （access VARCHAR(4096) / refresh VARCHAR(2000)）→ 按既有失败分支回跳
+        # binding=failed（绝不 500 DataError 穿透）；凭证行不落，用户重授权即重试
+        metrics.oauth_actions_total.labels(action="fail").inc()
+        log.warning("OAuth 绑定落库超长（AS token 异常）: %s/%s %s",
+                    mapping_id, payload["user_id"], type(exc).__name__)
+        return RedirectResponse(
+            f"{front_redirect}{sep}binding=failed&reason=token_too_large",
+            status_code=302)
     await drop_authz_index(request.app.state.redis, mapping_id, payload["user_id"])
     metrics.oauth_actions_total.labels(action="bind").inc()
     return RedirectResponse(f"{front_redirect}{sep}binding=success", status_code=302)

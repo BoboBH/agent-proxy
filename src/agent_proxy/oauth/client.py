@@ -23,6 +23,7 @@ from urllib.parse import urlencode, urlparse
 
 import httpx
 from sqlalchemy import select
+from sqlalchemy.exc import DataError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..errors import AppError
@@ -280,10 +281,19 @@ async def ensure_client(session: AsyncSession, app_state, mapping_data: dict,
     token_auth = normalize_token_auth(reg.get("token_endpoint_auth_method"))
     secret_plain = reg.get("client_secret")
     scopes = reg.get("scope")
-    await save_oauth_client_row(session, mapping_id, client_id=reg["client_id"],
-                                client_secret_plain=secret_plain, token_auth=token_auth,
-                                authorize_url=None, token_url=None,
-                                scopes=scopes, source="dcr", master_key=master_key)
+    try:
+        await save_oauth_client_row(session, mapping_id, client_id=reg["client_id"],
+                                    client_secret_plain=secret_plain, token_auth=token_auth,
+                                    authorize_url=None, token_url=None,
+                                    scopes=scopes, source="dcr", master_key=master_key)
+    except DataError as exc:
+        # 评审 Important 1（精修批）：AS 下发异常超长 client_secret（密文超
+        # VARCHAR(512)）→ 与 discovery/DCR 失败同面 502 提示改手动配置，绝不 500；
+        # 半途行随事务回滚不残留（无 client 行 → 下一请求可重试 DCR）
+        await session.rollback()
+        raise AppError(502, "OAUTH_CLIENT_SETUP_FAILED",
+                       "DCR 下发的 client_secret 加密后超出存储上限"
+                       "（VARCHAR(512)），请改用手动配置") from exc
     return {"client_id": reg["client_id"], "client_secret": secret_plain,
             "token_auth": token_auth, "authorize_url": meta["authorization_endpoint"],
             "token_url": meta["token_endpoint"], "scopes": scopes,

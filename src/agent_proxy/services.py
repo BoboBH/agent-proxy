@@ -265,7 +265,7 @@ async def delete_mapping(session: AsyncSession, r, mapping_id: str, owner_uid: i
         return False
     # M6（§14.6）：连带清理 OAuth client/credential 行——加密 client_secret 与用户
     # token 随宿主映射删除（映射没了绑定/客户端配置即无意义，行含密文越早清越安全）；
-    # 先按行内 user_id 失效各自 cred 缓存，再同批删行（避免删行后无法反查 uid）。
+    # 先按行内 user_id 失效各自 cred 缓存，再同批删行（避免删行后无法反查 user_id）。
     client_rows = (await session.execute(
         select(OAuthClient).where(OAuthClient.mapping_id == mapping_id))).scalars().all()
     cred_rows = (await session.execute(

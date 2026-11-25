@@ -271,6 +271,29 @@ async def test_refresh_malformed_body_keeps_credential(app):
     assert row.status == "active"
 
 
+async def test_refresh_oversize_token_transient_keeps_credential(app):
+    """评审 Important 1/2（精修批）：刷新落库遇 AS 下发超长 token（密文超
+    VARCHAR(4096) 列上限 → DataError）→ 按瞬时失败分级（凭证原状保留、不误标
+    invalid），本请求 401 绝不 500；下轮 AS 恢复正常载荷即自愈。"""
+    as_state["expires_in"] = 2
+    mid = await _setup_manual(f"{AS}/api")
+    await _bind(mid)
+    as_state["expires_in"] = 3600
+    await asyncio.sleep(2.3)
+    original = await _cred_token(app, mid)                # 原明文（解密面）
+    as_state["oversize_token"] = True                     # 刷新签发超大 token
+    async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+        r = await c.get(f"{PROXY}/p/{mid}/orders", headers=U888)
+    assert r.status_code == 401 and r.json()["code"] == "OAUTH_BINDING_REQUIRED"
+    row = await _cred_row(app, mid)
+    assert row.status == "active"                         # 原状保留（不误标 invalid）
+    assert decrypt_text(row.access_token, MASTER) == original
+    as_state["oversize_token"] = False                    # AS 恢复 → 下轮自愈
+    async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+        r2 = await c.get(f"{PROXY}/p/{mid}/orders", headers=U888)
+    assert r2.status_code == 200
+
+
 async def test_unreadable_ciphertext_401_reauth_guidance(app):
     """评审修复（Minor c）：凭证密文不可解（MASTER_KEY 变更/行损坏）→ 401
     OAUTH_BINDING_REQUIRED 重授权引导——绝不 500 INTERNAL_ERROR。"""

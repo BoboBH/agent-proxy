@@ -48,7 +48,9 @@ import pymysql
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-HOST, PORT, USER, PASSWORD = "127.0.0.1", 3306, "root", "123456"  # 部署/生产复用前改为参数或环境变量注入（勿硬编码凭据）
+# 部署/生产复用前改为参数或环境变量注入（勿硬编码凭据）；复用前改 DSN 解析
+# （终审 Minor 4：DSN 直连仅开发形态，外部 MySQL 部署须解析 MYSQL_DSN 或等效环境变量）
+HOST, PORT, USER, PASSWORD = "127.0.0.1", 3306, "root", "123456"
 
 
 def read_env_key(repo_root: Path, key: str) -> str:

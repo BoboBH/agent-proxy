@@ -139,13 +139,14 @@ docker compose down -v     # 连数据卷一并删除：MySQL 数据 / 会话 / 
 ## 6. 数据库迁移说明
 
 - **首启自动建表**：lifespan `create_all`——全新库直接启动即可，无手工 DDL；
-- **升级迁移**：当前无自动迁移框架，schema 变更以**幂等脚本**为既定先例——`scripts/migrate_uid_headers_encryption.py`（收尾批次：uid 整数化 + upstream_headers 强制加密；重复执行全 skip 幂等；执行前备份、建议停服窗口、结束时清理 Redis `ap:mapping:*` 旧形态缓存）。后续 schema 变更照此先例落 `scripts/` 下幂等脚本；
+- **升级迁移**：当前无自动迁移框架，schema 变更以**幂等脚本**为既定先例——`scripts/migrate_uid_headers_encryption.py`（收尾批次：uid 整数化 + upstream_headers 强制加密；精修批追加两步：`proxy_oauth_credential.uid` RENAME COLUMN → `user_id`（索引名 `ix_proxy_oauth_credential_uid`/`uk_mapping_uid` 同步 RENAME INDEX 改名）+ 加密列 TEXT → VARCHAR（access_token 4096 / refresh_token 2000 / client_secret 512，前置既有行超长校验——超限行列出并中止）；重复执行全 skip 幂等；执行前备份、建议停服窗口、结束时清理 Redis `ap:mapping:*` 旧形态缓存）。后续 schema 变更照此先例落 `scripts/` 下幂等脚本；
 - **Alembic**：记债务（M8+），引入前以幂等脚本过渡；
 - **容器栈下执行脚本**：该脚本常量面向宿主机 MySQL（`127.0.0.1:3306`，读 `.env` 的 `MASTER_KEY`/`REDIS_URL`）——形态 A 可临时放开 compose 中 mysql 的 `3306` 端口映射后在宿主机 venv 执行，或 `docker compose exec mysql` 直接执行 SQL。
 
 ## 7. 升级与回滚
 
 - **升级**：`git pull` → （如该版本含迁移脚本，按 §6 先行）→ `docker compose up -d --build`。镜像重建，**数据卷不动**（MySQL/Redis/logs 全保留）；
+- **升级窗口注记（精修批）**：state 载荷 JSON 键 `uid` → `user_id` 改名后，部署新版本前**已发起**的 OAuth 授权（state 存续 600s 内）回跳将被判 `400 OAUTH_STATE_INVALID` 属预期——重走 authorize 即可；迁移脚本与镜像升级建议同一停服窗口执行；
 - **依赖钉版提示**：`pyproject.toml` 依赖为下界约束（`>=`）——镜像重建可能拉入新版本导致构建不可复现；建议后续以 pip-compile / uv lock 生成锁定文件固化依赖（记 M8+ 债务），锁定前升级后建议关注依赖变更；
 - **回滚**：`git checkout <旧版本>` → `docker compose up -d --build`。数据卷同样保留；
 - **注意**：若目标版本包含不可逆 schema 变更，回滚代码前先用备份还原数据库（`mysqldump` 还原）——幂等脚本不承诺反向迁移；损坏密文行设计为原状保留（fail-closed 404/409），不会无声销毁现场。
