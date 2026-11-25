@@ -441,7 +441,29 @@ class TokenVerifier(Protocol):
 
 ### 8.1 通用规则
 
-1. **出站 header 重建**（安全核心）：出站请求 header = **存储的 upstream_headers 全量** + 协议必要 header（`Accept`、`Accept-Encoding`（M4：调用方响应编码协商透明——协商结果原样传达上游，代理按 aiter_raw 压缩字节透传、不改协商结果）、`Content-Type`、`Content-Length`、`Content-Encoding`（gzip 等请求体透传必需），MCP 的 `Mcp-Session-Id` / `Last-Event-ID` / `MCP-Protocol-Version` 白名单透传）。调用方请求中的其余 header（含其 JWT、占位 header）**一律不透传**；hop-by-hop header（`Connection`、`Keep-Alive`、`Transfer-Encoding`、`TE`、`Trailer`、`Proxy-*`、`Upgrade`）排除。
+> **v2 修订（2026-11-25，认证头换名 + 透传模型）**：本节第 1 条的白名单透传模型已被
+> 以下透传模型取代，其余各条不变。
+>
+> - **认证头换名**：代理身份通道改为 **`X-Proxy-Authorization: Bearer <token>`**（全局，
+>   管理接口与 `/p/` 同名同语义）；`Authorization` **不再被代理消费**，成为调用方可
+>   透传的上游载荷头。动因：skill 生态普遍在文本中指示 Agent 以 `Authorization` 携带
+>   上游凭据（如 `Authorization: Token xxx`），单头双用与代理认证冲突。
+> - **出站 header 重建（v2）**：出站 = **存储 upstream_headers 全量打底 ∪ 调用方
+>   header 全量透传**（同名调用方覆盖存储——skill 教传的上游凭证头原样直达上游），
+>   叠加显式载荷头（`Content-Type/Length/Encoding`，来自真实入站载荷）与 forced
+>   最高优先（oauth 型映射注入的本人凭证，§14.1 凭证托管不被调用方绕过）。
+> - **保留命名空间（绝不透传，来源无关）**：`x-proxy-authorization`（代理身份，已
+>   消费）、`cookie`（防平台会话 `ap_sess` 泄漏上游；上游 cookie 走存储 headers）、
+>   `host`（httpx 按转发目标派生，透传破坏上游 vhost 路由）、hop-by-hop（原第 1 条
+>   集合 + `Proxy-*` 前缀）双向剥离不变。
+> - **安全前提**：透传模型适用于平台自家 agent（半可信内网调用方）；对公网不可信
+>   调用方，任意头透传会放大注入面，不适用——该前提随本修订显式登记。
+> - **出站直连（trust_env=False）**：上游客户端不读环境/系统代理（httpx 默认经
+>   `getproxies()` 读 Windows 注册表代理——桌面代理场景下死端口被代答 502、探测
+>   误判可达、SSRF 的 IP 校验被旁路）。需经企业代理出站的部署属显式架构决策，
+>   届时单独设计，不走环境隐式。
+
+1. **出站 header 重建**（安全核心；**v2 已由上方修订取代**）：出站请求 header = **存储的 upstream_headers 全量** + 协议必要 header（`Accept`、`Accept-Encoding`（M4：调用方响应编码协商透明——协商结果原样传达上游，代理按 aiter_raw 压缩字节透传、不改协商结果）、`Content-Type`、`Content-Length`、`Content-Encoding`（gzip 等请求体透传必需），MCP 的 `Mcp-Session-Id` / `Last-Event-ID` / `MCP-Protocol-Version` 白名单透传）。调用方请求中的其余 header（含其 JWT、占位 header）**一律不透传**；hop-by-hop header（`Connection`、`Keep-Alive`、`Transfer-Encoding`、`TE`、`Trailer`、`Proxy-*`、`Upgrade`）排除。
 2. **流式**：请求 body 与响应 body 均以异步流转发（httpx stream），不落盘、不整体驻留内存；响应不限大小，请求体默认上限 10MB（可配），流式读取按字节计数、超限立即断开并返回 413。**响应体不解析、不改写**（已知限制见 9.10）。
 3. **响应 header 过滤**：剥离 hop-by-hop 后原样回传（`Content-Type` 等），绝不含存储的真实 header；`Location` 头处理见第 7 条。
 4. **客户端断开**：立即取消上游流并释放连接。

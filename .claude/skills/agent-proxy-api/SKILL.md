@@ -14,8 +14,11 @@ agent-proxy 是 Agent 平台的出站代理：**真实上游地址与凭据只�
 
 ## 鉴权（先读）
 
-- 管理/代理接口全部要 `Authorization: Bearer <token>`；**Bearer 校验失败必 401，不回退**。
-- dev/stub 部署：**纯数字 token 即 user_id**（`Bearer 888` → user_id=888，无角色）。
+- 管理/代理接口的身份通道是 **`X-Proxy-Authorization: Bearer <token>`**（保留命名空间）；
+  **Bearer 校验失败必 401，不回退**。
+- `Authorization` 头**不是**代理认证——它是调用方可透传给上游的普通头（skill 教传的
+  `Authorization: Token xxx` 会原样到达上游；见下方"经代理调用"）。
+- dev/stub 部署：**纯数字 token 即 user_id**（`X-Proxy-Authorization: Bearer 888` → user_id=888）。
 - 需要 admin（建 public 映射、配置 OAuth 客户端）时用信封 token（仅 stub，不验签）：
   `x.<base64url(JSON)>.y`，JSON 至少 `{"user_id":1,"role":"admin"}`。
 - 错误统一形状：`{"code","message","request_id"}`，响应头带 `X-Request-ID`。
@@ -42,12 +45,15 @@ agent-proxy 是 Agent 平台的出站代理：**真实上游地址与凭据只�
 
 ## 经代理调用（核心）
 
-出站 header = **存储 headers 全量注入** + 协议白名单透传（`accept`/`accept-encoding`/
-`content-*`/`mcp-session-id`/`last-event-id`/`mcp-protocol-version`）；调用方 JWT 与其他
-header **绝不透传**；`${PX:...}` 占位符是展示用脱敏，**不要**发送它，也不需要发真实值。
+出站 header = **存储 headers ∪ 调用方 headers**（同名**调用方覆盖存储**——skill 教传的
+`Authorization: Token xxx` 原样直达上游；static 映射语义。oauth 型映射例外：注入的
+本人凭证恒最优先）。绝不透传的保留头：`X-Proxy-Authorization`（代理身份，已消费）、
+`Cookie`（防平台会话泄漏）、`Host`（按转发目标派生）、hop-by-hop 双向剥离。
+调用方未携带的头由存储值补位（公共映射共享凭据默认路径）。`${PX:...}` 占位符是
+展示用脱敏，**不要**发送它，也不需要发真实值。
 
 **HTTP 型**：`proxy_url`（不含端点路径）后拼子路径，方法/查询串原样：
-`curl <BASE>/p/<id>/api/v1/users -H "Authorization: Bearer 888" -d '...'`
+`curl <BASE>/p/<id>/api/v1/users -H "X-Proxy-Authorization: Bearer 888" -d '...'`
 
 **MCP SSE 型**（proxy_url 已含注册端点路径，如 `/p/<id>/sse`）：
 1. `GET` proxy_url，带 `Accept: text/event-stream` → 200 SSE 长连接，**保持不断开**；

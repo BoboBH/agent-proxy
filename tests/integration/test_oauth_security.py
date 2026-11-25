@@ -15,8 +15,8 @@ from agent_proxy.oauth.credential import (decrypt_text, refresh_lock_key,
                                           release_refresh_lock)
 from tests.utils import make_token
 
-ADMIN = {"Authorization": f"Bearer {make_token(100, 'admin')}"}
-U888 = {"Authorization": f"Bearer {make_token(888)}"}
+ADMIN = {"X-Proxy-Authorization": f"Bearer {make_token(100, 'admin')}"}
+U888 = {"X-Proxy-Authorization": f"Bearer {make_token(888)}"}
 FRONT = "http://testserver/console"
 MASTER = "test-master-key"
 

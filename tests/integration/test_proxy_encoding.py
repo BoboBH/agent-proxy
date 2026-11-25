@@ -14,7 +14,7 @@ import httpx
 from tests.utils import make_token
 
 PROXY = "http://127.0.0.1:9910"
-AUTH = {"Authorization": f"Bearer {make_token(888)}"}
+AUTH = {"X-Proxy-Authorization": f"Bearer {make_token(888)}"}
 TCP_TIMEOUT = httpx.Timeout(connect=5, read=10, write=10, pool=5)
 
 
@@ -22,7 +22,7 @@ async def _register(user, payload):
     payload = {"headers": {"Authorization": "Bearer sk-enc-12345678"}, **payload}
     async with httpx.AsyncClient() as c:
         resp = await c.post(f"{PROXY}/api/v1/mappings", json=payload,
-                            headers={"Authorization": f"Bearer {make_token(user)}"})
+                            headers={"X-Proxy-Authorization": f"Bearer {make_token(user)}"})
     assert resp.status_code == 201, resp.text
     return resp.json()
 

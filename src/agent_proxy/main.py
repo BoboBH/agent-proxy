@@ -46,7 +46,12 @@ async def lifespan(app: FastAPI):
         timeout=httpx.Timeout(connect=settings.upstream_connect_timeout,
                               read=settings.upstream_read_timeout, write=60.0,
                               pool=settings.upstream_pool_timeout),
-        follow_redirects=False)
+        follow_redirects=False,
+        # trust_env=False（设计 §8.1 v2 注记）：服务端出站直连，绝不隐式路由进
+        # 环境/系统代理（httpx 默认经 getproxies() 读 Windows 注册表代理——桌面
+        # Clash 场景下死端口被代答 502、探测误判可达、SSRF 的 IP 校验被旁路）。
+        # 需要经企业代理出站的部署属显式架构决策，届时单独设计，不走环境隐式。
+        trust_env=False)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     async with engine.connect() as conn:
@@ -77,7 +82,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     if settings.cors_allowed_origins:
         from fastapi.middleware.cors import CORSMiddleware
         app.add_middleware(CORSMiddleware, allow_origins=list(settings.cors_allowed_origins),
-                           allow_methods=["*"], allow_headers=["Authorization", "Content-Type"])
+                           allow_methods=["*"],
+                           # Authorization：设计 v2 起 /p/ 上是调用方可透传的上游载荷头
+                           # （CORS 预检必须放行）；X-Proxy-Authorization：代理身份通道
+                           allow_headers=["Authorization", "X-Proxy-Authorization",
+                                          "Content-Type"])
     app.add_middleware(RequestContextMiddleware)
     errors.install_error_handlers(app)
     app.include_router(mgmt_router)

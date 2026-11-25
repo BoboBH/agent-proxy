@@ -3,6 +3,7 @@
 链路：测试 client（ASGITransport）→ 代理 app → 真实 TCP → echo 上游（uvicorn 9901）。
 上游地址含 SSRF_ALLOW_PRIVATE=true 放行的 127.0.0.1（测试环境既定）。
 """
+import os
 import re
 from contextlib import asynccontextmanager
 
@@ -19,13 +20,13 @@ BODY = {"type": "http", "upstream_url": UPSTREAM,
 async def _register(client, user=888, **overrides):
     payload = {**BODY, **overrides}
     resp = await client.post("/api/v1/mappings", json=payload,
-                             headers={"Authorization": f"Bearer {make_token(user)}"})
+                             headers={"X-Proxy-Authorization": f"Bearer {make_token(user)}"})
     assert resp.status_code == 201, resp.text
     return resp.json()
 
 
 async def _call(client, mapping_id, method, path, *, user=888, headers=None, **kw):
-    hdrs = {"Authorization": f"Bearer {make_token(user)}", **(headers or {})}
+    hdrs = {"X-Proxy-Authorization": f"Bearer {make_token(user)}", **(headers or {})}
     return await client.request(method, f"/p/{mapping_id}{path}", headers=hdrs, **kw)
 
 
@@ -35,28 +36,53 @@ def _hdr(headers: dict, name: str) -> str | None:
     return next((v for k, v in headers.items() if k.lower() == lowered), None)
 
 
-async def test_forward_get_echoes_stored_headers_not_caller(client):
+async def test_forward_get_echoes_stored_plus_caller_passthrough(client):
+    """设计 v2 透传模型钉住：调用方任意 header 原样到上游（含 Authorization——skill
+    教传的上游凭证头），同名覆盖存储；非同名存储头照常注入；代理身份头
+    （X-Proxy-Authorization）与 cookie 属保留命名空间绝不出站。"""
     created = await _register(client)
     mid = created["mapping_id"]
-    # 计划缺陷最小修复：原稿传 "Bearer caller-jwt-not-forwarded" 会顶掉 _call 的鉴权
-    # token（headers 合并 Authorization 后写覆盖）→ 代理 401。真实语义：调用方 JWT 仅
-    # 用于代理鉴权，出站被存储值替换——由下方 authorization==存储值 与
-    # "stub." not in resp.text 两条断言共同钉住。
     resp = await _call(client, mid, "GET", "/orders?status=paid&page=2",
-                       headers={"Authorization": f"Bearer {make_token(888)}",
-                                "X-Caller-Only": "should-not-leak",
+                       headers={"Authorization": "Token skill-jwt-abcdef",
+                                "X-Caller-Only": "passthrough-now",
+                                "User-Agent": "agent-skill/1.0",
                                 "Accept": "application/json"})
     assert resp.status_code == 200
     echo = resp.json()
     assert echo["method"] == "GET" and echo["path"] == "/orders"
     assert echo["query"] == {"status": "paid", "page": "2"}
     sent = echo["headers"]
-    assert _hdr(sent, "authorization") == "Bearer sk-real-12345678"  # 存储还原（调用方 JWT 被替换）
-    assert _hdr(sent, "x-api-key") == "stored-key-0000"
-    assert _hdr(sent, "x-caller-only") is None                       # 调用方非白名单 header 不透传
-    assert _hdr(sent, "accept") == "application/json"                # 白名单透传
-    assert "stub." not in resp.text                                  # 调用方 JWT 绝不到上游
-    assert "${PX:" not in resp.text                                  # 占位符绝不到上游
+    assert _hdr(sent, "authorization") == "Token skill-jwt-abcdef"  # 调用方覆盖存储
+    assert _hdr(sent, "x-api-key") == "stored-key-0000"             # 非同名存储头注入
+    assert _hdr(sent, "x-caller-only") == "passthrough-now"         # 调用方任意头透传
+    assert _hdr(sent, "user-agent") == "agent-skill/1.0"
+    assert _hdr(sent, "accept") == "application/json"
+    assert _hdr(sent, "x-proxy-authorization") is None              # 代理身份头绝不出站
+    assert "stub." not in resp.text                                 # 代理身份票据绝不到上游
+    assert "${PX:" not in resp.text                                 # 占位符绝不到上游
+
+
+async def test_forward_stored_authorization_used_when_caller_omits(client):
+    """调用方未带 Authorization → 存储值出站（公共映射共享凭据默认路径）。"""
+    created = await _register(client)
+    resp = await _call(client, created["mapping_id"], "GET", "/orders",
+                       headers={"Accept": "application/json"})
+    assert resp.status_code == 200
+    assert _hdr(resp.json()["headers"], "authorization") == "Bearer sk-real-12345678"
+
+
+async def test_forward_cookie_and_host_not_forwarded(client):
+    """保留命名空间钉住：cookie（防平台会话泄漏）/ host（由转发目标派生，防 vhost
+    路由破坏）无论调用方是否携带都不出站。"""
+    created = await _register(client)
+    resp = await _call(client, created["mapping_id"], "GET", "/orders",
+                       headers={"Cookie": "ap_sess=leak-me; sid=1",
+                                "Host": "127.0.0.1:8800"})
+    assert resp.status_code == 200
+    sent = resp.json()["headers"]
+    assert _hdr(sent, "cookie") is None
+    assert _hdr(sent, "host") != "127.0.0.1:8800"
+
 
 
 async def test_forward_root_path_hits_registered_url(client):
@@ -121,7 +147,7 @@ async def test_disabled_mapping_404(client):
     created = await _register(client)
     mid = created["mapping_id"]
     resp = await client.put(f"/api/v1/mappings/{mid}", json={"status": "disabled"},
-                            headers={"Authorization": f"Bearer {make_token(888)}"})
+                            headers={"X-Proxy-Authorization": f"Bearer {make_token(888)}"})
     assert resp.status_code == 200
     resp = await _call(client, mid, "GET", "/orders")
     assert resp.status_code == 404 and resp.json()["code"] == "MAPPING_NOT_FOUND"
@@ -466,7 +492,7 @@ async def test_upstream_read_timeout_maps_504():
                             json={"type": "http",
                                   "upstream_url": "http://127.0.0.1:9901/api/v1",
                                   "headers": {}},
-                            headers={"Authorization": f"Bearer {make_token(888)}"})
+                            headers={"X-Proxy-Authorization": f"Bearer {make_token(888)}"})
         mid = resp.json()["mapping_id"]
         resp = await _call(c, mid, "GET", "/slow?seconds=3")
     after = metrics_mod.upstream_errors_total.labels(
@@ -490,7 +516,7 @@ async def test_pool_exhausted_returns_503():
                             json={"type": "http",
                                   "upstream_url": "http://127.0.0.1:9901/api/v1",
                                   "headers": {}},
-                            headers={"Authorization": f"Bearer {make_token(888)}"})
+                            headers={"X-Proxy-Authorization": f"Bearer {make_token(888)}"})
         mid = resp.json()["mapping_id"]
         r1, r2 = await asyncio.gather(
             _call(c, mid, "GET", "/slow?seconds=5"),
@@ -570,3 +596,21 @@ async def test_redirect_hop_send_failure_traced(client, app, tmp_path):
     reqs = [r for r in mine if r["phase"] == "request"]
     assert len(reqs) == 2, "首跳 + 跟随跳（虽 send 失败）应各有一条 request 行"
     assert reqs[1]["url"].startswith("http://127.0.0.1:9901/api/v1/final")
+
+
+async def test_upstream_client_ignores_ambient_proxy_env(monkeypatch):
+    """服务端出站直连钉住（设计 §8.1 v2 注记）：httpx trust_env 默认会把上游出站
+    路由进环境/系统代理（Windows 注册表代理，如桌面 Clash 7897）——死端口被代理
+    代答 502 空体、探测误判可达、SSRF 的 IP 校验被旁路。上游客户端必须
+    trust_env=False：环境代理变量不影响出站。RED 时本用例因假代理不可达而失败。"""
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9909")    # 死端口假代理
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9909")
+    monkeypatch.setenv("http_proxy", "http://127.0.0.1:9909")
+    from agent_proxy.config import Settings
+    from agent_proxy.main import create_app
+
+    application = create_app(Settings.from_env(os.environ))
+    async with application.router.lifespan_context(application):
+        resp = await application.state.http_client.get("http://127.0.0.1:9901/api/v1/final")
+        assert resp.status_code == 200
+        assert resp.json()["path"] == "/final"

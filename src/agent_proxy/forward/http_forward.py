@@ -76,12 +76,15 @@ def _redirect_method(status: int, method: str) -> str:
 
 async def stream_http_forward(app_state, mapping_data: dict, request: Request,
                               target_override: str | None = None,
-                              metrics_type: str = "http") -> Response:
+                              metrics_type: str = "http",
+                              forced_headers: dict[str, str] | None = None) -> Response:
     """HTTP 前缀流式转发主管线（设计 §8.1 / §8.2）：同源重定向内部跟随、跨源透传。
 
     target_override（M3）：mcp 类型「上游 origin 根还原」的转发目标由调用方
     （api/proxy.py）按 §8.3 预先算好传入；http 前缀映射仍走前缀拼接。
     metrics_type：metrics 标签 type（§15.2 http/mcp），mcp 调用方传 "mcp"。
+    forced_headers（设计 v2）：最高优先出站头（oauth 托管凭证注入），压过调用方
+    同名透传头——凭证托管语义不被绕过。
     """
     settings = app_state.settings
     client: httpx.AsyncClient = app_state.http_client
@@ -99,7 +102,8 @@ async def stream_http_forward(app_state, mapping_data: dict, request: Request,
         stored, dict(request.headers.items()),
         content_type=request.headers.get("content-type"),
         content_length=request.headers.get("content-length"),
-        content_encoding=request.headers.get("content-encoding"))
+        content_encoding=request.headers.get("content-encoding"),
+        forced=forced_headers)
 
     # 请求体流式转发 + 字节计数限流（设计 §8.1 第 2 条）：无 body 迹象时 content=None，
     # 避免对 GET 发空 chunked body；有 body 时 httpx 保留入站 Content-Length 分帧（已验证）

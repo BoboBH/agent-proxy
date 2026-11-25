@@ -69,11 +69,11 @@ async def test_proxy_trace_body_mode_records_and_redacts_query(body_client):
     from agent_proxy.logging_setup import flush_trace
 
     resp = await body_client.post("/api/v1/mappings", json=BODY,
-                                  headers={"Authorization": f"Bearer {make_token(888)}"})
+                                  headers={"X-Proxy-Authorization": f"Bearer {make_token(888)}"})
     assert resp.status_code == 201
     mid = resp.json()["mapping_id"]
     resp = await body_client.get(f"/p/{mid}/orders?token=secret-token-12345678&status=paid",
-                                 headers={"Authorization": f"Bearer {make_token(888)}"})
+                                 headers={"X-Proxy-Authorization": f"Bearer {make_token(888)}"})
     assert resp.status_code == 200
     flush_trace()
 

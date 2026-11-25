@@ -87,19 +87,19 @@ TOKEN=$(python -c "import base64,json; print('stub.'+base64.urlsafe_b64encode(js
 BASE=http://127.0.0.1:8800
 
 # 1) 注册（upstream 用公网地址——SSRF_ALLOW_PRIVATE=false 拒内网；响应含代理地址与占位符 header）
-curl -s -X POST $BASE/api/v1/mappings -H "Authorization: Bearer $TOKEN" \
+curl -s -X POST $BASE/api/v1/mappings -H "X-Proxy-Authorization: Bearer $TOKEN" \
      -H "Content-Type: application/json" \
      -d '{"type":"http","upstream_url":"https://example.com/","name":"smoke","headers":{"Authorization":"Bearer sk-real-key"}}'
 # → 201 {"mapping_id":"...","proxy_url":"http://127.0.0.1:8800/p/...","headers":{"Authorization":"${PX:Authorization}"},...}
 
 # 2) 详情（真实 header 仅详情/resolve 对 owner/admin 可见）
-curl -s $BASE/api/v1/mappings/<mapping_id> -H "Authorization: Bearer $TOKEN"
+curl -s $BASE/api/v1/mappings/<mapping_id> -H "X-Proxy-Authorization: Bearer $TOKEN"
 
 # 3) resolve（proxy_url 需 URL 编码；host 必须等于 EXTERNAL_BASE 的 host）
-curl -s "$BASE/api/v1/mappings/resolve?proxy_url=<urlencode 的 proxy_url>" -H "Authorization: Bearer $TOKEN"
+curl -s "$BASE/api/v1/mappings/resolve?proxy_url=<urlencode 的 proxy_url>" -H "X-Proxy-Authorization: Bearer $TOKEN"
 
 # 4) 删除（204；Agent 侧代理地址随即 404）
-curl -s -o /dev/null -w "%{http_code}\n" -X DELETE $BASE/api/v1/mappings/<mapping_id> -H "Authorization: Bearer $TOKEN"
+curl -s -o /dev/null -w "%{http_code}\n" -X DELETE $BASE/api/v1/mappings/<mapping_id> -H "X-Proxy-Authorization: Bearer $TOKEN"
 ```
 
 浏览器页面冒烟：打开 `http://127.0.0.1:8800/admin` → 未登录 302 到登录页 → stub 登录（用户 ID `888`，需要管理员视图选角色 `admin`）→ 我的映射注册/编辑/删除 + 公共映射管理入口（admin 角色）→ 退出登录。

@@ -49,16 +49,17 @@ async def _handle_proxy(request: Request, mapping_id: str, identity: Identity,
         if data["status"] != "active":
             raise AppError(404, "MAPPING_NOT_FOUND", "映射不存在或已禁用")
         if data["auth_mode"] == "oauth":
-            # M6 按用户注入（§14.5）：查本人凭证（无/invalid → 401 OAUTH_BINDING_REQUIRED
-            # 附授权引导）；expires_at-60s 内刷新（Redis 锁防并发）；出站
-            # Authorization: Bearer <本人 access_token> 覆盖存储同名头——「仅还原注册者
-            # header」的唯一例外（§14.1）。小写键与 build_outbound_headers 归一一致。
-            # data 为本请求私有 dict（缓存 JSON 反序列化产物），写入不跨请求共享。
+            # M6 按用户注入（§14.5，设计 v2 起经 forced 通道）：查本人凭证（无/invalid
+            # → 401 OAUTH_BINDING_REQUIRED 附授权引导）；expires_at-60s 内刷新（Redis 锁
+            # 防并发）。出站 Authorization 恒为本人 access_token 且**压过调用方自带
+            # Authorization 透传头**——凭证托管语义（§14.1）不被绕过。static 映射下
+            # forced=None：调用方 Authorization 覆盖存储值（设计 v2 调用方优先）。
             token = await oauth_credential.get_callable_credential(
                 session, request.app.state.redis, request.app.state, data,
                 identity.user_id, settings.master_key, request.state.request_id)
-            data = {**data, "upstream_headers": {**data["upstream_headers"],
-                                                 "authorization": f"Bearer {token}"}}
+            forced = {"authorization": f"Bearer {token}"}
+        else:
+            forced = None
     if data["type"] == "mcp":
         # 路径分发（§8.3 表，M4 起同时服务 Streamable）：仅 GET/HEAD 且命中注册
         # 端点路径 → SSE 解析管线（stream_sse_forward 不转发请求体，故非 GET/HEAD
@@ -76,11 +77,14 @@ async def _handle_proxy(request: Request, mapping_id: str, identity: Identity,
         assert_safe_sub_path(sub_path)
         if request.method in ("GET", "HEAD") and \
                 (sub_path or "/") == registered_endpoint_path(data["upstream_url"]):
-            return await stream_sse_forward(request.app.state, data, request)
+            return await stream_sse_forward(request.app.state, data, request,
+                                            forced_headers=forced)
         target = build_origin_target(data["upstream_url"], sub_path, request.url.query)
         return await stream_http_forward(request.app.state, data, request,
-                                         target_override=target, metrics_type="mcp")
-    return await stream_http_forward(request.app.state, data, request)
+                                         target_override=target, metrics_type="mcp",
+                                         forced_headers=forced)
+    return await stream_http_forward(request.app.state, data, request,
+                                     forced_headers=forced)
 
 
 @router.api_route("/p/{mapping_id}/{path:path}", methods=_PROXY_METHODS)

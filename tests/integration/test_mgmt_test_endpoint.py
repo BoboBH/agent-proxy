@@ -16,13 +16,13 @@ async def _register(client, user=888, **overrides):
     payload = {"type": "http", "upstream_url": "http://127.0.0.1:9901/api/v1",
                "headers": {"Authorization": "Bearer sk-real-12345678"}, **overrides}
     resp = await client.post("/api/v1/mappings", json=payload,
-                             headers={"Authorization": f"Bearer {make_token(user)}"})
+                             headers={"X-Proxy-Authorization": f"Bearer {make_token(user)}"})
     assert resp.status_code == 201, resp.text
     return resp.json()
 
 
 async def _test(client, mapping_id, user=888):
-    hdrs = {"Authorization": f"Bearer {make_token(user)}"}
+    hdrs = {"X-Proxy-Authorization": f"Bearer {make_token(user)}"}
     return await client.post(f"/api/v1/mappings/{mapping_id}/test", headers=hdrs)
 
 
@@ -247,7 +247,7 @@ async def test_register_rejects_malformed_expect_status(client):
               "headers": {},
               "test_request": {"method": "GET", "path": "/status/201",
                                "expect_status": "abc"}},
-        headers={"Authorization": f"Bearer {make_token(888)}"})
+        headers={"X-Proxy-Authorization": f"Bearer {make_token(888)}"})
     assert resp.status_code == 400 and resp.json()["code"] == "INVALID_PARAM"
 
 
@@ -279,7 +279,7 @@ async def test_register_rejects_illegal_test_method(client):
         json={"type": "http", "upstream_url": "http://127.0.0.1:9901/api/v1",
               "headers": {},
               "test_request": {"method": "TRACE", "path": "/orders", "expect_status": 200}},
-        headers={"Authorization": f"Bearer {make_token(888)}"})
+        headers={"X-Proxy-Authorization": f"Bearer {make_token(888)}"})
     assert resp.status_code == 400 and resp.json()["code"] == "INVALID_PARAM"
 
 
@@ -292,18 +292,18 @@ async def test_register_rejects_extra_test_request_keys(client):
             "/api/v1/mappings",
             json={"type": "http", "upstream_url": "http://127.0.0.1:9901/api/v1",
                   "headers": {}, "test_request": {"method": "GET", "path": "/", **extra}},
-            headers={"Authorization": f"Bearer {make_token(888)}"})
+            headers={"X-Proxy-Authorization": f"Bearer {make_token(888)}"})
         assert resp.status_code == 400 and resp.json()["code"] == "INVALID_PARAM"
         assert "多余键" in resp.json()["message"]
     # PUT 更新路径同一守卫
     created = (await client.post(
         "/api/v1/mappings",
         json={"type": "http", "upstream_url": "http://127.0.0.1:9901/api/v1", "headers": {}},
-        headers={"Authorization": f"Bearer {make_token(888)}"})).json()
+        headers={"X-Proxy-Authorization": f"Bearer {make_token(888)}"})).json()
     resp = await client.put(
         f"/api/v1/mappings/{created['mapping_id']}",
         json={"test_request": {"method": "GET", "path": "/", "unknown": True}},
-        headers={"Authorization": f"Bearer {make_token(888)}"})
+        headers={"X-Proxy-Authorization": f"Bearer {make_token(888)}"})
     assert resp.status_code == 400 and "多余键" in resp.json()["message"]
 
 

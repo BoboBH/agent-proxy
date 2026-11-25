@@ -9,7 +9,7 @@
 
 ```bash
 curl -X POST <BASE>/api/v1/mappings \
-  -H "Authorization: Bearer 888" -H "Content-Type: application/json" \
+  -H "X-Proxy-Authorization: Bearer 888" -H "Content-Type: application/json" \
   -d '{"type":"mcp","name":"demo","upstream_url":"http://host.docker.internal:9902/sse",
        "headers":{"X-Credential":"real-secret"},"test_request":{"method":"GET","path":"/","expect_status":200}}'
 ```
@@ -69,7 +69,7 @@ mcp 型探测式 auto——先 Streamable initialize 硬判定，405/404/406 回
 | `DELETE /{id}/binding` | 204 解绑；提供方支持时 best-effort revoke |
 | `POST /{id}/test` | admin=测静态配置（不注入）；普通用户须 `auth_mode=oauth` 且已绑定，以本人凭证实测（static → 400 OAUTH_NOT_APPLICABLE；未绑定 → 401 OAUTH_BINDING_REQUIRED） |
 
-oauth 型映射代理调用时按用户注入 `Authorization: Bearer <本人 access_token>`（覆盖存储同名头），
+oauth 型映射代理调用时按用户注入 `Authorization: Bearer <本人 access_token>`（forced 最高优先，压过调用方自带 Authorization），
 过期前 60s 自动刷新（并发安全）；无绑定 → 401 OAUTH_BINDING_REQUIRED。
 `GET /oauth/callback/{mapping_id}` 是浏览器回调端点（无 JWT，state 关联）——不要手工调用。
 
@@ -106,7 +106,7 @@ from urllib.parse import urlparse
 BASE = "http://127.0.0.1:8800"; TOKEN = "888"; MAPPING = "aqTNLiJXlCaN"
 SSE_PATH = f"/p/{MAPPING}/sse"    # ← 必须是注册响应里的 proxy_url 的路径部分（含端点路径）；
 u = urlparse(BASE)                #    GET /p/{id} 根路径走原始透传管线，endpoint 事件不会被改写
-hdrs = {"Authorization": f"Bearer {TOKEN}", "Accept": "text/event-stream"}
+hdrs = {"X-Proxy-Authorization": f"Bearer {TOKEN}", "Accept": "text/event-stream"}
 endpoint, results = None, {}
 
 def reader():                      # 1) SSE 长连接线程：endpoint 事件 + message 结果
@@ -131,7 +131,7 @@ def rpc(payload):                  # 2) JSON-RPC POST 到消息端点 → 202 �
     path = endpoint if endpoint.startswith("/") else "/" + endpoint
     c = http.client.HTTPConnection(u.hostname, u.port, timeout=30)
     c.request("POST", path, json.dumps(payload),
-              {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"})
+              {"X-Proxy-Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"})
     r = c.getresponse(); r.read(); assert r.status == 202, r.status
 
 rpc({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
@@ -148,11 +148,11 @@ Streamable 型等价操作（curl 可完成）：
 ```bash
 # initialize：响应头取 mcp-session-id（如 sess-m4）
 curl -sS -D - -X POST <BASE>/p/<id>/mcp \
-  -H "Authorization: Bearer 888" -H "Content-Type: application/json" \
+  -H "X-Proxy-Authorization: Bearer 888" -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"demo","version":"0"}}}'
 # 后续请求带 -H "mcp-session-id: sess-m4"；结束会话：
-curl -X DELETE <BASE>/p/<id>/mcp -H "Authorization: Bearer 888" -H "mcp-session-id: sess-m4"
+curl -X DELETE <BASE>/p/<id>/mcp -H "X-Proxy-Authorization: Bearer 888" -H "mcp-session-id: sess-m4"
 ```
 
 ## 4. 错误码表（统一 body `{"code","message","request_id"}`）

@@ -24,9 +24,9 @@ PROXY = "http://127.0.0.1:9910"
 AS = "http://127.0.0.1:9904"
 FRONT = "http://127.0.0.1:9910/console"
 MASTER = "test-master-key"
-ADMIN = {"Authorization": f"Bearer {make_token(100, 'admin')}"}
-U888 = {"Authorization": f"Bearer {make_token(888)}"}
-U999 = {"Authorization": f"Bearer {make_token(999)}"}
+ADMIN = {"X-Proxy-Authorization": f"Bearer {make_token(100, 'admin')}"}
+U888 = {"X-Proxy-Authorization": f"Bearer {make_token(888)}"}
+U999 = {"X-Proxy-Authorization": f"Bearer {make_token(999)}"}
 TCP_TIMEOUT = httpx.Timeout(connect=5, read=10, write=10, pool=5)
 
 CLIENT_BODY = {"client_id": "manual-cl", "client_secret": "manual-cs-123456",
@@ -97,6 +97,38 @@ async def test_injection_http_form_token_reaches_upstream(app):
         r = await c.get(f"{PROXY}/p/{mid}/orders?id=7", headers=U888)
     assert r.status_code == 200
     assert r.json()["headers"]["authorization"] == f"Bearer {token}"
+
+
+async def test_oauth_forced_credential_overrides_caller_authorization(app):
+    """设计 v2 forced 语义钉住：oauth 映射注入的本人凭证最高优先——调用方按 skill
+    指引自带的 Authorization 透传头**不能**覆盖托管凭证（§14.1 凭证托管不被绕过）。
+    static 映射才是调用方优先（见 test_auth_passthrough.py）。"""
+    mid = await _create_oauth(f"{AS}/api")
+    await _bind(mid)
+    token = await _cred_token(app, mid)
+    async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+        r = await c.get(f"{PROXY}/p/{mid}/orders?id=7", headers={
+            **U888, "Authorization": "Token caller-skill-jwt"})
+    assert r.status_code == 200
+    sent = r.json()["headers"]
+    assert sent["authorization"] == f"Bearer {token}"    # 托管凭证胜出
+    assert "caller-skill-jwt" not in r.text              # 调用方值绝不到上游
+
+
+async def test_oauth_forced_credential_overrides_caller_streamable_form(app):
+    mid = await _setup_manual("http://127.0.0.1:9903/mcp", type_="mcp")
+    await _bind(mid)
+    token = await _cred_token(app, mid)
+    streamable_state["received"].clear()
+    async with httpx.AsyncClient(timeout=TCP_TIMEOUT) as c:
+        r = await c.post(f"{PROXY}/p/{mid}/mcp", json={
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2025-06-18"}}, headers={
+            **U888, "Authorization": "Token caller-skill-jwt"})
+    assert r.status_code == 200
+    rec = streamable_state["received"][-1]
+    assert rec["headers"]["authorization"] == f"Bearer {token}"
+    assert not any("caller-skill-jwt" in v for v in rec["headers"].values())
 
 
 async def test_injection_streamable_form_token_reaches_upstream(app):

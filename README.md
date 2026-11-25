@@ -45,7 +45,7 @@ tools/list 与 tools/call 的人工验收步骤（协议级自动化覆盖见
    `CORS_ALLOWED_ORIGINS` 白名单）→ 浏览器打开返回的 `authorization_url` 同意 →
    回调 302 回 `front_redirect?binding=success`；
 4. `GET /api/v1/builtin-mappings/{id}/binding` 确认 `bound` 后，以任意绑定用户 JWT
-   调 `/p/{id}/...`——代理按用户注入其 `Authorization: Bearer <本人 token>`。
+   调 `/p/{id}/...`——代理按用户注入其 `Authorization: Bearer <本人 token>`（oauth 托管凭证，压过调用方自带同名头）。
 
 ## 管理页面（M7）
 

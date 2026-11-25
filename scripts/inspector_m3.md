@@ -61,7 +61,7 @@ npx @modelcontextprotocol/inspector
 
 ```bash
 curl -s -X POST http://127.0.0.1:8800/api/v1/mappings \
-  -H "Authorization: Bearer <TOKEN>" -H "Content-Type: application/json" \
+  -H "X-Proxy-Authorization: Bearer <TOKEN>" -H "Content-Type: application/json" \
   -d '{"type":"mcp","upstream_url":"http://127.0.0.1:9902/sse","headers":{"Authorization":"Bearer sk-demo-123456"}}'
 ```
 
@@ -72,7 +72,7 @@ curl -s -X POST http://127.0.0.1:8800/api/v1/mappings \
 1. 打开 Inspector UI（默认 http://localhost:6274），左侧连接配置：
    - Transport Type：`SSE`
    - URL：`http://127.0.0.1:8800/p/<mapping_id>/sse`
-   - Authentication → Custom Header：名称 `Authorization`，值 `Bearer <TOKEN>`
+   - Authentication → Custom Header：名称 `X-Proxy-Authorization`，值 `Bearer <TOKEN>`（设计 v2：认证头换名，Authorization 属上游载荷语义）
 2. 点击 **Connect**。
 
 预期：连接成功。内部发生了什么——代理完成 SSE 握手并把上游 endpoint 事件

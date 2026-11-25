@@ -12,9 +12,9 @@ from agent_proxy.oauth.credential import decrypt_text
 from tests.integration.mock_oauth_as import as_state
 from tests.utils import make_token
 
-ADMIN = {"Authorization": f"Bearer {make_token(100, 'admin')}"}
-U888 = {"Authorization": f"Bearer {make_token(888)}"}
-U999 = {"Authorization": f"Bearer {make_token(999)}"}
+ADMIN = {"X-Proxy-Authorization": f"Bearer {make_token(100, 'admin')}"}
+U888 = {"X-Proxy-Authorization": f"Bearer {make_token(888)}"}
+U999 = {"X-Proxy-Authorization": f"Bearer {make_token(999)}"}
 FRONT = "http://testserver/console"
 MASTER = "test-master-key"
 

@@ -6,8 +6,8 @@ import logging
 from datetime import datetime, timezone
 from urllib.parse import parse_qsl, urlparse, urlunparse
 
-SENSITIVE_HEADERS = {"authorization", "proxy-authorization", "cookie", "set-cookie",
-                     "x-auth-token", "x-api-key", "api-key"}
+SENSITIVE_HEADERS = {"authorization", "proxy-authorization", "x-proxy-authorization",
+                     "cookie", "set-cookie", "x-auth-token", "x-api-key", "api-key"}
 # 兜底：header 名含这些子串一律按敏感处理（未列入精确集合的敏感头默认安全）
 _SENSITIVE_SUBSTRINGS = ("token", "secret", "key", "auth", "cookie")
 _TEXT_TYPES = ("text/", "application/json", "application/xml", "application/x-www-form-urlencoded")
