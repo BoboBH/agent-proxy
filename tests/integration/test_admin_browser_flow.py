@@ -45,7 +45,7 @@ async def test_full_browser_flow_admin_as_admin(app):
         r = await c.post("/api/v1/mappings", json=HTTP_BODY)
         assert r.status_code == 201
         mid = r.json()["mapping_id"]
-        assert r.json()["headers"]["Authorization"] == "${PX:Authorization}"
+        assert r.json()["headers"] == {"X-Proxy-Authorization": "{{RUNTIME_TOKEN}}"}
         r = await c.get("/api/v1/mappings/resolve", params={"proxy_url": mid})
         assert r.json()["headers"]["Authorization"] == "Bearer sk-real-1234567890"
         r = await c.post(f"/api/v1/mappings/{mid}/test")

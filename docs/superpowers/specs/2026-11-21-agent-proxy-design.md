@@ -89,7 +89,7 @@ flowchart TD
 | **映射（Mapping）** | 一条注册记录：`mapping_id → 归属用户 + 真实上游地址 + 真实 header`，代理转发的依据 |
 | **mapping_id** | 注册时生成的随机 base62 串（12 位，约 71 bit 熵），是路由前缀，不含任何真实地址信息 |
 | **代理地址（proxy_url）** | Agent 实际保存和调用的地址，形如 `{EXTERNAL_BASE}/p/{mapping_id}/...` |
-| **占位符** | 返回给 Agent 的 header 值，格式 `${PX:<header名>}`，仅起脱敏展示作用 |
+| **占位符（v3 已换）** | 返回给 Agent 的 header 值；v3 起为 `{{RUNTIME_TOKEN}}`（见 6.3 修订），v2 前为 `${PX:<header名>}` |
 | **上游（upstream）** | 真实的 MCP 服务或 HTTP API |
 
 ---
@@ -169,7 +169,7 @@ HTTP 201
 {
   "mapping_id": "aB3xK9mQ2wR4",
   "proxy_url": "https://agent-prox.com/p/aB3xK9mQ2wR4/sse",
-  "headers": { "Authorization": "${PX:Authorization}", "X-User-Id": "${PX:X-User-Id}" }
+  "headers": { "X-Proxy-Authorization": "{{RUNTIME_TOKEN}}" }
 }
 ```
 
@@ -288,7 +288,7 @@ CREATE TABLE proxy_oauth_credential (
 | POST | `/api/v1/mappings/{mapping_id}/test` | 测试个人映射有效性（见 6.6） |
 | GET | `/api/v1/mappings` | 当前用户的映射列表（分页） |
 | GET | `/api/v1/mappings/{mapping_id}` | 映射详情，**真实值仅注册者可见**（响应体同 6.4） |
-| GET | `/api/v1/mappings/resolve` | **回显接口**：按代理地址查询参数回查真实地址与真实 header，见 6.4；静态路由须先于 `{mapping_id}` 动态路由注册 |
+| GET | `/api/v1/mappings/resolve` | **回显接口**：按代理地址**或名称**（v3：`?name=`）回查真实地址与真实 header，见 6.4；静态路由须先于 `{mapping_id}` 动态路由注册 |
 | PUT | `/api/v1/mappings/{mapping_id}` | 更新 upstream_url / headers / status，成功后删缓存 |
 | DELETE | `/api/v1/mappings/{mapping_id}` | 删除映射，成功后删缓存 |
 
@@ -330,11 +330,21 @@ proxy_url = {EXTERNAL_BASE}/p/{mapping_id} [ + upstream_path ]    # mcp 类型�
 
 `EXTERNAL_BASE` 为配置项（网关后的对外域名），保证返回的代理地址可直接使用。
 
-### 6.3 占位符规范
+### 6.3 占位符规范（v3 修订：回显 = 代理调用配置）
 
-- 格式：`${PX:<header名>}`，如 `${PX:Authorization}`；
-- 生成：注册响应中，对每个真实 header 的 value 生成同名占位符（**同 key 不同值**）；
-- 还原：转发时**按 key 从存储直接取真实值**重建出站 header，占位符内容不参与任何解析；
+> **v3（2026-11-25）**：注册/更新响应与内置列表的 `headers` 字段不再回显存储头的
+> 脱敏形态（`${PX:<名>}`），改为**代理调用配置**——仅
+> `{"X-Proxy-Authorization": "{{RUNTIME_TOKEN}}"}`，与输入结构一致（名称/地址/headers）。
+> 平台下发 agent 配置时把 `{{RUNTIME_TOKEN}}` 运行时替换为用户 token（如
+> `Bearer <user_id>`），agent 据此直访代理；代理消费该头鉴权后，用存储的真实
+> 地址/凭据访问上游。`Authorization` 自 §8.1 v2 起为可透传的上游载荷头，不再被
+> 代理消费——skill 教传的上游凭据头与此配置互不冲突。真实 header 值仅在
+> resolve/详情（`view_credentials`）出现。
+
+- 配置结构：`{"X-Proxy-Authorization": "{{RUNTIME_TOKEN}}"}`（`RUNTIME_TOKEN` 为
+  平台替换层占位约定，代理原样返回不做替换）；
+- resolve（6.4）新增 `?name=<映射名>` 寻址：按名称取**本人**映射（重名取最新），
+  与 `proxy_url` 二选一，返回原始配置（name、真实 url、真实 header）。
 - Agent 即使把占位 header 原样发回，代理也一律丢弃（见 8.1），不构成泄露或伪造通道。
 
 ### 6.4 回显接口（查看/编辑已保存配置）

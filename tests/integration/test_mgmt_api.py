@@ -19,7 +19,7 @@ async def test_create_returns_masked_headers_and_proxy_url(client):
     data = resp.json()
     assert len(data["mapping_id"]) == 12
     assert data["proxy_url"] == f"http://testserver/p/{data['mapping_id']}"
-    assert data["headers"] == {"Authorization": "${PX:Authorization}", "X-User-Id": "${PX:X-User-Id}"}
+    assert data["headers"] == {"X-Proxy-Authorization": "{{RUNTIME_TOKEN}}"}  # 设计 v3：回显=代理调用配置
     assert "sk-real-key" not in resp.text and "u-888" not in data["headers"].values()
     assert data["visibility"] == "private" and data["status"] == "active"
 
@@ -100,7 +100,7 @@ async def test_put_updates_and_returns_masked(client):
     assert resp.status_code == 200
     data = resp.json()
     assert data["proxy_url"] == f"http://testserver/p/{mid}"
-    assert data["headers"] == {"Authorization": "${PX:Authorization}"}
+    assert data["headers"] == {"X-Proxy-Authorization": "{{RUNTIME_TOKEN}}"}
     resp = await client.get(f"/api/v1/mappings/{mid}",
                             headers={"X-Proxy-Authorization": f"Bearer {make_token(888)}"})
     assert resp.json()["upstream_url"] == "http://10.0.0.5/api/v2"
@@ -130,7 +130,8 @@ async def test_put_corrupt_headers_untouched_succeeds_and_disables(client, app):
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] == "disabled"
-    assert data["headers"] == {}                       # 占位符降级（键名不可得，无明文产出）
+    # 设计 v3：回显恒为代理调用配置（不再依赖解密——损坏行回显与正常行一致）
+    assert data["headers"] == {"X-Proxy-Authorization": "{{RUNTIME_TOKEN}}"}
     async with app.state.sessionmaker() as session:
         from sqlalchemy import select
         from agent_proxy.models import ProxyMapping
@@ -225,3 +226,32 @@ async def test_resolve_rejects_foreign_netloc(client):
         headers={"X-Proxy-Authorization": f"Bearer {make_token(888)}"})
     assert resp.status_code == 400 and resp.json()["code"] == "INVALID_PARAM"
     # 本服务 host 正常回显（EXTERNAL_BASE=http://testserver，既有用例已覆盖 200）
+
+
+async def test_resolve_by_name_returns_original_config(client):
+    """设计 v3：用户拿 mcp-name + X-Proxy-Authorization 即可取回**原始 MCP 配置**
+    （name、真实 url、真实 header）——限本人映射；重名取最新创建。"""
+    await _create(client, name="my-mcp", headers={"Authorization": "Bearer sk-v1"})
+    await _create(client, name="my-mcp", headers={"Authorization": "Bearer sk-v2"})  # 重名→最新
+    resp = await client.get("/api/v1/mappings/resolve?name=my-mcp",
+                            headers={"X-Proxy-Authorization": f"Bearer {make_token(888)}"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["name"] == "my-mcp"
+    assert data["upstream_url"] == "http://10.0.0.5/api/v1"
+    assert data["headers"] == {"Authorization": "Bearer sk-v2"}   # 最新创建的真实配置
+    resp = await client.get("/api/v1/mappings/resolve?name=my-mcp",
+                            headers={"X-Proxy-Authorization": f"Bearer {make_token(999)}"})
+    assert resp.status_code == 404 and resp.json()["code"] == "MAPPING_NOT_FOUND"  # 非本人不可见
+    resp = await client.get("/api/v1/mappings/resolve?name=my-mcp&proxy_url=x",
+                            headers={"X-Proxy-Authorization": f"Bearer {make_token(888)}"})
+    assert resp.status_code == 400   # 两参数同传
+    resp = await client.get("/api/v1/mappings/resolve",
+                            headers={"X-Proxy-Authorization": f"Bearer {make_token(888)}"})
+    assert resp.status_code == 400   # 都不传
+
+
+async def test_resolve_by_name_not_found(client):
+    resp = await client.get("/api/v1/mappings/resolve?name=absent",
+                            headers={"X-Proxy-Authorization": f"Bearer {make_token(888)}"})
+    assert resp.status_code == 404 and resp.json()["code"] == "MAPPING_NOT_FOUND"

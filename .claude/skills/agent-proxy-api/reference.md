@@ -27,17 +27,22 @@ curl -X POST <BASE>/api/v1/mappings \
 | `test_request` | `{method,path,expect_status?}` | 可选；method 限白名单动词；多余键注册即拒 |
 
 响应 `RegisteredOut`：`{mapping_id(12位), name, type, visibility, auth_mode, proxy_url,
-headers: {"X-Credential":"${PX:X-Credential}"}, status}`——headers 是**占位符脱敏**，
-proxy_url = `<BASE>/p/{id}`（mcp 型追加上游端点路径，如 `/p/{id}/sse`）。
+headers: {"X-Proxy-Authorization":"{{RUNTIME_TOKEN}}"}, status}`——headers 即**代理
+调用配置**（结构=名称+地址+headers；平台把 `{{RUNTIME_TOKEN}}` 运行时替换为用户
+token），proxy_url = `<BASE>/p/{id}`（mcp 型追加上游端点路径，如 `/p/{id}/sse`）。
 
 ### GET /api/v1/mappings?page=1&page_size=20 → 列表
 
-`[{mapping_id,name,type,upstream_url,proxy_url,status,created_at,updated_at}]`——**不含 headers**（连占位符都没有）。仅返回本人映射。
+`[{mapping_id,name,type,upstream_url,proxy_url,status,created_at,updated_at}]`——**不含 headers**。仅返回本人映射。
 
-### GET /api/v1/mappings/resolve?proxy_url=<值> → 详情
+### GET /api/v1/mappings/resolve → 详情（原始 MCP/HTTP 配置）
 
-`proxy_url` 接受：12 位 mapping_id、完整代理地址（host 必须等于本服务 EXTERNAL_BASE）、URL 编码形态。
-用途：用户端页面据代理地址反查展示信息。返回 `MappingDetailOut` =
+两种寻址**二选一**（同传/均缺 → 400 INVALID_PARAM）：
+- `?proxy_url=<值>`：12 位 mapping_id、完整代理地址（host 必须等于本服务 EXTERNAL_BASE）、URL 编码形态；
+- `?name=<映射名>`（设计 v3）：按名称取**本人**映射（重名取最新创建；admin 跨属主请走 id 形态）。
+
+用途：用户拿 mcp-name + X-Proxy-Authorization 取回原始配置（name、真实 url、真实 header），
+用户端页面据代理地址/名称反查展示。返回 `MappingDetailOut` =
 RegisteredOut 全字段 + `upstream_url` + **真实 headers 明文** + `test_request` + 时间戳。
 （审计动作 `view_credentials`；非 owner → 404 MAPPING_NOT_FOUND 隐藏存在性。）
 
@@ -61,7 +66,7 @@ mcp 型探测式 auto——先 Streamable initialize 硬判定，405/404/406 回
 
 | 端点 | 语义 |
 |---|---|
-| `GET /api/v1/builtin-mappings` | public 列表：`{mapping_id,name,type,proxy_url,headers(占位符),auth_mode,binding,status}`；binding 仅 oauth 型有值（static=null） |
+| `GET /api/v1/builtin-mappings` | public 列表：`{mapping_id,name,type,proxy_url,headers(代理调用配置={"X-Proxy-Authorization":"{{RUNTIME_TOKEN}}"}),auth_mode,binding,status}`（设计 v3：不再解密存储头）；binding 仅 oauth 型有值（static=null） |
 | `PUT /{id}/client` | **仅 admin** 手动配置 OAuth 客户端 `{client_id,client_secret?,token_auth:"client_secret_basic"|"client_secret_post"|"none",authorize_url,token_url,scopes?}`；upsert；secret 加密落库、永不回显 |
 | `GET /{id}/client` | **仅 admin** 查看（`client_secret_configured` 布尔） |
 | `POST /{id}/authorize` | body `{"front_redirect":"https://页面/回调"}`（域须在 CORS 白名单）→ `{authorization_url}`；**引导用户浏览器打开**，AS 回调代理 `/oauth/callback/{id}` 后 302 回 `front_redirect?binding=success|failed&reason=...` |
@@ -88,13 +93,14 @@ public 任意有效身份）→ disabled → 404 → oauth 凭证注入 → 按 
 type=http：`/p/{id}/{path}` → `upstream_url + /{path}`（前缀拼接，query 原样）。
 同源重定向代理内部跟随（每跳有上限，超限 502 TOO_MANY_REDIRECTS）。
 
-### 出站/入站 header 规则（安全核心）
+### 出站/入站 header 规则（安全核心，设计 v2/v3）
 
-- 出站 = 存储 `upstream_headers` 全量（真实值，小写归一）+ 从调用方透传白名单：
-  `accept, accept-encoding, content-type, content-length, content-encoding,
-  mcp-session-id, last-event-id, mcp-protocol-version`。
-- 调用方 JWT、占位符 header、浏览器指纹**一律不透传**；hop-by-hop（connection/
-  keep-alive/te/trailer/transfer-encoding/upgrade/proxy-*）双向剥离。
+- 出站 = 存储 `upstream_headers` 全量（真实值，小写归一）∪ **调用方 header 全量透传**
+  （同名调用方覆盖存储——skill 教传的 `Authorization` 等上游头原样直达）；
+  oauth 型映射注入的本人凭证 forced 最高优先，压过调用方同名头。
+- 保留命名空间（来源无关，绝不透传）：`x-proxy-authorization`（代理身份，已消费）、
+  `cookie`（防平台会话 `ap_sess` 泄漏）、`host`（由转发目标派生，防 vhost 路由破坏）；
+  hop-by-hop（connection/keep-alive/te/trailer/transfer-encoding/upgrade/proxy-*）双向剥离。
 - 响应头剥 hop-by-hop 后原样回传，绝不含存储真实 header。
 
 ### 完整示例：SSE 型 initialize + tools/list（python 标准库）

@@ -92,17 +92,8 @@ async def list_builtin_mappings(request: Request,
         .order_by(ProxyMapping.id))).scalars().all()
     out = []
     for row in rows:
-        # 行内 headers 为密文（收尾批次强制加密）：列表只展示占位符，也须经
-        # plain_headers 解密取键名——直接迭代密文字符串会把字符当 header 名。
-        # 逐行兜底（评审 Important 1b）：一行损坏不再 500 整个列表——降级跳过 + WARN
-        # （不产出明文；该行详情/调用路径各自 fail-closed 404）
-        try:
-            masked = placeholder.mask_headers(
-                plain_headers(row.upstream_headers, settings.master_key))
-        except AppError:
-            log.warning("内置映射 headers 解密失败，列表降级跳过该行: mapping_id=%s",
-                        row.mapping_id)
-            continue
+        # 设计 v3：headers 回显 = 代理调用配置（不再解密存储头——列表零解密开销，
+        # 也去掉了原「解密失败降级跳过整行」分支；真实值只在 resolve/详情出现）
         binding = None
         if row.auth_mode == "oauth":
             binding = await get_binding_status(session, request.app.state.redis,
@@ -110,7 +101,7 @@ async def list_builtin_mappings(request: Request,
         out.append(BuiltinItemOut(
             mapping_id=row.mapping_id, name=row.name, type=row.type,
             proxy_url=build_proxy_url(settings, row.mapping_id, row.upstream_url, row.type),
-            headers=masked,
+            headers=placeholder.proxy_call_headers(),
             auth_mode=row.auth_mode, binding=binding, status=row.status))
     return out
 

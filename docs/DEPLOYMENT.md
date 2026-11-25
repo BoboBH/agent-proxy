@@ -90,7 +90,7 @@ BASE=http://127.0.0.1:8800
 curl -s -X POST $BASE/api/v1/mappings -H "X-Proxy-Authorization: Bearer $TOKEN" \
      -H "Content-Type: application/json" \
      -d '{"type":"http","upstream_url":"https://example.com/","name":"smoke","headers":{"Authorization":"Bearer sk-real-key"}}'
-# → 201 {"mapping_id":"...","proxy_url":"http://127.0.0.1:8800/p/...","headers":{"Authorization":"${PX:Authorization}"},...}
+# → 201 {"mapping_id":"...","proxy_url":"http://127.0.0.1:8800/p/...","headers":{"X-Proxy-Authorization":"{{RUNTIME_TOKEN}}"},...}
 
 # 2) 详情（真实 header 仅详情/resolve 对 owner/admin 可见）
 curl -s $BASE/api/v1/mappings/<mapping_id> -H "X-Proxy-Authorization: Bearer $TOKEN"

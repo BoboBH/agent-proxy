@@ -6,8 +6,10 @@ import re
 from urllib.parse import unquote, urlparse
 
 from fastapi import APIRouter, Depends, Query, Request, Response
+from sqlalchemy import select
 
 from .. import placeholder
+from ..models import ProxyMapping
 from ..auth import Identity
 from ..config import Settings, get_settings
 from ..errors import AppError
@@ -51,9 +53,10 @@ def _registered_out(settings: Settings, data: dict) -> RegisteredOut:
         mapping_id=data["mapping_id"], name=data.get("name"), type=data["type"],
         visibility=data["visibility"], auth_mode=data["auth_mode"],
         proxy_url=build_proxy_url(settings, data["mapping_id"], data["upstream_url"], data["type"]),
-        # data["upstream_headers"] 为 services 层已解密的明文 dict（落库/缓存均为密文，
-        # 本函数只消费明文形态）；响应仅占位符脱敏，真实值只在详情/resolve 出现
-        headers=placeholder.mask_headers(data["upstream_headers"]), status=data["status"])
+        # 设计 v3：回显 headers = 代理调用配置（仅 X-Proxy-Authorization，值
+        # {{RUNTIME_TOKEN}} 占位符，平台运行时替换）——与输入结构一致，agent 拿到
+        # 即可用；真实地址/header 只在 resolve/详情出现
+        headers=placeholder.proxy_call_headers(), status=data["status"])
 
 
 def _detail_out(settings: Settings, data: dict) -> MappingDetailOut:
@@ -68,10 +71,29 @@ def _detail_out(settings: Settings, data: dict) -> MappingDetailOut:
 
 # 注意：静态路由 /resolve 必须先于动态路由 /{mapping_id} 注册（FastAPI 按注册顺序匹配）。
 @router.get("/resolve", response_model=MappingDetailOut)
-async def resolve_mapping(request: Request, proxy_url: str = Query(...),
+async def resolve_mapping(request: Request, proxy_url: str = Query(None),
+                          name: str = Query(None, max_length=128),
                           identity: Identity = Depends(get_current_identity),
                           session=Depends(get_db), settings: Settings = Depends(get_settings)):
-    mapping_id = parse_proxy_url(proxy_url, settings.external_base)
+    """取回原始 MCP/HTTP 配置（name、真实 url、真实 header，owner 凭据查看语义）。
+
+    两种寻址（二选一，同传/均缺 → 400）：
+    - proxy_url：12 位 mapping_id 或完整代理地址（既有语义）；
+    - name（设计 v3）：按映射名称取本人映射（重名取最新创建；恒限本人——
+      admin 跨属主请走 id/代理地址形态，避免重名歧义）。
+    """
+    if bool(proxy_url) == bool(name):
+        raise AppError(400, "INVALID_PARAM", "proxy_url 与 name 二选一")
+    if name:
+        stmt = (select(ProxyMapping)
+                .where(ProxyMapping.name == name, ProxyMapping.owner_uid == identity.user_id)
+                .order_by(ProxyMapping.id.desc()).limit(1))
+        row = (await session.execute(stmt)).scalar_one_or_none()
+        if row is None:
+            raise AppError(404, "MAPPING_NOT_FOUND", "映射不存在")
+        mapping_id = row.mapping_id
+    else:
+        mapping_id = parse_proxy_url(proxy_url, settings.external_base)
     data = await get_owned(session, request.app.state.redis, mapping_id,
                            identity.user_id, settings.cache_ttl, settings.master_key,
                            admin_override=is_admin(identity, settings.admin_role))

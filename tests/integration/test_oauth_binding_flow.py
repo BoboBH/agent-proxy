@@ -166,7 +166,7 @@ async def test_builtin_list_items_binding_and_masked_headers(client):
     items = {x["mapping_id"]: x for x in resp.json()}
     assert static_mid in items and oauth_mid in items
     assert items[static_mid]["binding"] is None          # static 无绑定语义
-    assert items[static_mid]["headers"] == {"Authorization": "${PX:Authorization}"}
+    assert items[static_mid]["headers"] == {"X-Proxy-Authorization": "{{RUNTIME_TOKEN}}"}  # 设计 v3：回显=代理调用配置
     assert "sk-shared-12345678" not in resp.text         # 占位符，真实值不出
     assert items[oauth_mid]["binding"] == "bound"
     assert items[oauth_mid]["proxy_url"].startswith("http://testserver/p/")
@@ -175,11 +175,10 @@ async def test_builtin_list_items_binding_and_masked_headers(client):
     assert items999[oauth_mid]["binding"] == "unbound"   # 按调用者视角
 
 
-async def test_builtin_list_skips_corrupt_headers_row_with_warning(client, app, caplog):
-    """评审 Important 1b：内置列表逐行解密兜底——一行损坏降级跳过 + WARN（健康行
-    照常返回），不再 500 整个列表；不产出明文，该行详情/调用路径各自 fail-closed。"""
-    import logging
-
+async def test_builtin_list_lists_corrupt_rows_without_decryption(client, app):
+    """设计 v3 重写（原「损坏行降级跳过 + WARN」）：列表 headers 回显 = 代理调用
+    配置，**不再解密存储头**——损坏行照常列出且回显一致（零解密开销、无降级分支）；
+    该行详情/调用路径仍各自 fail-closed 404。"""
     from agent_proxy.models import ProxyMapping
 
     healthy_mid = (await client.post("/api/v1/mappings", json={
@@ -196,13 +195,12 @@ async def test_builtin_list_skips_corrupt_headers_row_with_warning(client, app, 
                               .where(ProxyMapping.mapping_id == corrupt_mid)
                               .values(upstream_headers="gAAAAbroken-not-fernet"))
         await session.commit()
-    with caplog.at_level(logging.WARNING, logger="agent_proxy"):
-        resp = await client.get("/api/v1/builtin-mappings", headers=ADMIN)
-    assert resp.status_code == 200                       # 非 500：单行损坏不拖垮列表
-    ids = {x["mapping_id"] for x in resp.json()}
-    assert healthy_mid in ids and corrupt_mid not in ids  # 损坏行降级跳过
-    assert any(r.levelno == logging.WARNING and "列表降级跳过" in r.getMessage()
-               and corrupt_mid in r.getMessage() for r in caplog.records)
+    resp = await client.get("/api/v1/builtin-mappings", headers=ADMIN)
+    assert resp.status_code == 200
+    items = {x["mapping_id"]: x for x in resp.json()}
+    assert healthy_mid in items and corrupt_mid in items       # 损坏行照常列出
+    assert items[healthy_mid]["headers"] == {"X-Proxy-Authorization": "{{RUNTIME_TOKEN}}"}
+    assert items[corrupt_mid]["headers"] == {"X-Proxy-Authorization": "{{RUNTIME_TOKEN}}"}
 
 
 async def test_state_replay_rejected_400(client):

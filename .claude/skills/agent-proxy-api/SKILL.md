@@ -31,7 +31,7 @@ agent-proxy 是 Agent 平台的出站代理：**真实上游地址与凭据只�
 | `/metrics` | GET | Prometheus 文本 | 无 |
 | `/api/v1/mappings` | POST | 注册映射 → 201（body 见下） | 登录 |
 | `/api/v1/mappings` | GET | 我的映射列表（无真实 headers） | 登录 |
-| `/api/v1/mappings/resolve?proxy_url=<12位id或完整代理地址>` | GET | 详情含**真实** upstream_url/headers | owner/admin |
+| `/api/v1/mappings/resolve?proxy_url=<12位id或完整代理地址>` 或 `?name=<映射名>` | GET | 按 id/代理地址/**名称**取回**原始配置**（真实 upstream_url/headers，重名取最新，限本人） | owner/admin |
 | `/api/v1/mappings/{id}` | GET/PUT/DELETE | 详情 / 局部更新 / 删除(204) | owner/admin |
 | `/api/v1/mappings/{id}/test` | POST | 配置有效性探测 → `{ok,status_code,latency_ms,detail}` | owner/admin |
 | `/api/v1/builtin-mappings` | GET | public 映射列表 + 我的 OAuth 绑定状态 | 登录 |
@@ -41,7 +41,10 @@ agent-proxy 是 Agent 平台的出站代理：**真实上游地址与凭据只�
 | `/p/{mapping_id}[/{path}]` | ANY | **代理转发**（HTTP/MCP 统一入口） | private:owner；public:登录 |
 
 注册 body：`{"type":"http"|"mcp","upstream_url":"...","name"?,"visibility"?,"auth_mode"?,"headers":{...},"test_request"?}`
-→ 201 返回 `{mapping_id, proxy_url, headers:{"<名>":"${PX:<名>"}}`（**占位符仅脱敏展示**）。
+→ 201 返回 `{mapping_id, name, proxy_url, headers:{"X-Proxy-Authorization":"{{RUNTIME_TOKEN}}"}, status}`
+——**headers 即代理调用配置**（结构=名称+地址+headers，与输入一致）：平台把
+`{{RUNTIME_TOKEN}}` 运行时替换为用户 token 后，agent 用这份配置直访代理；真实
+地址/凭据由代理保管，仅 resolve/详情可查。
 
 ## 经代理调用（核心）
 
@@ -49,8 +52,9 @@ agent-proxy 是 Agent 平台的出站代理：**真实上游地址与凭据只�
 `Authorization: Token xxx` 原样直达上游；static 映射语义。oauth 型映射例外：注入的
 本人凭证恒最优先）。绝不透传的保留头：`X-Proxy-Authorization`（代理身份，已消费）、
 `Cookie`（防平台会话泄漏）、`Host`（按转发目标派生）、hop-by-hop 双向剥离。
-调用方未携带的头由存储值补位（公共映射共享凭据默认路径）。`${PX:...}` 占位符是
-展示用脱敏，**不要**发送它，也不需要发真实值。
+调用方未携带的头由存储值补位（公共映射共享凭据默认路径）。注册/列表响应的
+`headers` 字段（`{{RUNTIME_TOKEN}}` 形态）就是**该映射的调用配置**——照抄使用，
+不要手写上游真实头，也**不要**把占位符原样发到代理（须先由平台替换）。
 
 **HTTP 型**：`proxy_url`（不含端点路径）后拼子路径，方法/查询串原样：
 `curl <BASE>/p/<id>/api/v1/users -H "X-Proxy-Authorization: Bearer 888" -d '...'`
