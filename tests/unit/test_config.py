@@ -36,13 +36,18 @@ def test_illegal_impl_value_rejected():
         Settings.from_env({**BASE, "LOGIN_IMPL": "banana"})
 
 
-def test_prod_with_third_party_rejected_until_impl_lands():
-    # third_party/company_sso 尚未实现：prod 下会通过 stub 门禁但请求必 500，故白名单拦截；
-    # third_party/company_sso 实现接入后此测试改回构造成功
+def test_third_party_token_impl_constructs_in_dev():
+    """v4.1：third_party 验签已实现，dev 下可构造（默认 beta 基址）。"""
+    s = Settings.from_env({**BASE, "TOKEN_VERIFY_IMPL": "third_party"})
+    assert s.token_verify_impl == "third_party"
+    assert s.verify_api_base == "https://bapal.9m-tec.com/alphapal/api/ai-service"
+
+
+def test_prod_third_party_token_with_stub_login_rejected():
+    """prod 门禁（沿既有语义）：prod 禁 stub 登录实现——company_sso 未接入前，
+    third_party token + stub login 的组合在 prod 仍被拒（login 侧门禁）。"""
     with pytest.raises(ConfigError):
-        Settings.from_env(
-            {**BASE, "ENV": "prod", "TOKEN_VERIFY_IMPL": "third_party", "LOGIN_IMPL": "company_sso"}
-        )
+        Settings.from_env({**BASE, "ENV": "prod", "TOKEN_VERIFY_IMPL": "third_party"})
 
 
 def test_missing_dsn_rejected():
