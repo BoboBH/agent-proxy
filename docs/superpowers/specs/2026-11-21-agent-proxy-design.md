@@ -468,6 +468,27 @@ class TokenVerifier(Protocol):
 >   集合 + `Proxy-*` 前缀）双向剥离不变。
 > - **安全前提**：透传模型适用于平台自家 agent（半可信内网调用方）；对公网不可信
 >   调用方，任意头透传会放大注入面，不适用——该前提随本修订显式登记。
+
+> **v4（2026-11-26）修订：认证头名可配置 + 存储优先**
+> - **认证头名**：新增 `PROXY_AUTH_HEADER` 配置（默认 `Authorization`，即回到本文
+>   原始头名）。默认名下该头**身兼两职**：代理鉴权 +（映射未配同名头时）原样透传
+>   上游——统一 token 场景（skill 教传的 `Authorization: Token <jwt>` 直通）；
+>   `Authorization` 仍不在保留名单。配置为其他名字（如 `X-Proxy-Authorization`）
+>   时该头纯代理私有、绝不透传——v2 分离模式经配置恢复，不再是硬编码行为。
+> - **出站合并反转为「存储优先」**：forced（oauth 托管）> explicit（content-*）>
+>   **存储 upstream_headers > 调用方透传**——映射配了同名头即替换调用方值（托管
+>   语义恢复）；没配则调用方原样透传（agent-email「没有个人配置，直接使用 token」
+>   场景）。取代本节 v2 的「调用方覆盖存储」。
+> - **回显 = 代理调用配置（§6.3 v3 延续）**：headers 字段头名跟随
+>   `PROXY_AUTH_HEADER`。
+>
+> **v4.1（2026-11-26）：third_party 验签实现落地**（§7 抽象的实现，对接
+> `docs/auth_verify_token_integration.md`）：`GET {VERIFY_API_BASE}/auth/verify_token`，
+> Authorization 凭据原样透传（接口支持 Bearer/Token scheme）；200+valid →
+> Identity（身份以响应 user_id 为准，user_type 命中 admin 判定）；非 200/valid:false →
+> 401；5xx/网络 → 503 AUTH_SERVICE_UNAVAILABLE；locked/deleted 拒收；短 TTL 缓存
+> 60s。`VERIFY_API_BASE` 默认 beta（生产切 app.9m-tec.com）。出站客户端
+> trust_env=False 与上行直连一致。
 > - **出站直连（trust_env=False）**：上游客户端不读环境/系统代理（httpx 默认经
 >   `getproxies()` 读 Windows 注册表代理——桌面代理场景下死端口被代答 502、探测
 >   误判可达、SSRF 的 IP 校验被旁路）。需经企业代理出站的部署属显式架构决策，

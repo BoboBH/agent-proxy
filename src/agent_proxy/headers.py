@@ -1,37 +1,36 @@
-"""出站 header 重建（设计 v2 透传模型）与响应 header 过滤（§8.1 修订）。
+"""出站 header 重建（设计 v4：存储优先、缺省透传、认证头名可配置）与响应过滤。
 
-出站 = 存储 upstream_headers 全量打底 + **调用方 header 全量透传**（同名调用方
-覆盖存储——skill 教传的 Authorization 等上游凭证头原样直达上游）+ forced 最高
-优先（oauth 型映射注入的本人凭证，凭证托管语义不被调用方绕过）+ 协议显式值
-（content-*，来自真实入站载荷，优先级高于调用方同名头）。
+合并优先级：**forced（oauth 托管注入）> explicit（content-*，真实载荷）>
+存储 upstream_headers（映射配置的权威凭据）> 调用方透传**。
+- 映射配了某 header → 存储值替换调用方同名头（托管语义）；
+- 映射没配 → 调用方头原样透传（agent-email「直接使用 token」场景）。
 
-保留命名空间（绝不透传，与存储/调用方来源无关）：
-- x-proxy-authorization：代理身份通道，已在鉴权层消费；
-- cookie：防平台会话（ap_sess）泄漏给上游；上游 cookie 走存储 headers 配置；
-- host：由 httpx 按转发目标 URL 派生，透传会破坏上游 vhost 路由。
+认证头名可配置（PROXY_AUTH_HEADER，默认 Authorization）：
+- 默认 Authorization：既作代理鉴权又可透传上游（统一 token 场景）；
+- 配置为其他名字：该头纯代理私有，绝不透传（v2 分离模式经配置恢复）。
 
-hop-by-hop（RFC 9110 §7.6.1：Connection/Keep-Alive/TE/Trailer/Transfer-Encoding/
-Upgrade + Proxy-* 前缀）双向剥离不变。
+保留命名空间（来源无关，绝不透传）：cookie（防平台会话 ap_sess 泄漏）、host
+（按转发目标派生，防 vhost 路由破坏）；hop-by-hop（Connection/Keep-Alive/TE/
+Trailer/Transfer-Encoding/Upgrade + Proxy-* 前缀）双向剥离。
 
-安全前提（设计文档 §8.1 v2 注记）：透传模型适用于**平台自家 agent（半可信内网
-调用方）**；对公网不可信调用方，任意头透传会放大注入面，不适用。
+安全前提：调用方任意头透传适用于平台自家 agent（半可信内网调用方）；对公网
+不可信调用方不适用。
 
-出站 key 统一小写归一（防同名不同大小写发重复头行）。响应 header 剥离 hop-by-hop
-后原样回传，绝不含存储的真实 header。
+出站 key 统一小写归一（防同名不同大小写发重复头行）。响应 header 剥离
+hop-by-hop 后原样回传，绝不含存储的真实 header。
 """
 from __future__ import annotations
 
 import typing
 
-# hop-by-hop + Proxy-* 前缀（注意：x-proxy-authorization 不匹配 proxy-* 前缀，
-# 由下方保留名单独立剥离——两者语义不同，剥离动作必须各自成立）
+# hop-by-hop + Proxy-* 前缀
 HOP_BY_HOP_HEADERS = {
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
     "te", "trailer", "transfer-encoding", "upgrade",
 }
 
-# 保留命名空间：代理身份（已消费）/ 平台会话防泄漏 / 上游 vhost 路由保护
-RESERVED_OUTBOUND_HEADERS = {"x-proxy-authorization", "cookie", "host"}
+# 恒不透传（与认证头配置无关）：平台会话防泄漏 + 上游 vhost 路由保护
+_FIXED_RESERVED = {"cookie", "host"}
 
 
 def is_hop_by_hop(name: str) -> bool:
@@ -43,31 +42,36 @@ def build_outbound_headers(stored_headers: dict[str, str] | None,
                            caller_headers: typing.Mapping[str, str] | None,
                            content_type: str | None, content_length: str | None,
                            content_encoding: str | None,
-                           forced: typing.Mapping[str, str] | None = None) -> dict[str, str]:
-    """出站 header：存储打底 ← caller 全量透传（同名覆盖）← explicit 载荷头 ← forced 最高。
+                           forced: typing.Mapping[str, str] | None = None,
+                           auth_header: str = "authorization") -> dict[str, str]:
+    """出站 header：调用方打底 ← 存储覆盖（存储优先）← explicit ← forced 最高。
 
-    优先级：forced（oauth 托管注入）> explicit（content-*，真实载荷）> caller > stored。
+    auth_header：代理身份通道头名（settings.proxy_auth_header，小写比较）。默认
+    authorization 可透传（统一 token）；其他名字进保留名单绝不透传。
     content_type / content_length / content_encoding 为入站请求三个 body 相关头的
-    显式值（None = 入站未携带）。出站 key 统一小写归一（多源同名不同大小写会经
-    httpx 发出重复头行）。
+    显式值（None = 入站未携带），优先级高于存储与调用方同名项。出站 key 统一小写。
     """
-    outbound: dict[str, str] = {k.lower(): v for k, v in (stored_headers or {}).items()
-                                if not is_hop_by_hop(k)
-                                and k.lower() not in RESERVED_OUTBOUND_HEADERS}
-    caller = {k.lower(): v for k, v in (caller_headers or {}).items()
-              if not is_hop_by_hop(k) and k.lower() not in RESERVED_OUTBOUND_HEADERS}
-    explicit = {"content-type": content_type, "content-length": content_length,
-                "content-encoding": content_encoding}
-    for name, value in explicit.items():
+    auth_l = (auth_header or "authorization").strip().lower()
+    reserved = set(_FIXED_RESERVED)
+    if auth_l != "authorization":
+        reserved.add(auth_l)
+
+    def _clean(mapping: typing.Mapping[str, str] | None) -> dict[str, str]:
+        return {k.lower(): v for k, v in (mapping or {}).items()
+                if not is_hop_by_hop(k) and k.lower() not in reserved}
+
+    final = _clean(caller_headers)          # 调用方打底
+    final.update(_clean(stored_headers))    # 存储优先（映射配置权威）
+    for name, value in (("content-type", content_type),
+                        ("content-length", content_length),
+                        ("content-encoding", content_encoding)):
         if value is not None:
-            caller[name] = value
-    outbound.update(caller)
+            final[name] = value             # 真实载荷头
     if forced:
-        outbound.update({k.lower(): v for k, v in forced.items()
-                         if not is_hop_by_hop(k) and k.lower() not in RESERVED_OUTBOUND_HEADERS})
-    return outbound
+        final.update(_clean(forced))        # oauth 托管最高
+    return final
 
 
 def filter_response_headers(resp_headers: typing.Mapping[str, str]) -> dict[str, str]:
-    """响应 header 剥离 hop-by-hop 后原样回传（含 Content-Type 等；绝不注入存储真实 header）。"""
+    """响应 header 剥离 hop-by-hop 后原样回传（含 Content-Type 等；绝不含存储真实 header）。"""
     return {k: v for k, v in resp_headers.items() if not is_hop_by_hop(k)}

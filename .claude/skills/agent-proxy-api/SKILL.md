@@ -14,11 +14,15 @@ agent-proxy 是 Agent 平台的出站代理：**真实上游地址与凭据只�
 
 ## 鉴权（先读）
 
-- 管理/代理接口的身份通道是 **`X-Proxy-Authorization: Bearer <token>`**（保留命名空间）；
-  **Bearer 校验失败必 401，不回退**。
-- `Authorization` 头**不是**代理认证——它是调用方可透传给上游的普通头（skill 教传的
-  `Authorization: Token xxx` 会原样到达上游；见下方"经代理调用"）。
-- dev/stub 部署：**纯数字 token 即 user_id**（`X-Proxy-Authorization: Bearer 888` → user_id=888）。
+- 身份通道头名**可配置**（`PROXY_AUTH_HEADER`，默认 **`Authorization`**）：
+  `Authorization: Bearer <token>`。**凭证校验失败必 401，不回退**。
+- 默认 `Authorization` 下该头**身兼两职**：代理鉴权 + （映射未配同名头时）原样透传
+  上游——统一 token 场景：skill 教传的 `Authorization: Token xxx`（或平台 token）
+  即可直通。`TOKEN_VERIFY_IMPL=third_party` 时验签接口原生支持 `Bearer`/`Token`
+  两种 scheme；dev/stub 只认 `Bearer <纯数字>` 与信封票据。
+- 若部署把 `PROXY_AUTH_HEADER` 配成其他名字（如 `X-Proxy-Authorization`）：
+  该头变纯代理私有（鉴权后**绝不透传**），`Authorization` 恢复普通透传头（v2 分离模式）。
+- dev/stub 部署：**纯数字 token 即 user_id**（`Authorization: Bearer 888` → user_id=888）。
 - 需要 admin（建 public 映射、配置 OAuth 客户端）时用信封 token（仅 stub，不验签）：
   `x.<base64url(JSON)>.y`，JSON 至少 `{"user_id":1,"role":"admin"}`。
 - 错误统一形状：`{"code","message","request_id"}`，响应头带 `X-Request-ID`。
@@ -41,23 +45,24 @@ agent-proxy 是 Agent 平台的出站代理：**真实上游地址与凭据只�
 | `/p/{mapping_id}[/{path}]` | ANY | **代理转发**（HTTP/MCP 统一入口） | private:owner；public:登录 |
 
 注册 body：`{"type":"http"|"mcp","upstream_url":"...","name"?,"visibility"?,"auth_mode"?,"headers":{...},"test_request"?}`
-→ 201 返回 `{mapping_id, name, proxy_url, headers:{"X-Proxy-Authorization":"{{RUNTIME_TOKEN}}"}, status}`
-——**headers 即代理调用配置**（结构=名称+地址+headers，与输入一致）：平台把
-`{{RUNTIME_TOKEN}}` 运行时替换为用户 token 后，agent 用这份配置直访代理；真实
-地址/凭据由代理保管，仅 resolve/详情可查。
+→ 201 返回 `{mapping_id, name, proxy_url, headers:{"Authorization":"{{RUNTIME_TOKEN}}"}, status}`
+——**headers 即代理调用配置**（头名跟随 `PROXY_AUTH_HEADER`，结构=名称+地址+headers，
+与输入一致）：平台把 `{{RUNTIME_TOKEN}}` 运行时替换为用户 token 后，agent 用这份
+配置直访代理；真实地址/凭据由代理保管，仅 resolve/详情可查。
 
 ## 经代理调用（核心）
 
-出站 header = **存储 headers ∪ 调用方 headers**（同名**调用方覆盖存储**——skill 教传的
-`Authorization: Token xxx` 原样直达上游；static 映射语义。oauth 型映射例外：注入的
-本人凭证恒最优先）。绝不透传的保留头：`X-Proxy-Authorization`（代理身份，已消费）、
-`Cookie`（防平台会话泄漏）、`Host`（按转发目标派生）、hop-by-hop 双向剥离。
-调用方未携带的头由存储值补位（公共映射共享凭据默认路径）。注册/列表响应的
-`headers` 字段（`{{RUNTIME_TOKEN}}` 形态）就是**该映射的调用配置**——照抄使用，
-不要手写上游真实头，也**不要**把占位符原样发到代理（须先由平台替换）。
+出站 header 合并优先级：**oauth 托管注入 > 存储 headers（映射配置，权威凭据）>
+调用方 headers（未配置的头原样透传）**。
+- 映射配了某 header → 存储值**替换**调用方同名头（托管语义）；
+- 映射没配 → 调用方的头原样透传（agent-email「直接使用 token」场景）；
+- 恒不透传：`Cookie`（防平台会话泄漏）、`Host`（按转发目标派生）、hop-by-hop；
+  认证头在默认 `Authorization` 下可透传（统一 token），配置为其他名字则纯代理私有。
+注册/列表响应的 `headers` 字段（`{{RUNTIME_TOKEN}}` 形态）就是**该映射的调用配置**
+——照抄使用，不要手写上游真实头，也**不要**把占位符原样发到代理（须先由平台替换）。
 
 **HTTP 型**：`proxy_url`（不含端点路径）后拼子路径，方法/查询串原样：
-`curl <BASE>/p/<id>/api/v1/users -H "X-Proxy-Authorization: Bearer 888" -d '...'`
+`curl <BASE>/p/<id>/api/v1/users -H "Authorization: Bearer 888" -d '...'`
 
 **MCP SSE 型**（proxy_url 已含注册端点路径，如 `/p/<id>/sse`）：
 1. `GET` proxy_url，带 `Accept: text/event-stream` → 200 SSE 长连接，**保持不断开**；

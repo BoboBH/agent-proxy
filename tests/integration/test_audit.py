@@ -42,7 +42,7 @@ def _find_audit_entry(request_id: str) -> dict:
 
 
 async def test_audit_has_identity_and_request_id(client):
-    headers = {"X-Proxy-Authorization": f"Bearer {make_token(888)}"}
+    headers = {"Authorization": f"Bearer {make_token(888)}"}
     resp = await client.post("/api/v1/mappings", json=BODY, headers=headers)
     assert resp.status_code == 201
     entry = _find_audit_entry(resp.headers["x-request-id"])
@@ -67,10 +67,10 @@ async def test_audit_identity_from_cookie_session(client, app):
 
 async def test_view_credentials_audited(client):
     created = (await client.post("/api/v1/mappings", json=BODY,
-                                 headers={"X-Proxy-Authorization": f"Bearer {make_token(888)}"})).json()
+                                 headers={"Authorization": f"Bearer {make_token(888)}"})).json()
     mid = created["mapping_id"]
     resp = await client.get(f"/api/v1/mappings/{mid}",
-                            headers={"X-Proxy-Authorization": f"Bearer {make_token(888)}"})
+                            headers={"Authorization": f"Bearer {make_token(888)}"})
     assert resp.status_code == 200
     entry = _find_audit_entry(resp.headers["x-request-id"])
     assert entry["action"] == "view_credentials" and entry["mapping_id"] == mid
@@ -80,7 +80,7 @@ async def test_view_credentials_audited(client):
 async def test_audit_never_contains_header_values(client):
     body = {**BODY, "headers": {"Authorization": "Bearer sk-super-secret-value"}}
     resp = await client.post("/api/v1/mappings", json=body,
-                             headers={"X-Proxy-Authorization": f"Bearer {make_token(888)}"})
+                             headers={"Authorization": f"Bearer {make_token(888)}"})
     assert resp.status_code == 201
     for path, lines in _read_audit_files().items():
         text = "\n".join(lines)
@@ -90,7 +90,7 @@ async def test_audit_never_contains_header_values(client):
 
 async def test_audit_records_bytes_in_out(client):
     resp = await client.post("/api/v1/mappings", json=BODY,
-                             headers={"X-Proxy-Authorization": f"Bearer {make_token(888)}"})
+                             headers={"Authorization": f"Bearer {make_token(888)}"})
     assert resp.status_code == 201
     entry = _find_audit_entry(resp.headers["x-request-id"])
     assert entry["bytes_in"] > 0   # 请求体（JSON）被应用实际读取

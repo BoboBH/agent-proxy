@@ -12,9 +12,12 @@ import re
 RUNTIME_TOKEN_PLACEHOLDER = "{{RUNTIME_TOKEN}}"
 
 
-def proxy_call_headers() -> dict[str, str]:
-    """返回全新的代理调用 header 配置（每次新 dict，防响应链共享可变状态）。"""
-    return {"X-Proxy-Authorization": RUNTIME_TOKEN_PLACEHOLDER}
+def proxy_call_headers(header_name: str = "Authorization") -> dict[str, str]:
+    """返回全新的代理调用 header 配置（每次新 dict，防响应链共享可变状态）。
+
+    header_name 跟随 PROXY_AUTH_HEADER 配置（默认 Authorization）——回显的调用
+    配置与代理实际消费的认证头保持一致。"""
+    return {(header_name or "Authorization").strip(): RUNTIME_TOKEN_PLACEHOLDER}
 
 
 HEADER_TOKEN_RE = re.compile(r"^[A-Za-z0-9!#$%&'*+\-.^_`|~]{1,128}$")

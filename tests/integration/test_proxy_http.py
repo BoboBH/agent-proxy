@@ -20,13 +20,13 @@ BODY = {"type": "http", "upstream_url": UPSTREAM,
 async def _register(client, user=888, **overrides):
     payload = {**BODY, **overrides}
     resp = await client.post("/api/v1/mappings", json=payload,
-                             headers={"X-Proxy-Authorization": f"Bearer {make_token(user)}"})
+                             headers={"Authorization": f"Bearer {make_token(user)}"})
     assert resp.status_code == 201, resp.text
     return resp.json()
 
 
 async def _call(client, mapping_id, method, path, *, user=888, headers=None, **kw):
-    hdrs = {"X-Proxy-Authorization": f"Bearer {make_token(user)}", **(headers or {})}
+    hdrs = {"Authorization": f"Bearer {make_token(user)}", **(headers or {})}
     return await client.request(method, f"/p/{mapping_id}{path}", headers=hdrs, **kw)
 
 
@@ -36,15 +36,14 @@ def _hdr(headers: dict, name: str) -> str | None:
     return next((v for k, v in headers.items() if k.lower() == lowered), None)
 
 
-async def test_forward_get_echoes_stored_plus_caller_passthrough(client):
-    """设计 v2 透传模型钉住：调用方任意 header 原样到上游（含 Authorization——skill
-    教传的上游凭证头），同名覆盖存储；非同名存储头照常注入；代理身份头
-    （X-Proxy-Authorization）与 cookie 属保留命名空间绝不出站。"""
+async def test_forward_stored_authorization_replaces_caller_ticket(client):
+    """设计 v4 存储优先钉住：映射配了 Authorization → 存储值替换调用方同名头
+    （调用方的 Bearer 票据只用于代理鉴权，绝不到上游）；非同名存储头照常注入；
+    任意调用方头透传；cookie/host 恒不出站。"""
     created = await _register(client)
     mid = created["mapping_id"]
     resp = await _call(client, mid, "GET", "/orders?status=paid&page=2",
-                       headers={"Authorization": "Token skill-jwt-abcdef",
-                                "X-Caller-Only": "passthrough-now",
+                       headers={"X-Caller-Only": "passthrough-now",
                                 "User-Agent": "agent-skill/1.0",
                                 "Accept": "application/json"})
     assert resp.status_code == 200
@@ -52,14 +51,13 @@ async def test_forward_get_echoes_stored_plus_caller_passthrough(client):
     assert echo["method"] == "GET" and echo["path"] == "/orders"
     assert echo["query"] == {"status": "paid", "page": "2"}
     sent = echo["headers"]
-    assert _hdr(sent, "authorization") == "Token skill-jwt-abcdef"  # 调用方覆盖存储
-    assert _hdr(sent, "x-api-key") == "stored-key-0000"             # 非同名存储头注入
-    assert _hdr(sent, "x-caller-only") == "passthrough-now"         # 调用方任意头透传
+    assert _hdr(sent, "authorization") == "Bearer sk-real-12345678"  # 存储替换调用方票据
+    assert _hdr(sent, "x-api-key") == "stored-key-0000"              # 非同名存储头注入
+    assert _hdr(sent, "x-caller-only") == "passthrough-now"          # 未配置的头透传
     assert _hdr(sent, "user-agent") == "agent-skill/1.0"
     assert _hdr(sent, "accept") == "application/json"
-    assert _hdr(sent, "x-proxy-authorization") is None              # 代理身份头绝不出站
-    assert "stub." not in resp.text                                 # 代理身份票据绝不到上游
-    assert "${PX:" not in resp.text                                 # 占位符绝不到上游
+    assert "stub." not in resp.text                                  # 代理票据绝不到上游
+    assert "${PX:" not in resp.text and "{{RUNTIME" not in resp.text  # 配置形状绝不到上游
 
 
 async def test_forward_stored_authorization_used_when_caller_omits(client):
@@ -147,7 +145,7 @@ async def test_disabled_mapping_404(client):
     created = await _register(client)
     mid = created["mapping_id"]
     resp = await client.put(f"/api/v1/mappings/{mid}", json={"status": "disabled"},
-                            headers={"X-Proxy-Authorization": f"Bearer {make_token(888)}"})
+                            headers={"Authorization": f"Bearer {make_token(888)}"})
     assert resp.status_code == 200
     resp = await _call(client, mid, "GET", "/orders")
     assert resp.status_code == 404 and resp.json()["code"] == "MAPPING_NOT_FOUND"
@@ -492,7 +490,7 @@ async def test_upstream_read_timeout_maps_504():
                             json={"type": "http",
                                   "upstream_url": "http://127.0.0.1:9901/api/v1",
                                   "headers": {}},
-                            headers={"X-Proxy-Authorization": f"Bearer {make_token(888)}"})
+                            headers={"Authorization": f"Bearer {make_token(888)}"})
         mid = resp.json()["mapping_id"]
         resp = await _call(c, mid, "GET", "/slow?seconds=3")
     after = metrics_mod.upstream_errors_total.labels(
@@ -516,7 +514,7 @@ async def test_pool_exhausted_returns_503():
                             json={"type": "http",
                                   "upstream_url": "http://127.0.0.1:9901/api/v1",
                                   "headers": {}},
-                            headers={"X-Proxy-Authorization": f"Bearer {make_token(888)}"})
+                            headers={"Authorization": f"Bearer {make_token(888)}"})
         mid = resp.json()["mapping_id"]
         r1, r2 = await asyncio.gather(
             _call(c, mid, "GET", "/slow?seconds=5"),

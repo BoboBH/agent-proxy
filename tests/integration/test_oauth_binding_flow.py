@@ -12,9 +12,9 @@ from agent_proxy.oauth.credential import decrypt_text
 from tests.integration.mock_oauth_as import as_state
 from tests.utils import make_token
 
-ADMIN = {"X-Proxy-Authorization": f"Bearer {make_token(100, 'admin')}"}
-U888 = {"X-Proxy-Authorization": f"Bearer {make_token(888)}"}
-U999 = {"X-Proxy-Authorization": f"Bearer {make_token(999)}"}
+ADMIN = {"Authorization": f"Bearer {make_token(100, 'admin')}"}
+U888 = {"Authorization": f"Bearer {make_token(888)}"}
+U999 = {"Authorization": f"Bearer {make_token(999)}"}
 FRONT = "http://testserver/console"
 MASTER = "test-master-key"
 
@@ -166,7 +166,7 @@ async def test_builtin_list_items_binding_and_masked_headers(client):
     items = {x["mapping_id"]: x for x in resp.json()}
     assert static_mid in items and oauth_mid in items
     assert items[static_mid]["binding"] is None          # static 无绑定语义
-    assert items[static_mid]["headers"] == {"X-Proxy-Authorization": "{{RUNTIME_TOKEN}}"}  # 设计 v3：回显=代理调用配置
+    assert items[static_mid]["headers"] == {"Authorization": "{{RUNTIME_TOKEN}}"}  # 设计 v3：回显=代理调用配置
     assert "sk-shared-12345678" not in resp.text         # 占位符，真实值不出
     assert items[oauth_mid]["binding"] == "bound"
     assert items[oauth_mid]["proxy_url"].startswith("http://testserver/p/")
@@ -199,8 +199,8 @@ async def test_builtin_list_lists_corrupt_rows_without_decryption(client, app):
     assert resp.status_code == 200
     items = {x["mapping_id"]: x for x in resp.json()}
     assert healthy_mid in items and corrupt_mid in items       # 损坏行照常列出
-    assert items[healthy_mid]["headers"] == {"X-Proxy-Authorization": "{{RUNTIME_TOKEN}}"}
-    assert items[corrupt_mid]["headers"] == {"X-Proxy-Authorization": "{{RUNTIME_TOKEN}}"}
+    assert items[healthy_mid]["headers"] == {"Authorization": "{{RUNTIME_TOKEN}}"}
+    assert items[corrupt_mid]["headers"] == {"Authorization": "{{RUNTIME_TOKEN}}"}
 
 
 async def test_state_replay_rejected_400(client):

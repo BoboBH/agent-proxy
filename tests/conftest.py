@@ -50,4 +50,4 @@ def make_token(user_id: int = 888, role: str | None = None, user_name: str = "å¼
 
 
 def auth(user_id: int = 888, role: str | None = None) -> dict[str, str]:
-    return {"X-Proxy-Authorization": f"Bearer {make_token(user_id, role)}"}
+    return {"Authorization": f"Bearer {make_token(user_id, role)}"}

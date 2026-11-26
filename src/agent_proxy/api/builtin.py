@@ -101,7 +101,7 @@ async def list_builtin_mappings(request: Request,
         out.append(BuiltinItemOut(
             mapping_id=row.mapping_id, name=row.name, type=row.type,
             proxy_url=build_proxy_url(settings, row.mapping_id, row.upstream_url, row.type),
-            headers=placeholder.proxy_call_headers(),
+            headers=placeholder.proxy_call_headers(settings.proxy_auth_header),
             auth_mode=row.auth_mode, binding=binding, status=row.status))
     return out
 

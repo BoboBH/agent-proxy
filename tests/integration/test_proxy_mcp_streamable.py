@@ -16,7 +16,7 @@ from tests.utils import make_token, read_next_message_data, sse_line_iter
 
 PROXY = "http://127.0.0.1:9910"
 UPSTREAM = "http://127.0.0.1:9903/mcp"
-AUTH = {"X-Proxy-Authorization": f"Bearer {make_token(888)}"}
+AUTH = {"Authorization": f"Bearer {make_token(888)}"}
 SESSION = {"Mcp-Session-Id": "sess-m4"}
 TCP_TIMEOUT = httpx.Timeout(connect=5, read=10, write=10, pool=5)
 
@@ -30,7 +30,7 @@ async def _register_streamable(user=888, **overrides):
                "headers": {"Authorization": "Bearer sk-mcp4-12345678"}, **overrides}
     async with httpx.AsyncClient() as c:
         resp = await c.post(f"{PROXY}/api/v1/mappings", json=payload,
-                            headers={"X-Proxy-Authorization": f"Bearer {make_token(user)}"})
+                            headers={"Authorization": f"Bearer {make_token(user)}"})
     assert resp.status_code == 201, resp.text
     return resp.json()
 
@@ -236,7 +236,7 @@ async def test_streamable_auth_and_path_security_matrix():
                             json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
         r403 = await c.post(f"{PROXY}/p/{mid}/mcp",
                             json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
-                            headers={"X-Proxy-Authorization": f"Bearer {make_token(999)}"})
+                            headers={"Authorization": f"Bearer {make_token(999)}"})
         r400 = await c.get(f"{PROXY}/p/{mid}/%2e%2e/etc/passwd", headers=AUTH)
     assert r401.status_code == 401 and r401.json()["code"] == "INVALID_TOKEN"
     assert r403.status_code == 403 and r403.json()["code"] == "FORBIDDEN"
@@ -289,7 +289,7 @@ async def test_probe_multiline_data_initialize_judged_failure():
     mid = created["mapping_id"]
     async with httpx.AsyncClient() as c:
         r = await c.post(f"{PROXY}/api/v1/mappings/{mid}/test",
-                         headers={"X-Proxy-Authorization": f"Bearer {make_token(888)}"})
+                         headers={"Authorization": f"Bearer {make_token(888)}"})
     assert r.status_code == 200
     body = r.json()
     assert body["ok"] is False and "非合法 JSON" in body["detail"]

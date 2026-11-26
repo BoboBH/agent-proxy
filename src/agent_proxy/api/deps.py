@@ -36,13 +36,18 @@ async def get_current_identity(request: Request) -> Identity:
       不遮蔽页面/工具场景的 Cookie 通道；
     - 两通道均未命中 → 401 INVALID_TOKEN（错误码表零变更）。
     """
-    header = request.headers.get("x-proxy-authorization", "")
-    if header.lower().startswith("bearer "):
-        identity = await _get_verifier().verify(header[7:].strip())
+    settings = get_settings()
+    header_name = (settings.proxy_auth_header or "Authorization").strip()
+    header = request.headers.get(header_name, "")
+    lowered = header.strip().lower()
+    if lowered.startswith("bearer ") or lowered.startswith("token "):
+        # 凭证出示（设计 v4.1）：完整头值交给 verifier——third_party 原样透传验签
+        # （接口支持 Bearer/Token 两种 scheme）；失败必 401 不回退 Cookie
+        identity = await _get_verifier().verify_credential(header.strip())
     else:
         identity = await _session_identity(request)
         if identity is None:
-            raise TokenInvalidError("缺少 X-Proxy-Authorization: Bearer token 或登录会话")
+            raise TokenInvalidError(f"缺少 {header_name}: Bearer token 或登录会话")
     request.state.user_id = identity.user_id
     request.state.user_name = identity.user_name or ""
     return identity

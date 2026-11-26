@@ -24,12 +24,12 @@ async def test_mgmt_create_list_with_cookie_session_only(client, app):
 
 async def test_bearer_takes_precedence_over_cookie_in_api(client, app):
     r = await client.post("/api/v1/mappings", json=BODY,
-                          headers={"X-Proxy-Authorization": f"Bearer {make_token(888)}"})
+                          headers={"Authorization": f"Bearer {make_token(888)}"})
     assert r.status_code == 201
     sid = await create_session(app.state.redis, Identity(user_id=999), 600)
     client.cookies.set(SESSION_COOKIE, sid)
     r = await client.get("/api/v1/mappings",
-                         headers={"X-Proxy-Authorization": f"Bearer {make_token(888)}"})
+                         headers={"Authorization": f"Bearer {make_token(888)}"})
     # Bearer（u888）优先于 Cookie（u999）：返回 u888 的 1 条而非 u999 的空列表
     assert r.status_code == 200 and len(r.json()) == 1
 

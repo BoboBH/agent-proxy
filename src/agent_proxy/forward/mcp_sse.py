@@ -158,7 +158,8 @@ class SseEndpointRewriter:
 
 
 async def stream_sse_forward(app_state, mapping_data: dict, request: Request,
-                             forced_headers: dict[str, str] | None = None) -> Response:
+                             forced_headers: dict[str, str] | None = None,
+                             auth_header: str = "authorization") -> Response:
     """MCP SSE 初始连接转发（设计 §8.3）：GET/HEAD 注册端点 → upstream_url 真流式
     长连接，endpoint 事件增量改写，其余行字节级透传，每行产出即 yield。
 
@@ -183,7 +184,8 @@ async def stream_sse_forward(app_state, mapping_data: dict, request: Request,
         content_type=request.headers.get("content-type"),
         content_length=request.headers.get("content-length"),
         content_encoding=request.headers.get("content-encoding"),
-        forced=forced_headers)
+        forced=forced_headers,
+        auth_header=auth_header)
     # read=None 的请求绝不能消费 keepalive 池连接（Task 5 断开取消端到端实测的
     # 挂死缺陷，sweep/send 竞态 → 无界挂死）：SSE 中途 aclose 的连接本就不会回流
     # 池，真正的死 IDLE 供体是池内「完整响应」连接（POST /messages、503/307 透传、

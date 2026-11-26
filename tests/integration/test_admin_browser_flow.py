@@ -45,7 +45,7 @@ async def test_full_browser_flow_admin_as_admin(app):
         r = await c.post("/api/v1/mappings", json=HTTP_BODY)
         assert r.status_code == 201
         mid = r.json()["mapping_id"]
-        assert r.json()["headers"] == {"X-Proxy-Authorization": "{{RUNTIME_TOKEN}}"}
+        assert r.json()["headers"] == {"Authorization": "{{RUNTIME_TOKEN}}"}
         r = await c.get("/api/v1/mappings/resolve", params={"proxy_url": mid})
         assert r.json()["headers"]["Authorization"] == "Bearer sk-real-1234567890"
         r = await c.post(f"/api/v1/mappings/{mid}/test")
@@ -82,7 +82,7 @@ async def test_non_admin_view_isolated_and_api_privilege_enforced(app):
     页面入口隐藏（模板不含 public 视图）+ 直接打 API 仍被既有矩阵拦（403）。"""
     async with _client(app) as c:
         r = await c.post("/api/v1/mappings", json={**HTTP_BODY, "visibility": "public"},
-                         headers={"X-Proxy-Authorization": f"Bearer {make_token(100, role='admin')}"})
+                         headers={"Authorization": f"Bearer {make_token(100, role='admin')}"})
         assert r.status_code == 201
         pub = r.json()["mapping_id"]
         await _browser_login(c, 888)

@@ -78,13 +78,16 @@ async def _handle_proxy(request: Request, mapping_id: str, identity: Identity,
         if request.method in ("GET", "HEAD") and \
                 (sub_path or "/") == registered_endpoint_path(data["upstream_url"]):
             return await stream_sse_forward(request.app.state, data, request,
-                                            forced_headers=forced)
+                                            forced_headers=forced,
+                                            auth_header=settings.proxy_auth_header)
         target = build_origin_target(data["upstream_url"], sub_path, request.url.query)
         return await stream_http_forward(request.app.state, data, request,
                                          target_override=target, metrics_type="mcp",
-                                         forced_headers=forced)
+                                         forced_headers=forced,
+                                         auth_header=settings.proxy_auth_header)
     return await stream_http_forward(request.app.state, data, request,
-                                     forced_headers=forced)
+                                     forced_headers=forced,
+                                     auth_header=settings.proxy_auth_header)
 
 
 @router.api_route("/p/{mapping_id}/{path:path}", methods=_PROXY_METHODS)

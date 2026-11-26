@@ -16,9 +16,9 @@ from agent_proxy.oauth.credential import (encrypt_text, load_credential,
                                           save_credential)
 from tests.utils import make_token
 
-ADMIN = {"X-Proxy-Authorization": f"Bearer {make_token(100, 'admin')}"}
-ADMIN2 = {"X-Proxy-Authorization": f"Bearer {make_token(101, 'admin')}"}
-USER = {"X-Proxy-Authorization": f"Bearer {make_token(888)}"}
+ADMIN = {"Authorization": f"Bearer {make_token(100, 'admin')}"}
+ADMIN2 = {"Authorization": f"Bearer {make_token(101, 'admin')}"}
+USER = {"Authorization": f"Bearer {make_token(888)}"}
 MASTER = "test-master-key"
 
 CLIENT_BODY = {"client_id": "manual-cl", "client_secret": "manual-cs-123456",

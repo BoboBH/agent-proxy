@@ -44,6 +44,13 @@ class Settings:
     token_verify_impl: str = "stub"
     login_impl: str = "stub"
     admin_role: str = "admin"
+    # 代理身份通道头名（设计 v4，可配置）：默认 Authorization——统一 token 场景下
+    # 该头既作代理鉴权又可透传上游；配置为其他名字（如 X-Proxy-Authorization）时
+    # 该头纯代理私有、绝不透传（v2 分离模式经配置恢复）
+    proxy_auth_header: str = "Authorization"
+    # third_party 验签接口基址（docs/auth_verify_token_integration.md）：默认 beta，
+    # 生产切 https://app.9m-tec.com/ai-service
+    verify_api_base: str = "https://bapal.9m-tec.com/alphapal/api/ai-service"
     mysql_dsn: str = ""
     redis_url: str = ""
     cache_ttl: int = 300
@@ -75,6 +82,10 @@ class Settings:
             token_verify_impl=e.get("TOKEN_VERIFY_IMPL", "stub"),
             login_impl=e.get("LOGIN_IMPL", "stub"),
             admin_role=e.get("ADMIN_ROLE", "admin"),
+            proxy_auth_header=(e.get("PROXY_AUTH_HEADER", "").strip()
+                               or "Authorization"),
+            verify_api_base=(e.get("VERIFY_API_BASE", "").strip()
+                             or "https://bapal.9m-tec.com/alphapal/api/ai-service"),
             mysql_dsn=e.get("MYSQL_DSN", ""),
             redis_url=e.get("REDIS_URL", ""),
             cache_ttl=_to_int("CACHE_TTL", e.get("CACHE_TTL", "300")),

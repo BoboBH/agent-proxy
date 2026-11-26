@@ -10,7 +10,7 @@ async def _create(client, token_user=888, token_admin=False, **overrides):
     payload = {**BODY, **overrides}
     role = "admin" if token_admin else None
     return await client.post("/api/v1/mappings", json=payload,
-                             headers={"X-Proxy-Authorization": f"Bearer {make_token(token_user, role)}"})
+                             headers={"Authorization": f"Bearer {make_token(token_user, role)}"})
 
 
 async def test_create_returns_masked_headers_and_proxy_url(client):
@@ -19,7 +19,7 @@ async def test_create_returns_masked_headers_and_proxy_url(client):
     data = resp.json()
     assert len(data["mapping_id"]) == 12
     assert data["proxy_url"] == f"http://testserver/p/{data['mapping_id']}"
-    assert data["headers"] == {"X-Proxy-Authorization": "{{RUNTIME_TOKEN}}"}  # 设计 v3：回显=代理调用配置
+    assert data["headers"] == {"Authorization": "{{RUNTIME_TOKEN}}"}  # 设计 v3：回显=代理调用配置
     assert "sk-real-key" not in resp.text and "u-888" not in data["headers"].values()
     assert data["visibility"] == "private" and data["status"] == "active"
 
@@ -49,13 +49,13 @@ async def test_create_invalid_scheme_400(client):
 async def test_list_only_mine_no_real_headers(client):
     await _create(client)  # u888
     resp = await client.get("/api/v1/mappings",
-                            headers={"X-Proxy-Authorization": f"Bearer {make_token(888)}"})
+                            headers={"Authorization": f"Bearer {make_token(888)}"})
     items = resp.json()
     assert len(items) == 1
     assert items[0]["upstream_url"] == "http://10.0.0.5/api/v1"
     assert "headers" not in items[0]
     resp = await client.get("/api/v1/mappings",
-                            headers={"X-Proxy-Authorization": f"Bearer {make_token(999)}"})
+                            headers={"Authorization": f"Bearer {make_token(999)}"})
     assert resp.json() == []
 
 
@@ -63,11 +63,11 @@ async def test_detail_owner_only_real_headers(client):
     created = (await _create(client)).json()
     mid = created["mapping_id"]
     resp = await client.get(f"/api/v1/mappings/{mid}",
-                            headers={"X-Proxy-Authorization": f"Bearer {make_token(888)}"})
+                            headers={"Authorization": f"Bearer {make_token(888)}"})
     assert resp.status_code == 200
     assert resp.json()["headers"]["Authorization"] == "Bearer sk-real-key"
     resp = await client.get(f"/api/v1/mappings/{mid}",
-                            headers={"X-Proxy-Authorization": f"Bearer {make_token(999)}"})
+                            headers={"Authorization": f"Bearer {make_token(999)}"})
     assert resp.status_code == 404 and resp.json()["code"] == "MAPPING_NOT_FOUND"
 
 
@@ -78,15 +78,15 @@ async def test_resolve_by_proxy_url_and_by_id(client):
     proxy_url = quote(created["proxy_url"], safe="")
     for value in (f"proxy_url={proxy_url}", f"proxy_url={mid}"):
         resp = await client.get(f"/api/v1/mappings/resolve?{value}",
-                                headers={"X-Proxy-Authorization": f"Bearer {make_token(888)}"})
+                                headers={"Authorization": f"Bearer {make_token(888)}"})
         assert resp.status_code == 200
         assert resp.json()["upstream_url"] == "http://10.0.0.5/api/v1"
         assert resp.json()["headers"]["Authorization"] == "Bearer sk-real-key"
     resp = await client.get("/api/v1/mappings/resolve?proxy_url=garbage",
-                            headers={"X-Proxy-Authorization": f"Bearer {make_token(888)}"})
+                            headers={"Authorization": f"Bearer {make_token(888)}"})
     assert resp.status_code == 400
     resp = await client.get(f"/api/v1/mappings/resolve?proxy_url={mid}",
-                            headers={"X-Proxy-Authorization": f"Bearer {make_token(999)}"})
+                            headers={"Authorization": f"Bearer {make_token(999)}"})
     assert resp.status_code == 404
 
 
@@ -96,13 +96,13 @@ async def test_put_updates_and_returns_masked(client):
     resp = await client.put(f"/api/v1/mappings/{mid}",
                             json={"upstream_url": "http://10.0.0.5/api/v2",
                                   "headers": {"Authorization": "Bearer sk-new-key"}},
-                            headers={"X-Proxy-Authorization": f"Bearer {make_token(888)}"})
+                            headers={"Authorization": f"Bearer {make_token(888)}"})
     assert resp.status_code == 200
     data = resp.json()
     assert data["proxy_url"] == f"http://testserver/p/{mid}"
-    assert data["headers"] == {"X-Proxy-Authorization": "{{RUNTIME_TOKEN}}"}
+    assert data["headers"] == {"Authorization": "{{RUNTIME_TOKEN}}"}
     resp = await client.get(f"/api/v1/mappings/{mid}",
-                            headers={"X-Proxy-Authorization": f"Bearer {make_token(888)}"})
+                            headers={"Authorization": f"Bearer {make_token(888)}"})
     assert resp.json()["upstream_url"] == "http://10.0.0.5/api/v2"
     assert resp.json()["headers"]["Authorization"] == "Bearer sk-new-key"
 
@@ -126,12 +126,12 @@ async def test_put_corrupt_headers_untouched_succeeds_and_disables(client, app):
     mid = (await _create(client)).json()["mapping_id"]
     await _corrupt_row_headers(app, mid)
     resp = await client.put(f"/api/v1/mappings/{mid}", json={"status": "disabled"},
-                            headers={"X-Proxy-Authorization": f"Bearer {make_token(888)}"})
+                            headers={"Authorization": f"Bearer {make_token(888)}"})
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] == "disabled"
     # 设计 v3：回显恒为代理调用配置（不再依赖解密——损坏行回显与正常行一致）
-    assert data["headers"] == {"X-Proxy-Authorization": "{{RUNTIME_TOKEN}}"}
+    assert data["headers"] == {"Authorization": "{{RUNTIME_TOKEN}}"}
     async with app.state.sessionmaker() as session:
         from sqlalchemy import select
         from agent_proxy.models import ProxyMapping
@@ -140,7 +140,7 @@ async def test_put_corrupt_headers_untouched_succeeds_and_disables(client, app):
         assert row.status == "disabled"
         assert row.upstream_headers == "gAAAAbroken-not-fernet"   # 损坏行未被触碰
     resp = await client.get(f"/api/v1/mappings/{mid}",
-                            headers={"X-Proxy-Authorization": f"Bearer {make_token(888)}"})
+                            headers={"Authorization": f"Bearer {make_token(888)}"})
     assert resp.status_code == 404                     # 读取路径 fail-closed 不变
 
 
@@ -152,7 +152,7 @@ async def test_put_corrupt_headers_touched_409_not_500(client, app):
     resp = await client.put(f"/api/v1/mappings/{mid}",
                             json={"headers": {"Authorization": "Bearer sk-new"},
                                   "status": "disabled"},
-                            headers={"X-Proxy-Authorization": f"Bearer {make_token(888)}"})
+                            headers={"Authorization": f"Bearer {make_token(888)}"})
     assert resp.status_code == 409
     assert resp.json()["code"] == "CREDENTIAL_CORRUPT"
     assert "DELETE" in resp.json()["message"]
@@ -169,7 +169,7 @@ async def test_put_non_owner_404(client):
     created = (await _create(client)).json()
     resp = await client.put(f"/api/v1/mappings/{created['mapping_id']}",
                             json={"status": "disabled"},
-                            headers={"X-Proxy-Authorization": f"Bearer {make_token(999)}"})
+                            headers={"Authorization": f"Bearer {make_token(999)}"})
     assert resp.status_code == 404
 
 
@@ -177,13 +177,13 @@ async def test_delete_then_404(client):
     created = (await _create(client)).json()
     mid = created["mapping_id"]
     resp = await client.delete(f"/api/v1/mappings/{mid}",
-                               headers={"X-Proxy-Authorization": f"Bearer {make_token(888)}"})
+                               headers={"Authorization": f"Bearer {make_token(888)}"})
     assert resp.status_code == 204
     resp = await client.get(f"/api/v1/mappings/{mid}",
-                            headers={"X-Proxy-Authorization": f"Bearer {make_token(888)}"})
+                            headers={"Authorization": f"Bearer {make_token(888)}"})
     assert resp.status_code == 404
     resp = await client.delete(f"/api/v1/mappings/{mid}",
-                               headers={"X-Proxy-Authorization": f"Bearer {make_token(888)}"})
+                               headers={"Authorization": f"Bearer {make_token(888)}"})
     assert resp.status_code == 404
 
 
@@ -191,29 +191,29 @@ async def test_disabled_mapping_detail_visible_but_flagged(client):
     created = (await _create(client)).json()
     mid = created["mapping_id"]
     await client.put(f"/api/v1/mappings/{mid}", json={"status": "disabled"},
-                     headers={"X-Proxy-Authorization": f"Bearer {make_token(888)}"})
+                     headers={"Authorization": f"Bearer {make_token(888)}"})
     resp = await client.get(f"/api/v1/mappings/{mid}",
-                            headers={"X-Proxy-Authorization": f"Bearer {make_token(888)}"})
+                            headers={"Authorization": f"Bearer {make_token(888)}"})
     assert resp.status_code == 200 and resp.json()["status"] == "disabled"
 
 
 async def test_unauthorized_401(client):
     resp = await client.post("/api/v1/mappings", json=BODY)
     assert resp.status_code == 401 and resp.json()["code"] == "INVALID_TOKEN"
-    bad = {"X-Proxy-Authorization": "Bearer garbage"}  # 认证通道无效凭证 → 401
+    bad = {"Authorization": "Bearer garbage"}  # 认证通道无效凭证 → 401
     resp = await client.get("/api/v1/mappings", headers=bad)
     assert resp.status_code == 401
 
 
 async def test_list_page_size_over_limit_400(client):
     resp = await client.get("/api/v1/mappings?page_size=101",
-                            headers={"X-Proxy-Authorization": f"Bearer {make_token(888)}"})
+                            headers={"Authorization": f"Bearer {make_token(888)}"})
     assert resp.status_code == 400 and resp.json()["code"] == "INVALID_PARAM"
 
 
 async def test_list_page_size_negative_400(client):
     resp = await client.get("/api/v1/mappings?page_size=-1",
-                            headers={"X-Proxy-Authorization": f"Bearer {make_token(888)}"})
+                            headers={"Authorization": f"Bearer {make_token(888)}"})
     assert resp.status_code == 400 and resp.json()["code"] == "INVALID_PARAM"
 
 
@@ -223,35 +223,35 @@ async def test_resolve_rejects_foreign_netloc(client):
     mid = created["mapping_id"]
     resp = await client.get(
         f"/api/v1/mappings/resolve?proxy_url=http%3A%2F%2Fevil.example.com%2Fp%2F{mid}",
-        headers={"X-Proxy-Authorization": f"Bearer {make_token(888)}"})
+        headers={"Authorization": f"Bearer {make_token(888)}"})
     assert resp.status_code == 400 and resp.json()["code"] == "INVALID_PARAM"
     # 本服务 host 正常回显（EXTERNAL_BASE=http://testserver，既有用例已覆盖 200）
 
 
 async def test_resolve_by_name_returns_original_config(client):
-    """设计 v3：用户拿 mcp-name + X-Proxy-Authorization 即可取回**原始 MCP 配置**
+    """设计 v3：用户拿 mcp-name + 代理身份凭据即可取回**原始 MCP 配置**
     （name、真实 url、真实 header）——限本人映射；重名取最新创建。"""
     await _create(client, name="my-mcp", headers={"Authorization": "Bearer sk-v1"})
     await _create(client, name="my-mcp", headers={"Authorization": "Bearer sk-v2"})  # 重名→最新
     resp = await client.get("/api/v1/mappings/resolve?name=my-mcp",
-                            headers={"X-Proxy-Authorization": f"Bearer {make_token(888)}"})
+                            headers={"Authorization": f"Bearer {make_token(888)}"})
     assert resp.status_code == 200
     data = resp.json()
     assert data["name"] == "my-mcp"
     assert data["upstream_url"] == "http://10.0.0.5/api/v1"
     assert data["headers"] == {"Authorization": "Bearer sk-v2"}   # 最新创建的真实配置
     resp = await client.get("/api/v1/mappings/resolve?name=my-mcp",
-                            headers={"X-Proxy-Authorization": f"Bearer {make_token(999)}"})
+                            headers={"Authorization": f"Bearer {make_token(999)}"})
     assert resp.status_code == 404 and resp.json()["code"] == "MAPPING_NOT_FOUND"  # 非本人不可见
     resp = await client.get("/api/v1/mappings/resolve?name=my-mcp&proxy_url=x",
-                            headers={"X-Proxy-Authorization": f"Bearer {make_token(888)}"})
+                            headers={"Authorization": f"Bearer {make_token(888)}"})
     assert resp.status_code == 400   # 两参数同传
     resp = await client.get("/api/v1/mappings/resolve",
-                            headers={"X-Proxy-Authorization": f"Bearer {make_token(888)}"})
+                            headers={"Authorization": f"Bearer {make_token(888)}"})
     assert resp.status_code == 400   # 都不传
 
 
 async def test_resolve_by_name_not_found(client):
     resp = await client.get("/api/v1/mappings/resolve?name=absent",
-                            headers={"X-Proxy-Authorization": f"Bearer {make_token(888)}"})
+                            headers={"Authorization": f"Bearer {make_token(888)}"})
     assert resp.status_code == 404 and resp.json()["code"] == "MAPPING_NOT_FOUND"

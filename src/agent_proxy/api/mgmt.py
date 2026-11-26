@@ -53,10 +53,11 @@ def _registered_out(settings: Settings, data: dict) -> RegisteredOut:
         mapping_id=data["mapping_id"], name=data.get("name"), type=data["type"],
         visibility=data["visibility"], auth_mode=data["auth_mode"],
         proxy_url=build_proxy_url(settings, data["mapping_id"], data["upstream_url"], data["type"]),
-        # 设计 v3：回显 headers = 代理调用配置（仅 X-Proxy-Authorization，值
-        # {{RUNTIME_TOKEN}} 占位符，平台运行时替换）——与输入结构一致，agent 拿到
-        # 即可用；真实地址/header 只在 resolve/详情出现
-        headers=placeholder.proxy_call_headers(), status=data["status"])
+        # 设计 v3/v4：回显 headers = 代理调用配置（头名跟随 PROXY_AUTH_HEADER，
+        # 值 {{RUNTIME_TOKEN}} 占位符由平台运行时替换）——与输入结构一致，agent
+        # 拿到即可用；真实地址/header 只在 resolve/详情出现
+        headers=placeholder.proxy_call_headers(settings.proxy_auth_header),
+        status=data["status"])
 
 
 def _detail_out(settings: Settings, data: dict) -> MappingDetailOut:

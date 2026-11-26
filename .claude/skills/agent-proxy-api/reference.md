@@ -9,7 +9,7 @@
 
 ```bash
 curl -X POST <BASE>/api/v1/mappings \
-  -H "X-Proxy-Authorization: Bearer 888" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer 888" -H "Content-Type: application/json" \
   -d '{"type":"mcp","name":"demo","upstream_url":"http://host.docker.internal:9902/sse",
        "headers":{"X-Credential":"real-secret"},"test_request":{"method":"GET","path":"/","expect_status":200}}'
 ```
@@ -27,9 +27,10 @@ curl -X POST <BASE>/api/v1/mappings \
 | `test_request` | `{method,path,expect_status?}` | 可选；method 限白名单动词；多余键注册即拒 |
 
 响应 `RegisteredOut`：`{mapping_id(12位), name, type, visibility, auth_mode, proxy_url,
-headers: {"X-Proxy-Authorization":"{{RUNTIME_TOKEN}}"}, status}`——headers 即**代理
-调用配置**（结构=名称+地址+headers；平台把 `{{RUNTIME_TOKEN}}` 运行时替换为用户
-token），proxy_url = `<BASE>/p/{id}`（mcp 型追加上游端点路径，如 `/p/{id}/sse`）。
+headers: {"Authorization":"{{RUNTIME_TOKEN}}"}, status}`——headers 即**代理
+调用配置**（头名跟随 `PROXY_AUTH_HEADER`；结构=名称+地址+headers；平台把
+`{{RUNTIME_TOKEN}}` 运行时替换为用户 token），proxy_url = `<BASE>/p/{id}`
+（mcp 型追加上游端点路径，如 `/p/{id}/sse`）。
 
 ### GET /api/v1/mappings?page=1&page_size=20 → 列表
 
@@ -41,7 +42,7 @@ token），proxy_url = `<BASE>/p/{id}`（mcp 型追加上游端点路径，如 `
 - `?proxy_url=<值>`：12 位 mapping_id、完整代理地址（host 必须等于本服务 EXTERNAL_BASE）、URL 编码形态；
 - `?name=<映射名>`（设计 v3）：按名称取**本人**映射（重名取最新创建；admin 跨属主请走 id 形态）。
 
-用途：用户拿 mcp-name + X-Proxy-Authorization 取回原始配置（name、真实 url、真实 header），
+用途：用户拿 mcp-name + 代理身份凭据取回原始配置（name、真实 url、真实 header），
 用户端页面据代理地址/名称反查展示。返回 `MappingDetailOut` =
 RegisteredOut 全字段 + `upstream_url` + **真实 headers 明文** + `test_request` + 时间戳。
 （审计动作 `view_credentials`；非 owner → 404 MAPPING_NOT_FOUND 隐藏存在性。）
@@ -66,7 +67,7 @@ mcp 型探测式 auto——先 Streamable initialize 硬判定，405/404/406 回
 
 | 端点 | 语义 |
 |---|---|
-| `GET /api/v1/builtin-mappings` | public 列表：`{mapping_id,name,type,proxy_url,headers(代理调用配置={"X-Proxy-Authorization":"{{RUNTIME_TOKEN}}"}),auth_mode,binding,status}`（设计 v3：不再解密存储头）；binding 仅 oauth 型有值（static=null） |
+| `GET /api/v1/builtin-mappings` | public 列表：`{mapping_id,name,type,proxy_url,headers(代理调用配置，头名跟随 PROXY_AUTH_HEADER),auth_mode,binding,status}`（设计 v3：不再解密存储头）；binding 仅 oauth 型有值（static=null） |
 | `PUT /{id}/client` | **仅 admin** 手动配置 OAuth 客户端 `{client_id,client_secret?,token_auth:"client_secret_basic"|"client_secret_post"|"none",authorize_url,token_url,scopes?}`；upsert；secret 加密落库、永不回显 |
 | `GET /{id}/client` | **仅 admin** 查看（`client_secret_configured` 布尔） |
 | `POST /{id}/authorize` | body `{"front_redirect":"https://页面/回调"}`（域须在 CORS 白名单）→ `{authorization_url}`；**引导用户浏览器打开**，AS 回调代理 `/oauth/callback/{id}` 后 302 回 `front_redirect?binding=success|failed&reason=...` |
@@ -112,7 +113,7 @@ from urllib.parse import urlparse
 BASE = "http://127.0.0.1:8800"; TOKEN = "888"; MAPPING = "aqTNLiJXlCaN"
 SSE_PATH = f"/p/{MAPPING}/sse"    # ← 必须是注册响应里的 proxy_url 的路径部分（含端点路径）；
 u = urlparse(BASE)                #    GET /p/{id} 根路径走原始透传管线，endpoint 事件不会被改写
-hdrs = {"X-Proxy-Authorization": f"Bearer {TOKEN}", "Accept": "text/event-stream"}
+hdrs = {"Authorization": f"Bearer {TOKEN}", "Accept": "text/event-stream"}
 endpoint, results = None, {}
 
 def reader():                      # 1) SSE 长连接线程：endpoint 事件 + message 结果
@@ -137,7 +138,7 @@ def rpc(payload):                  # 2) JSON-RPC POST 到消息端点 → 202 �
     path = endpoint if endpoint.startswith("/") else "/" + endpoint
     c = http.client.HTTPConnection(u.hostname, u.port, timeout=30)
     c.request("POST", path, json.dumps(payload),
-              {"X-Proxy-Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"})
+              {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"})
     r = c.getresponse(); r.read(); assert r.status == 202, r.status
 
 rpc({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
@@ -154,11 +155,11 @@ Streamable 型等价操作（curl 可完成）：
 ```bash
 # initialize：响应头取 mcp-session-id（如 sess-m4）
 curl -sS -D - -X POST <BASE>/p/<id>/mcp \
-  -H "X-Proxy-Authorization: Bearer 888" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer 888" -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"demo","version":"0"}}}'
 # 后续请求带 -H "mcp-session-id: sess-m4"；结束会话：
-curl -X DELETE <BASE>/p/<id>/mcp -H "X-Proxy-Authorization: Bearer 888" -H "mcp-session-id: sess-m4"
+curl -X DELETE <BASE>/p/<id>/mcp -H "Authorization: Bearer 888" -H "mcp-session-id: sess-m4"
 ```
 
 ## 4. 错误码表（统一 body `{"code","message","request_id"}`）
@@ -184,10 +185,12 @@ curl -X DELETE <BASE>/p/<id>/mcp -H "X-Proxy-Authorization: Bearer 888" -H "mcp-
 
 | 项 | dev（本机） | 生产 |
 |---|---|---|
-| 认证 | stub：纯数字=user_id；信封 token 自带 role | company_sso + third_party 校验（待接） |
+| 认证 | stub（`TOKEN_VERIFY_IMPL=stub`）：`Authorization: Bearer 纯数字`=user_id；信封 token 自带 role | `TOKEN_VERIFY_IMPL=third_party`：调 `{VERIFY_API_BASE}/auth/verify_token` 验签（默认 beta 基址，生产切 `https://app.9m-tec.com/ai-service`）；身份以响应 `user_id` 为准，`user_type=admin` 命中 admin 判定；5xx → 503 AUTH_SERVICE_UNAVAILABLE |
+| 认证头名 | 本机部署设 `PROXY_AUTH_HEADER=X-Proxy-Authorization`（v2 分离模式，skill 流程兼容） | 默认 `Authorization`（统一 token：既鉴权又透传上游） |
 | 私网上游 | `SSRF_ALLOW_PRIVATE=true` 放行（host.docker.internal 可用） | 默认 false——私网 upstream_url 注册即 400 |
 | EXTERNAL_BASE | `http://127.0.0.1:8800` | 真实域名（proxy_url/重写都基于它） |
-| admin | 信封 token `{"user_id":1,"role":"admin"}`（不验签） | 统一登录角色 |
+| admin | 信封 token `{"user_id":1,"role":"admin"}`（不验签） | 统一登录角色（`user_type`） |
 
 部署/环境变量全集见仓库 `docs/DEPLOYMENT.md`；设计语义见
-`docs/superpowers/specs/2026-11-21-agent-proxy-design.md` §6/§8/§14。
+`docs/superpowers/specs/2026-11-21-agent-proxy-design.md` §6/§8/§14；
+验签接口契约见 `docs/auth_verify_token_integration.md`。
