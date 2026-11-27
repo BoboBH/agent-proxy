@@ -12,16 +12,16 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request, Response
 
-from app.auth import Identity
+from app.services.auth import Identity
 from app.env import Settings, get_settings
-from app.errors import AppError
-from app.forward.http_forward import (assert_safe_sub_path, split_sub_path,
-                                              stream_http_forward)
-from app.forward.mcp_sse import (build_origin_target, registered_endpoint_path,
-                                         stream_sse_forward)
-from app.oauth import credential as oauth_credential
-from app.services import load_mapping
-from app.api.deps import get_current_identity
+from app.services.errors import AppError
+from app.services.forward.http_forward import (assert_safe_sub_path, split_sub_path,
+                                  stream_http_forward)
+from app.services.forward.mcp_sse import (build_origin_target, registered_endpoint_path,
+                                  stream_sse_forward)
+from app.services.oauth import credential as oauth_credential
+from app.services.mapping_service import load_mapping
+from app.routers.deps import get_current_identity
 
 router = APIRouter(tags=["proxy"])
 

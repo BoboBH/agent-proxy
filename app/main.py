@@ -11,17 +11,16 @@ from fastapi.responses import JSONResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from sqlalchemy import text
 
-from app import errors, metrics, trace
-from app.cache import build_redis
+from app.services import errors, trace
+from app.core.cache import build_redis
 from app.env import Settings, get_settings
-from app.db import Base, build_engine, build_sessionmaker
-from app.logging_setup import setup_logging, shutdown_logging
-from app.middleware import RequestContextMiddleware
-from app import models as _models  # noqa: F401  注册 ORM 元数据供 create_all
-from app.api.mgmt import router as mgmt_router
-from app.api.proxy import router as proxy_router
-from app.api.builtin import router as builtin_router, callback_router as oauth_callback_router
-from app.api.admin_pages import router as admin_pages_router
+from app.core.db import Base, build_engine, build_sessionmaker
+from app.services.logging_service import setup_logging, shutdown_logging
+from app.core.middleware import RequestContextMiddleware
+from app.routers.mgmt import router as mgmt_router
+from app.routers.proxy import router as proxy_router
+from app.routers.builtin import router as builtin_router, callback_router as oauth_callback_router
+from app.routers.admin import router as admin_pages_router
 
 log = logging.getLogger("agent_proxy")
 
@@ -128,6 +127,5 @@ if __name__ == '__main__':
         app='main:app',
         host='0.0.0.0',
         port=8800,
-        # workers=4,
     )
     pass

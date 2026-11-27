@@ -21,13 +21,13 @@ cp .env.example .env   # 按环境修改
 
 ## MCP Inspector 联调（M3）
 
-见 `scripts/inspector_m3.md`：以 SSE 传输经代理连接 mock MCP 上游，完成
+见 `docs/inspector_m3.md`：以 SSE 传输经代理连接 mock MCP 上游，完成
 tools/list 与 tools/call 的人工验收步骤（协议级自动化覆盖见
 `tests/integration/test_proxy_mcp_sse.py`）。
 
 ## MCP Inspector 联调（M4：Streamable HTTP）
 
-见 `scripts/inspector_m4.md`：以 Streamable HTTP 传输经代理连接 mock MCP 上游
+见 `docs/inspector_m4.md`：以 Streamable HTTP 传输经代理连接 mock MCP 上游
 （`mocks/mcp_streamable.py`，`.venv/Scripts/python.exe -m mocks.mcp_streamable`，9903），
 完成 tools/list 与 tools/call
 的人工验收步骤（协议级自动化覆盖见 `tests/integration/test_proxy_mcp_streamable.py`）。

@@ -16,7 +16,7 @@ from httpx import ASGITransport, AsyncClient
 
 from app.env import BASE_DIR
 
-# 与 env.py 同一来源定位 .env（PROJECT_ROOT 锚定，不随 CWD 漂移）
+# 与 env.py 同一来源定位 .env（BASE_DIR 锚定，不随 CWD 漂移）
 _dotenv = {k: v for k, v in (dotenv_values(BASE_DIR / ".env") or {}).items() if v}
 
 

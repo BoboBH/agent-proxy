@@ -6,10 +6,10 @@ os.environ.setdefault("TOKEN_VERIFY_IMPL", "stub")
 import pytest
 from starlette.requests import Request
 
-from app.api.deps import get_current_identity, is_admin
-from app.auth import Identity, TokenInvalidError
+from app.routers.deps import get_current_identity, is_admin
+from app.services.auth import Identity, TokenInvalidError
 from app.env import get_settings
-from app.sso.session import SESSION_COOKIE, encode_identity, session_key
+from app.services.sso.session import SESSION_COOKIE, encode_identity, session_key
 from tests.utils import make_token
 
 # 认证通道头名（设计 v4）：可配置（PROXY_AUTH_HEADER），默认 Authorization——
@@ -55,7 +55,7 @@ async def test_authorization_header_consumed_by_default():
 async def test_custom_proxy_auth_header_via_config(monkeypatch):
     """PROXY_AUTH_HEADER 配置化：切到 x-proxy-authorization 后，该头成为身份通道，
     默认 Authorization 不再被消费（v2 模式经配置即可恢复）。"""
-    from app.api import deps as deps_mod
+    from app.routers import deps as deps_mod
 
     monkeypatch.setenv("PROXY_AUTH_HEADER", "X-Proxy-Authorization")
     get_settings.cache_clear()
@@ -176,7 +176,7 @@ def test_is_admin_false_when_role_mismatch_or_none():
 async def test_stub_verify_credential_contract(monkeypatch):
     """deps 契约（设计 v4.1）：认证头值带 Bearer/Token 前缀 = 凭证出示 →
     verifier.verify_credential；失败不回退 Cookie；其他 scheme 不遮蔽 Cookie。"""
-    from app.api import deps as deps_mod
+    from app.routers import deps as deps_mod
 
     class _SpyVerifier:
         def __init__(self):

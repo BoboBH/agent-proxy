@@ -11,7 +11,7 @@ import hashlib
 
 from cryptography.fernet import Fernet, InvalidToken
 
-from app.errors import AppError
+from app.services.errors import AppError
 
 _fernet_cache: dict[str, Fernet] = {}
 

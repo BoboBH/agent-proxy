@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Protocol
 from urllib.parse import quote
 
-from app.auth import Identity, build_verifier
+from app.services.auth import Identity, build_verifier
 from app.env import get_settings
 
 

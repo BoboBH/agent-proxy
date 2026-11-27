@@ -26,10 +26,10 @@ from sqlalchemy import select
 from sqlalchemy.exc import DataError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.errors import AppError
-from app.models import OAuthClient
-from app.oauth.crypto import decrypt_text, encrypt_text
-from app.oauth.discovery import DiscoveryError, discover_authorization_server, upstream_origin
+from app.services.errors import AppError
+from app.core.models import OAuthClient
+from app.services.oauth.crypto import decrypt_text, encrypt_text
+from app.services.oauth.discovery import DiscoveryError, discover_authorization_server, upstream_origin
 
 log = logging.getLogger("agent_proxy")
 

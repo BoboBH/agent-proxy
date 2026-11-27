@@ -1,8 +1,8 @@
 """服务端会话 Redis 存取集成（M7，§15.1）：ap:sess:{sid} 写读删 + TTL 语义
 （真实 Redis db9）。"""
-from app.auth import Identity
-from app.sso.session import (create_session, destroy_session, get_session,
-                                     new_sid, session_key)
+from app.services.auth import Identity
+from app.services.sso.session import (create_session, destroy_session, get_session,
+                                      new_sid, session_key)
 
 
 async def test_create_then_get_roundtrip_with_ttl(app):

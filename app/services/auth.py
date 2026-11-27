@@ -10,7 +10,7 @@ from typing import Protocol
 import httpx
 
 from app.env import get_settings
-from app.errors import AppError
+from app.services.errors import AppError
 
 
 class TokenInvalidError(AppError):

@@ -8,9 +8,9 @@ import re
 import httpx
 from sqlalchemy import select
 
-from app.models import OAuthCredential, OAuthClient
-from app.oauth.credential import invalidate_credential
-from app.oauth.crypto import decrypt_text
+from app.core.models import OAuthCredential, OAuthClient
+from app.services.oauth.credential import invalidate_credential
+from app.services.oauth.crypto import decrypt_text
 from mocks.oauth_as import as_state
 from tests.utils import make_token
 

@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from app.auth import Identity, StubVerifier, TokenInvalidError, build_verifier
+from app.services.auth import Identity, StubVerifier, TokenInvalidError, build_verifier
 from tests.utils import make_token
 
 

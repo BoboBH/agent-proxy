@@ -215,5 +215,5 @@ def _parse_args() -> argparse.Namespace:
 if __name__ == "__main__":
     args = _parse_args()
     import uvicorn
-    uvicorn.run(build_mcp_streamable_app(), host="127.0.0.1", port=args.port,
+    uvicorn.run(build_mcp_streamable_app(), host="0.0.0.0", port=args.port,
                 log_level="info", access_log=False)

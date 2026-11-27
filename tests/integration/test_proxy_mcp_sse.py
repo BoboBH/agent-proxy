@@ -8,7 +8,6 @@ tools/call JSON-RPC 全链路；心跳注释行透传；SSE 读超时不设（§
 """
 import asyncio
 import glob
-import gzip
 import json
 import re
 
@@ -365,7 +364,7 @@ async def test_sse_trace_metadata_lines(tmp_path):
     import json as jsonlib
     import logging
 
-    from app.logging_setup import flush_trace
+    from app.services.logging_service import flush_trace
 
     created = await _register_mcp()
     mid = created["mapping_id"]
@@ -400,8 +399,8 @@ async def test_sse_trace_body_mode_endpoint_and_message():
     """body 模式（§11.1）：endpoint 改写前 + 改写后 + message 事件记录；心跳不记。"""
     import json as jsonlib
 
-    from app import trace as trace_mod
-    from app.logging_setup import flush_trace
+    from app.services import trace as trace_mod
+    from app.services.logging_service import flush_trace
 
     created = await _register_mcp()
     mid = created["mapping_id"]
@@ -450,7 +449,7 @@ async def test_sse_same_origin_abort_writes_no_response_trace_row(tmp_path):
     import json as jsonlib
     import logging
 
-    from app.logging_setup import flush_trace
+    from app.services.logging_service import flush_trace
 
     created = await _register_mcp(upstream_url=f"{UPSTREAM_BASE}/sse-redirect-same")
     mid = created["mapping_id"]

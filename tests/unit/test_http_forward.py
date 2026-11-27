@@ -2,9 +2,9 @@
 import httpx
 import pytest
 
-from app.errors import AppError
-from app.forward.http_forward import (assert_safe_sub_path, build_forward_target,
-                                              _origin, _redirect_method, split_sub_path)
+from app.services.errors import AppError
+from app.services.forward.http_forward import (assert_safe_sub_path, build_forward_target,
+                                  _origin, _redirect_method, split_sub_path)
 
 
 def test_build_target_prefix_join():

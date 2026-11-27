@@ -29,10 +29,10 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from app.auth import Identity, TokenInvalidError
+from app.services.auth import Identity, TokenInvalidError
 from app.env import Settings, get_settings
-from app.sso.login import get_login_provider
-from app.sso.session import SESSION_COOKIE, create_session, destroy_session, get_session
+from app.services.sso.login import get_login_provider
+from app.services.sso.session import SESSION_COOKIE, create_session, destroy_session, get_session
 
 router = APIRouter(tags=["admin"])
 # 模板随源码目录就位（app/admin/，无运行时配置项，Path(__file__) 定位）

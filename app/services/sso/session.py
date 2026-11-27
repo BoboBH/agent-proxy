@@ -16,7 +16,7 @@ import logging
 import re
 import secrets
 
-from app.auth import Identity
+from app.services.auth import Identity
 
 log = logging.getLogger("agent_proxy")
 

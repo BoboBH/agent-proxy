@@ -8,19 +8,18 @@ from urllib.parse import unquote, urlparse
 from fastapi import APIRouter, Depends, Query, Request, Response
 from sqlalchemy import select
 
-from app import placeholder
-from app.models import ProxyMapping
-from app.auth import Identity
+from app.core.models import ProxyMapping
+from app.services.auth import Identity
 from app.env import Settings, get_settings
-from app.errors import AppError
-from app.forward.http_forward import probe_http_mapping
-from app.forward.mcp_streamable import probe_mcp_mapping
-from app.mapping_id import MAPPING_ID_RE
-from app.schemas import (ListItemOut, MappingCreate, MappingDetailOut, MappingTestOut,
-                                 MappingUpdate, RegisteredOut)
-from app.services import (build_proxy_url, create_mapping, delete_mapping, get_owned,
-                                  list_mappings, row_to_dict, update_mapping)
-from app.api.deps import get_current_identity, get_db, is_admin
+from app.services.errors import AppError
+from app.services.forward.http_forward  import probe_http_mapping
+from app.services.forward.mcp_streamable import probe_mcp_mapping
+from app.services.mapping_id import MAPPING_ID_RE
+from app.core.schemas import (ListItemOut, MappingCreate, MappingDetailOut, MappingTestOut,
+                              MappingUpdate, RegisteredOut)
+from app.services.mapping_service import (build_proxy_url, create_mapping, delete_mapping, get_owned,
+                          list_mappings, row_to_dict, update_mapping, placeholder)
+from app.routers.deps import get_current_identity, get_db, is_admin
 
 log = logging.getLogger("agent_proxy")
 router = APIRouter(prefix="/api/v1/mappings", tags=["mgmt"])

@@ -3,8 +3,8 @@ import logging
 
 import pytest
 
-from app import trace
-from app.logging_setup import flush_trace
+from app.services import trace
+from app.services.logging_service import flush_trace
 
 
 def _capture(tmp_path, mode, limit=100):

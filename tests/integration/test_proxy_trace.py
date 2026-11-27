@@ -16,7 +16,6 @@ mapping_id 筛选（否则必得空集）。
 """
 import glob
 import json
-import logging
 
 import pytest
 import pytest_asyncio
@@ -33,13 +32,13 @@ BODY = {"type": "http", "upstream_url": "http://127.0.0.1:9901/api/v1",
 def body_env(monkeypatch):
     monkeypatch.setenv("TRACE_MODE", "body")
     yield
-    from app import trace
+    from app.services import trace
     trace.configure("metadata", 64 * 1024)  # 恢复进程级全局（集成夹具 app 会在下次 lifespan 重配）
 
 
 @pytest_asyncio.fixture
 async def body_app(body_env):
-    from app import trace
+    from app.services import trace
     from app.env import Settings
     from app.main import create_app
 
@@ -65,7 +64,7 @@ def _trace_records():
 
 
 async def test_proxy_trace_body_mode_records_and_redacts_query(body_client):
-    from app.logging_setup import flush_trace
+    from app.services.logging_service import flush_trace
 
     resp = await body_client.post("/api/v1/mappings", json=BODY,
                                   headers={"Authorization": f"Bearer {make_token(888)}"})

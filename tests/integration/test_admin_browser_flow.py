@@ -9,7 +9,7 @@ Cookie 通道完成我的映射（注册/resolve/test/删除）、内置 MCP 列
 import httpx
 from httpx import ASGITransport, AsyncClient
 
-from app.sso.session import SESSION_COOKIE
+from app.services.sso.session import SESSION_COOKIE
 from tests.utils import make_token
 
 BASE = "http://testserver"

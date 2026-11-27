@@ -7,8 +7,8 @@ request_id 在全部 audit.log.* 行中过滤定位，不依赖"最后一行属�
 import glob
 import json
 
-from app.auth import Identity
-from app.sso.session import SESSION_COOKIE, create_session
+from app.services.auth import Identity
+from app.services.sso.session import SESSION_COOKIE, create_session
 from tests.utils import make_token
 
 BODY = {"type": "http", "upstream_url": "http://10.0.0.5/api/v1", "headers": {}}

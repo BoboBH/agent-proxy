@@ -16,13 +16,14 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import cache, mapping_id as mid_module, placeholder
+from app.services import mapping_id as mid_module, placeholder
+from app.core import cache
 from app.env import Settings
-from app.errors import AppError
-from app.models import OAuthClient, OAuthCredential, ProxyMapping
-from app.oauth.credential import invalidate_credential
-from app.oauth.crypto import decrypt_text, encrypt_text
-from app.ssrf import async_validate_upstream_url
+from app.services.errors import AppError
+from app.core.models import OAuthClient, OAuthCredential, ProxyMapping
+from app.services.oauth.credential import invalidate_credential
+from app.services.oauth.crypto import decrypt_text, encrypt_text
+from app.services.ssrf import async_validate_upstream_url
 
 log = logging.getLogger("agent_proxy")
 

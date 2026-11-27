@@ -20,12 +20,12 @@ import httpx
 from fastapi import Request, Response
 from fastapi.responses import StreamingResponse
 
-from app import metrics, trace
-from app.errors import AppError
-from app.forward.http_forward import (TEST_PROBE_TIMEOUT, _origin,  # 同包私有 origin 判定 helper 共享（评审准许）
-                                              assert_safe_sub_path, build_forward_target,
-                                              split_sub_path)
-from app.headers import build_outbound_headers, filter_response_headers
+from app.services import metrics, trace
+from app.services.errors import AppError
+from app.services.forward.http_forward import (TEST_PROBE_TIMEOUT, _origin,  # 同包私有 origin 判定 helper 共享（评审准许）
+                                               assert_safe_sub_path, build_forward_target,
+                                               split_sub_path)
+from app.services.headers import build_outbound_headers, filter_response_headers
 
 log = logging.getLogger("agent_proxy")
 

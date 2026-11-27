@@ -32,12 +32,12 @@ from sqlalchemy import select
 from sqlalchemy.exc import DataError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import metrics
-from app.errors import AppError
-from app.models import OAuthCredential
-from app.oauth.client import build_token_request, load_client_row, _row_to_client
-from app.oauth.crypto import decrypt_text, encrypt_text
-from app.oauth.discovery import DiscoveryError, discover_authorization_server, upstream_origin
+from app.services import metrics
+from app.services.errors import AppError
+from app.core.models import OAuthCredential
+from app.services.oauth.client import build_token_request, load_client_row, _row_to_client
+from app.services.oauth.crypto import decrypt_text, encrypt_text
+from app.services.oauth.discovery import DiscoveryError, discover_authorization_server, upstream_origin
 
 log = logging.getLogger("agent_proxy")
 

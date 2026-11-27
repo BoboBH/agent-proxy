@@ -6,9 +6,9 @@ import httpx
 from sqlalchemy import select
 from urllib.parse import urlparse, parse_qs
 
-from app.models import OAuthClient, OAuthCredential
-from app.oauth.client import state_key
-from app.oauth.crypto import decrypt_text
+from app.core.models import OAuthClient, OAuthCredential
+from app.services.oauth.client import state_key
+from app.services.oauth.crypto import decrypt_text
 from mocks.oauth_as import as_state
 from tests.utils import make_token
 
@@ -179,7 +179,7 @@ async def test_builtin_list_lists_corrupt_rows_without_decryption(client, app):
     """设计 v3 重写（原「损坏行降级跳过 + WARN」）：列表 headers 回显 = 代理调用
     配置，**不再解密存储头**——损坏行照常列出且回显一致（零解密开销、无降级分支）；
     该行详情/调用路径仍各自 fail-closed 404。"""
-    from app.models import ProxyMapping
+    from app.core.models import ProxyMapping
 
     healthy_mid = (await client.post("/api/v1/mappings", json={
         "type": "http", "visibility": "public", "auth_mode": "static",
@@ -242,7 +242,7 @@ async def test_callback_as_error_redirects_failed(client, app):
     assert resp.status_code == 302
     assert resp.headers["location"] == f"{FRONT}?binding=failed&reason=access_denied"
     # AS 拒绝授权不落凭证
-    from app.oauth.credential import load_credential
+    from app.services.oauth.credential import load_credential
     async with app.state.sessionmaker() as session:
         assert await load_credential(session, app.state.redis, mid, 888) is None
 
@@ -282,7 +282,7 @@ async def test_callback_bogus_code_token_exchange_failed_no_credential(client, a
                             follow_redirects=False)
     assert resp.status_code == 302
     assert "binding=failed&reason=token_exchange" in resp.headers["location"]
-    from app.oauth.credential import load_credential
+    from app.services.oauth.credential import load_credential
     async with app.state.sessionmaker() as session:
         assert await load_credential(session, app.state.redis, mid, 888) is None
 

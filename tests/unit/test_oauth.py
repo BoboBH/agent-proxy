@@ -2,24 +2,23 @@
 state 载荷、authorization_url / redirect_uri 组装、token_auth 三形态请求组装、
 DCR 注册载荷、AS 元数据解析、front_redirect 域白名单。"""
 import base64
-import hashlib
 import json
 
 import httpx
 import pytest
 
-from app.errors import AppError
-from app.oauth.client import (build_authorization_url, build_dcr_payload,
-                                      build_redirect_uri, build_token_request,
-                                      code_challenge_s256, decode_state_payload,
-                                      encode_state_payload, new_code_verifier,
-                                      new_state, normalize_token_auth,
-                                      state_key, validate_front_redirect)
-from app.oauth.credential import expires_at_from, is_expired
-from app.oauth.crypto import decrypt_text, encrypt_text
-from app.oauth.discovery import (DiscoveryError, discover_authorization_server,
-                                         parse_as_metadata, parse_protected_resource,
-                                         upstream_origin)
+from app.services.errors import AppError
+from app.services.oauth.client import (build_authorization_url, build_dcr_payload,
+                                build_redirect_uri, build_token_request,
+                                code_challenge_s256, decode_state_payload,
+                                encode_state_payload, new_code_verifier,
+                                new_state, normalize_token_auth,
+                                state_key, validate_front_redirect)
+from app.services.oauth.credential import expires_at_from, is_expired
+from app.services.oauth.crypto import decrypt_text, encrypt_text
+from app.services.oauth.discovery import (DiscoveryError, discover_authorization_server,
+                                parse_as_metadata, parse_protected_resource,
+                                upstream_origin)
 
 MASTER = "test-master-key"
 
@@ -108,7 +107,7 @@ def test_state_roundtrip_and_key_prefix():
 
 
 def test_state_payload_missing_fields_rejected():
-    from app.errors import AppError
+    from app.services.errors import AppError
     with pytest.raises(AppError) as ei:
         decode_state_payload('{"user_id": 888}')
     assert ei.value.code == "OAUTH_STATE_INVALID"

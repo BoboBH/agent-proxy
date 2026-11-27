@@ -7,8 +7,8 @@ locked·deleted 拒收 / user_id 非整数拒收 / 短 TTL 缓存 / build_verifi
 import httpx
 import pytest
 
-from app.auth import (ThirdPartyVerifier, TokenInvalidError,
-                              TokenServiceError, build_verifier)
+from app.services.auth import (ThirdPartyVerifier, TokenInvalidError,
+                               TokenServiceError, build_verifier)
 
 BETA_BASE = "https://bapal.9m-tec.com/alphapal/api/ai-service"
 OK_BODY = {"valid": True, "user_id": 8743, "username": "someone@example.com",

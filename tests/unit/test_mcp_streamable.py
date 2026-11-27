@@ -4,9 +4,9 @@
 非 dict / >64KB 截断）。"""
 import time
 
-from app.forward.mcp_streamable import (_first_message_data,
-                                                INITIALIZE_MAX_BYTES,
-                                                _judge_initialize_response)
+from app.services.forward.mcp_streamable import (_first_message_data,
+                                  INITIALIZE_MAX_BYTES,
+                                  _judge_initialize_response)
 
 
 def test_first_message_data_explicit_event():

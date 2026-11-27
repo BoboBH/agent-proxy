@@ -182,8 +182,8 @@ async def test_streamable_trace_body_mode_records_request_and_response(tmp_path)
     import json as jsonlib
     import logging
 
-    from app import trace as trace_mod
-    from app.logging_setup import flush_trace
+    from app.services import trace as trace_mod
+    from app.services.logging_service import flush_trace
 
     created = await _register_streamable()
     mid = created["mapping_id"]
@@ -251,8 +251,8 @@ async def test_streamable_push_stream_trace_body_mode_records_message_events():
     import glob
     import json as jsonlib
 
-    from app import trace as trace_mod
-    from app.logging_setup import flush_trace
+    from app.services import trace as trace_mod
+    from app.services.logging_service import flush_trace
 
     created = await _register_streamable()
     mid = created["mapping_id"]

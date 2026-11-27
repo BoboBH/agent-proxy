@@ -1,6 +1,4 @@
-import re
-
-from app.mapping_id import LENGTH, MAPPING_ID_RE, new_mapping_id
+from app.services.mapping_id import LENGTH, MAPPING_ID_RE, new_mapping_id
 
 
 def test_shape():

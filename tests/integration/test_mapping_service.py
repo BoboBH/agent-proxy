@@ -1,9 +1,9 @@
 import json
 
-from app import mapping_id as mid_module
-from app.services import (build_proxy_url, create_mapping, delete_mapping,
-                                  get_owned, list_mappings, load_mapping,
-                                  row_to_dict, update_mapping)
+from app.services import mapping_id as mid_module
+from app.services.mapping_service import (build_proxy_url, create_mapping,
+                          delete_mapping, get_owned, list_mappings,
+                          load_mapping, row_to_dict, update_mapping)
 
 MASTER = "test-master-key"
 

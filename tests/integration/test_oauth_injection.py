@@ -9,12 +9,12 @@ from sqlalchemy import select
 
 import httpx
 
-from app.models import OAuthClient, OAuthCredential
-from app.oauth import credential as cred_mod
-from app.oauth.credential import (invalidate_credential,
-                                          refresh_credential, refresh_lock_key)
-from app.oauth.crypto import decrypt_text, encrypt_text
-from app.services import load_mapping
+from app.core.models import OAuthClient, OAuthCredential
+from app.services.oauth import credential as cred_mod
+from app.services.oauth.credential import (invalidate_credential,
+                                refresh_credential, refresh_lock_key)
+from app.services.oauth.crypto import decrypt_text, encrypt_text
+from app.services.mapping_service import load_mapping
 from mocks.mcp_sse import mock_state
 from mocks.mcp_streamable import secure_state, streamable_state
 from mocks.oauth_as import as_state

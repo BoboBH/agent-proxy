@@ -71,7 +71,7 @@ class Settings(BaseSettings):
     # 加密落库，MASTER_KEY 无开关必填；ENCRYPT_AT_REST 可选开关已废止
     master_key: str = Field(min_length=1)
     # log_dir 保持「相对 CWD」语义（容器 WORKDIR=/app + compose 卷挂载 /app/logs；
-    # 本地仓库根启动 → ./logs）。不可锚定 PROJECT_ROOT：容器内包已装进 site-packages，
+    # 本地仓库根启动 → ./logs）。不可锚定 BASE_DIR：容器内包已装进 site-packages，
     # 锚定会写进 site-packages 且卷落空。需要绝对路径时直接配绝对路径即可
     log_dir: str = str(BASE_DIR / "logs")
     log_level: str = "INFO"

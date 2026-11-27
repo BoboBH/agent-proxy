@@ -3,7 +3,7 @@ import socket
 
 import pytest
 
-from app.ssrf import (
+from app.services.ssrf import (
     UpstreamNotAllowed,
     async_validate_upstream_url,
     validate_upstream_url,

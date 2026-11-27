@@ -173,8 +173,7 @@ async def test_proxy_trace_metadata_wired(client, monkeypatch, tmp_path):
     import json as jsonlib
     import logging
 
-    from app.logging_setup import flush_trace
-    import app.trace as trace_mod
+    from app.services.logging_service import flush_trace
 
     handler_target = tmp_path / "trace.log"
     logger = logging.getLogger("agent_proxy.trace")
@@ -300,8 +299,8 @@ async def test_stream_broken_is_observable(client, app, tmp_path):
     import json as jsonlib
     import logging
 
-    from app import metrics as metrics_mod
-    from app.logging_setup import flush_trace
+    from app.services import metrics as metrics_mod
+    from app.services.logging_service import flush_trace
 
     class _BrokenOnceResponse(httpx.Response):
         # M4 aiter_raw 换装：管线消费点已是 aiter_raw（压缩字节透传），中断桩
@@ -448,7 +447,6 @@ async def test_large_response_streamed_intact(client):
 @asynccontextmanager
 async def _dedicated_app_client(**env_overrides):
     """专用 app（独立 Settings 覆盖）+ 其测试 client——超时/池上限类用例专用，用毕即弃。"""
-    import os
 
     from app.env import Settings
     from app.main import create_app
@@ -465,7 +463,7 @@ async def _dedicated_app_client(**env_overrides):
 async def test_upstream_dead_port_maps_502(client):
     """评审核销项：上游连接失败（127.0.0.1:1 死端口）→ 502 UPSTREAM_ERROR，
     metrics ap_upstream_errors_total{code=connect} 打点。"""
-    from app import metrics as metrics_mod
+    from app.services import metrics as metrics_mod
 
     created = await _register(client, upstream_url="http://127.0.0.1:1/api/v1")
     before = metrics_mod.upstream_errors_total.labels(
@@ -480,7 +478,7 @@ async def test_upstream_dead_port_maps_502(client):
 async def test_upstream_read_timeout_maps_504():
     """评审核销项：上游读超时（UPSTREAM_READ_TIMEOUT=1 < slow 3s）→ 504 UPSTREAM_TIMEOUT，
     metrics ap_upstream_errors_total{code=timeout} 打点。"""
-    from app import metrics as metrics_mod
+    from app.services import metrics as metrics_mod
 
     before = metrics_mod.upstream_errors_total.labels(
         type="http", code="timeout")._value.get()
@@ -532,7 +530,7 @@ async def test_redirect_hops_recorded_in_trace(client, tmp_path):
     import json as jsonlib
     import logging
 
-    from app.logging_setup import flush_trace
+    from app.services.logging_service import flush_trace
 
     handler_target = tmp_path / "trace.log"
     logger = logging.getLogger("agent_proxy.trace")
@@ -560,7 +558,7 @@ async def test_redirect_hop_send_failure_traced(client, app, tmp_path):
     import json as jsonlib
     import logging
 
-    from app.logging_setup import flush_trace
+    from app.services.logging_service import flush_trace
 
     class _FailSecondHopClient(_FakeStreamClient):
         async def send(self, request, stream=False):

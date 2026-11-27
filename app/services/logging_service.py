@@ -1,5 +1,6 @@
-"""三层滚动日志（全局规范）：按天 + 单文件 50MB 立即滚动 + 保留 7 天 + 后缀精确到秒。
+"""三层滚动日志（全局规范）：按天 + 单文件 50MB 立即滚动 + 保留 7 天 + 后缀按天（YYYYmmdd）。
 
+同日多次启动 append 同一文件（一天日志收敛单文件）；同日大小触发滚动追加 .N 序号。
 同一日志文件全局仅一个滚动 handler（模块级注册表保证）。
 trace logger 经 QueueHandler+QueueListener 异步落盘（不阻塞事件循环）。
 """
@@ -24,7 +25,7 @@ _lock = threading.Lock()
 
 
 class DailySizeRotatingHandler(logging.Handler):
-    """按天 + 大小双触发滚动；文件名 <base>.YYYYmmdd_HHMMSS（同秒重复滚动追加 .N 序号）；按 mtime 清理过期。"""
+    """按天 + 大小双触发滚动；文件名 <base>.YYYYmmdd（同日大小触发滚动追加 .N 序号）；按 mtime 清理过期。"""
 
     def __init__(self, base_path: str, max_bytes: int = MAX_BYTES, keep_days: int = KEEP_DAYS):
         super().__init__()
@@ -43,9 +44,9 @@ class DailySizeRotatingHandler(logging.Handler):
 
     def _open_new(self) -> None:
         self._close_stream()
-        suffix = datetime.now().strftime("%Y%m%d_%H%M%S")
+        suffix = self._today()
         if suffix == self._last_suffix:
-            # 同一秒内再次滚动（如大小触发）时追加序号，避免同名 append 不分文件
+            # 同日内再次滚动（大小触发，如重启后 50MB 续滚）时追加序号，避免同名 append 不分文件
             self._seq += 1
             path = f"{self.base_path}.{suffix}.{self._seq}"
         else:
@@ -76,7 +77,8 @@ class DailySizeRotatingHandler(logging.Handler):
         cutoff = datetime.now() - timedelta(days=self.keep_days)
         base = os.path.basename(self.base_path)
         directory = os.path.dirname(self.base_path) or "."
-        pattern = re.compile(rf"^{re.escape(base)}\.\d{{8}}_\d{{6}}(?:\.\d+)?$")
+        # 同时匹配新格式 <base>.YYYYmmdd 与历史秒级格式 <base>.YYYYmmdd_HHMMSS（存量自然到期）
+        pattern = re.compile(rf"^{re.escape(base)}\.\d{{8}}(?:_\d{{6}})?(?:\.\d+)?$")
         try:
             for name in os.listdir(directory):
                 if not pattern.match(name):

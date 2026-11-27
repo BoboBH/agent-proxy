@@ -1,6 +1,6 @@
 import pytest
 
-from app.placeholder import proxy_call_headers, validate_headers
+from app.services.placeholder import proxy_call_headers, validate_headers
 
 
 def test_proxy_call_headers_spec():

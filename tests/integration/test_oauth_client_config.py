@@ -11,9 +11,9 @@ from urllib.parse import quote
 
 from sqlalchemy import func, select
 
-from app.models import OAuthClient, OAuthCredential
-from app.oauth.credential import load_credential, save_credential
-from app.oauth.crypto import encrypt_text
+from app.core.models import OAuthClient, OAuthCredential
+from app.services.oauth.credential import load_credential, save_credential
+from app.services.oauth.crypto import encrypt_text
 from tests.utils import make_token
 
 ADMIN = {"Authorization": f"Bearer {make_token(100, 'admin')}"}

@@ -4,8 +4,8 @@ Bearer 通道与优先级零破坏。
 
 Cookie 经 client 级 Cookie Jar 注入（评审补充：httpx 0.28 起逐请求 cookies=
 已弃用——「persistence 语义不明」；client 级 jar 与浏览器行为同构）。"""
-from app.auth import Identity
-from app.sso.session import SESSION_COOKIE, create_session, destroy_session
+from app.services.auth import Identity
+from app.services.sso.session import SESSION_COOKIE, create_session, destroy_session
 from tests.utils import make_token
 
 BODY = {"type": "http", "upstream_url": "http://10.0.0.5/api/v1",

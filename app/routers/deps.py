@@ -3,9 +3,9 @@ from __future__ import annotations
 
 from fastapi import Request
 
-from app.auth import Identity, TokenInvalidError, build_verifier
+from app.services.auth import Identity, TokenInvalidError, build_verifier
 from app.env import get_settings
-from app.sso.session import SESSION_COOKIE, get_session
+from app.services.sso.session import SESSION_COOKIE, get_session
 
 
 async def get_db(request: Request):

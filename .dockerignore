@@ -20,11 +20,12 @@ logs*/
 cms-dingtalk/
 logs-manual-check/
 
-# 开发面（测试/mock/文档/脚本不入镜像）
+# 开发面（测试/mock/文档/脚本/SQL 不入镜像）
 tests/
 docs/
 scripts/
 mocks/
+sql/
 README.md
 
 # 部署文件自身与 IDE

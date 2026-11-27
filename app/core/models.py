@@ -6,7 +6,7 @@ from datetime import datetime
 from sqlalchemy import JSON, BigInteger, DateTime, Enum, String, Text, UniqueConstraint, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db import Base
+from app.core.db import Base
 
 
 class ProxyMapping(Base):
