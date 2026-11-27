@@ -242,18 +242,6 @@
       "uid": 19
     },
     {
-      "date": "2026-11-04T10:36:05+00:00",
-      "from": "黄齐仁 <qiren.huang@9m-tec.com>",
-      "has_attachment": false,
-      "seen": true,
-      "size": 4262,
-      "subject": "测试邮件5",
-      "to": [
-        "huang.qiren <huang.qiren@bot.alphamind.cloud>"
-      ],
-      "uid": 18
-    },
-    {
       "date": "2026-11-04T10:33:03+00:00",
       "from": "黄齐仁 <qiren.huang@9m-tec.com>",
       "has_attachment": false,
@@ -426,5 +414,5 @@
   "page": 1,
   "page_size": 50,
   "sort": "date",
-  "total": 35
+  "total": 34
 }

@@ -2,6 +2,234 @@
   "folder": "sent",
   "items": [
     {
+      "date": "2026-11-27T14:01:02+00:00",
+      "from": "huang.qiren@bot.alphamind.cloud",
+      "has_attachment": true,
+      "seen": true,
+      "size": 16132,
+      "subject": "【agent-email 全链路测试｜全部通过】2026-11-27 通过 7/7",
+      "to": [
+        "qiren.huang@9m-tec.com"
+      ],
+      "uid": 308
+    },
+    {
+      "date": "2026-11-27T14:00:29+00:00",
+      "from": "huang.qiren@bot.alphamind.cloud",
+      "has_attachment": true,
+      "seen": true,
+      "size": 1533,
+      "subject": "AGENT-EMAIL-CHAIN-TEST-20261127T2200",
+      "to": [
+        "qiren.huang@9m-tec.com"
+      ],
+      "uid": 307
+    },
+    {
+      "date": "2026-11-27T11:48:21+00:00",
+      "from": "huang.qiren@bot.alphamind.cloud",
+      "has_attachment": false,
+      "seen": true,
+      "size": 365,
+      "subject": "retest multi-to 20261127",
+      "to": [
+        ""
+      ],
+      "uid": 306
+    },
+    {
+      "date": "2026-11-27T11:48:17+00:00",
+      "from": "huang.qiren@bot.alphamind.cloud",
+      "has_attachment": false,
+      "seen": true,
+      "size": 360,
+      "subject": "retest whitelist pass 20261127",
+      "to": [
+        "13632794089@163.com"
+      ],
+      "uid": 305
+    },
+    {
+      "date": "2026-11-27T11:48:15+00:00",
+      "from": "huang.qiren@bot.alphamind.cloud",
+      "has_attachment": false,
+      "seen": true,
+      "size": 541,
+      "subject": "邮件技能自检测试 2026-11-27",
+      "to": [
+        "qiren.huang@9m-tec.com"
+      ],
+      "uid": 304
+    },
+    {
+      "date": "2026-11-27T11:48:03+00:00",
+      "from": "huang.qiren@bot.alphamind.cloud",
+      "has_attachment": true,
+      "seen": true,
+      "size": 867,
+      "subject": "agent-email retest 20261127-1947",
+      "to": [
+        "qiren.huang@9m-tec.com"
+      ],
+      "uid": 302
+    },
+    {
+      "date": "2026-11-27T11:41:04+00:00",
+      "from": "huang.qiren@bot.alphamind.cloud",
+      "has_attachment": false,
+      "seen": true,
+      "size": 6989,
+      "subject": "Re: 查询今日创业板收盘情况并分析，邮件回复我",
+      "to": [
+        "qiren.huang@9m-tec.com"
+      ],
+      "uid": 301
+    },
+    {
+      "date": "2026-11-27T11:33:58+00:00",
+      "from": "huang.qiren@bot.alphamind.cloud",
+      "has_attachment": false,
+      "seen": true,
+      "size": 539,
+      "subject": "agent-email 测试邮件",
+      "to": [
+        "13632794089@139.com"
+      ],
+      "uid": 300
+    },
+    {
+      "date": "2026-11-27T11:29:09+00:00",
+      "from": "huang.qiren@bot.alphamind.cloud",
+      "has_attachment": false,
+      "seen": true,
+      "size": 452,
+      "subject": "agent-email 测试-白名单显式地址放行",
+      "to": [
+        "13632794089@139.com"
+      ],
+      "uid": 299
+    },
+    {
+      "date": "2026-11-27T11:29:06+00:00",
+      "from": "huang.qiren@bot.alphamind.cloud",
+      "has_attachment": false,
+      "seen": true,
+      "size": 629,
+      "subject": "agent-email 技能全量测试-白名单正向验证",
+      "to": [
+        "qiren.huang@9m-tec.com"
+      ],
+      "uid": 298
+    },
+    {
+      "date": "2026-11-27T10:47:11+00:00",
+      "from": "huang.qiren@bot.alphamind.cloud",
+      "has_attachment": false,
+      "seen": true,
+      "size": 1122,
+      "subject": "AlphaMind agent-email test 20261127E html",
+      "to": [
+        "qiren.huang@9m-tec.com"
+      ],
+      "uid": 297
+    },
+    {
+      "date": "2026-11-27T10:47:00+00:00",
+      "from": "huang.qiren@bot.alphamind.cloud",
+      "has_attachment": false,
+      "seen": true,
+      "size": 364,
+      "subject": "AlphaMind agent-email test 20261127D async",
+      "to": [
+        "qiren.huang@9m-tec.com"
+      ],
+      "uid": 296
+    },
+    {
+      "date": "2026-11-27T10:46:53+00:00",
+      "from": "huang.qiren@bot.alphamind.cloud",
+      "has_attachment": true,
+      "seen": true,
+      "size": 818,
+      "subject": "AlphaMind agent-email test 20261127B attach",
+      "to": [
+        "qiren.huang@9m-tec.com"
+      ],
+      "uid": 295
+    },
+    {
+      "date": "2026-11-27T07:00:37+00:00",
+      "from": "huang.qiren@bot.alphamind.cloud",
+      "has_attachment": false,
+      "seen": true,
+      "size": 7193,
+      "subject": "【振幅预警】指数行情监测2026-11-27 15:00",
+      "to": [
+        "qiren.huang@9m-tec.com"
+      ],
+      "uid": 293
+    },
+    {
+      "date": "2026-11-27T05:00:04+00:00",
+      "from": "huang.qiren@bot.alphamind.cloud",
+      "has_attachment": false,
+      "seen": true,
+      "size": 716,
+      "subject": "AlphaMind 邮箱测试邮件 20261127 (163)",
+      "to": [
+        "13632794089@163.com"
+      ],
+      "uid": 292
+    },
+    {
+      "date": "2026-11-27T04:58:28+00:00",
+      "from": "huang.qiren@bot.alphamind.cloud",
+      "has_attachment": false,
+      "seen": true,
+      "size": 730,
+      "subject": "AlphaMind 邮箱测试邮件 20261127",
+      "to": [
+        "13632794089@139.com"
+      ],
+      "uid": 291
+    },
+    {
+      "date": "2026-11-27T00:01:49+00:00",
+      "from": "huang.qiren@bot.alphamind.cloud",
+      "has_attachment": true,
+      "seen": true,
+      "size": 10344,
+      "subject": "【agent-email 全链路测试｜全部通过】2026-11-27 通过 7/7",
+      "to": [
+        "qiren.huang@9m-tec.com"
+      ],
+      "uid": 286
+    },
+    {
+      "date": "2026-11-27T00:01:27+00:00",
+      "from": "huang.qiren@bot.alphamind.cloud",
+      "has_attachment": true,
+      "seen": true,
+      "size": 1001,
+      "subject": "AGENT-EMAIL-CHAIN-TEST-20261127-080126",
+      "to": [
+        "qiren.huang@9m-tec.com"
+      ],
+      "uid": 285
+    },
+    {
+      "date": "2026-11-27T00:01:01+00:00",
+      "from": "huang.qiren@bot.alphamind.cloud",
+      "has_attachment": true,
+      "seen": true,
+      "size": 1001,
+      "subject": "AGENT-EMAIL-CHAIN-TEST-20261127-080100",
+      "to": [
+        "qiren.huang@9m-tec.com"
+      ],
+      "uid": 284
+    },
+    {
       "date": "2026-11-26T13:58:04+00:00",
       "from": "huang.qiren@bot.alphamind.cloud",
       "has_attachment": true,
@@ -372,239 +600,11 @@
         "qiren.huang@9m-tec.com"
       ],
       "uid": 251
-    },
-    {
-      "date": "2026-11-21T00:03:16+00:00",
-      "from": "huang.qiren@bot.alphamind.cloud",
-      "has_attachment": true,
-      "seen": true,
-      "size": 12627,
-      "subject": "【agent-email 全链路测试｜全部通过】2026-11-21 通过 7/7",
-      "to": [
-        "qiren.huang@9m-tec.com"
-      ],
-      "uid": 250
-    },
-    {
-      "date": "2026-11-21T00:03:02+00:00",
-      "from": "huang.qiren@bot.alphamind.cloud",
-      "has_attachment": true,
-      "seen": true,
-      "size": 964,
-      "subject": "AGENT-EMAIL-CHAIN-TEST-20261121_080301",
-      "to": [
-        "qiren.huang@9m-tec.com"
-      ],
-      "uid": 249
-    },
-    {
-      "date": "2026-11-20T07:00:16+00:00",
-      "from": "huang.qiren@bot.alphamind.cloud",
-      "has_attachment": false,
-      "seen": true,
-      "size": 5705,
-      "subject": "指数行情监测 2026-11-20 15:00",
-      "to": [
-        "qiren.huang@9m-tec.com"
-      ],
-      "uid": 248
-    },
-    {
-      "date": "2026-11-20T06:00:15+00:00",
-      "from": "huang.qiren@bot.alphamind.cloud",
-      "has_attachment": false,
-      "seen": true,
-      "size": 5708,
-      "subject": "指数行情监测 2026-11-20 14:00",
-      "to": [
-        "qiren.huang@9m-tec.com"
-      ],
-      "uid": 247
-    },
-    {
-      "date": "2026-11-20T05:00:22+00:00",
-      "from": "huang.qiren@bot.alphamind.cloud",
-      "has_attachment": false,
-      "seen": true,
-      "size": 5708,
-      "subject": "指数行情监测 2026-11-20 13:00",
-      "to": [
-        "qiren.huang@9m-tec.com"
-      ],
-      "uid": 246
-    },
-    {
-      "date": "2026-11-20T03:00:13+00:00",
-      "from": "huang.qiren@bot.alphamind.cloud",
-      "has_attachment": false,
-      "seen": true,
-      "size": 5709,
-      "subject": "指数行情监测 2026-11-20 11:00",
-      "to": [
-        "qiren.huang@9m-tec.com"
-      ],
-      "uid": 245
-    },
-    {
-      "date": "2026-11-20T00:00:51+00:00",
-      "from": "huang.qiren@bot.alphamind.cloud",
-      "has_attachment": true,
-      "seen": true,
-      "size": 14865,
-      "subject": "【agent-email 全链路测试｜全部通过】2026-11-20 通过 7/7",
-      "to": [
-        "qiren.huang@9m-tec.com"
-      ],
-      "uid": 244
-    },
-    {
-      "date": "2026-11-20T00:00:23+00:00",
-      "from": "huang.qiren@bot.alphamind.cloud",
-      "has_attachment": true,
-      "seen": true,
-      "size": 959,
-      "subject": "AGENT-EMAIL-CHAIN-TEST-20261120-080020",
-      "to": [
-        "qiren.huang@9m-tec.com"
-      ],
-      "uid": 243
-    },
-    {
-      "date": "2026-11-19T07:00:16+00:00",
-      "from": "huang.qiren@bot.alphamind.cloud",
-      "has_attachment": false,
-      "seen": true,
-      "size": 5706,
-      "subject": "指数行情监测 2026-11-19 15:00",
-      "to": [
-        "qiren.huang@9m-tec.com"
-      ],
-      "uid": 242
-    },
-    {
-      "date": "2026-11-19T06:00:13+00:00",
-      "from": "huang.qiren@bot.alphamind.cloud",
-      "has_attachment": false,
-      "seen": true,
-      "size": 5714,
-      "subject": "指数行情监测 2026-11-19 14:00",
-      "to": [
-        "qiren.huang@9m-tec.com"
-      ],
-      "uid": 241
-    },
-    {
-      "date": "2026-11-19T05:00:12+00:00",
-      "from": "huang.qiren@bot.alphamind.cloud",
-      "has_attachment": false,
-      "seen": true,
-      "size": 5709,
-      "subject": "指数行情监测 2026-11-19 13:00",
-      "to": [
-        "qiren.huang@9m-tec.com"
-      ],
-      "uid": 240
-    },
-    {
-      "date": "2026-11-19T03:40:54+00:00",
-      "from": "huang.qiren@bot.alphamind.cloud",
-      "has_attachment": false,
-      "seen": true,
-      "size": 403,
-      "subject": "AGENT-EMAIL 全量测试 C - 异步发送",
-      "to": [
-        "qiren.huang@9m-tec.com"
-      ],
-      "uid": 239
-    },
-    {
-      "date": "2026-11-19T03:40:45+00:00",
-      "from": "huang.qiren@bot.alphamind.cloud",
-      "has_attachment": true,
-      "seen": true,
-      "size": 1931,
-      "subject": "AGENT-EMAIL 全量测试 B - HTML 加附件",
-      "to": [
-        "qiren.huang@9m-tec.com"
-      ],
-      "uid": 238
-    },
-    {
-      "date": "2026-11-19T03:37:48+00:00",
-      "from": "huang.qiren@bot.alphamind.cloud",
-      "has_attachment": true,
-      "seen": true,
-      "size": 1357,
-      "subject": "AlphaMind 邮件技能联调测试 11-19",
-      "to": [
-        "qiren.huang@9m-tec.com"
-      ],
-      "uid": 236
-    },
-    {
-      "date": "2026-11-19T03:00:32+00:00",
-      "from": "huang.qiren@bot.alphamind.cloud",
-      "has_attachment": false,
-      "seen": true,
-      "size": 5710,
-      "subject": "指数行情监测 2026-11-19 11:00",
-      "to": [
-        "qiren.huang@9m-tec.com"
-      ],
-      "uid": 235
-    },
-    {
-      "date": "2026-11-19T00:01:24+00:00",
-      "from": "huang.qiren@bot.alphamind.cloud",
-      "has_attachment": true,
-      "seen": true,
-      "size": 14065,
-      "subject": "【agent-email 全链路测试｜全部通过】2026-11-19 通过 7/7",
-      "to": [
-        "qiren.huang@9m-tec.com"
-      ],
-      "uid": 234
-    },
-    {
-      "date": "2026-11-19T00:00:54+00:00",
-      "from": "huang.qiren@bot.alphamind.cloud",
-      "has_attachment": true,
-      "seen": true,
-      "size": 1108,
-      "subject": "AGENT-EMAIL-CHAIN-TEST-20261119-0800",
-      "to": [
-        "qiren.huang@9m-tec.com"
-      ],
-      "uid": 233
-    },
-    {
-      "date": "2026-11-18T07:00:16+00:00",
-      "from": "huang.qiren@bot.alphamind.cloud",
-      "has_attachment": false,
-      "seen": true,
-      "size": 6511,
-      "subject": "【振幅预警】指数行情监测2026-11-18 15:00",
-      "to": [
-        "qiren.huang@9m-tec.com"
-      ],
-      "uid": 232
-    },
-    {
-      "date": "2026-11-18T06:01:06+00:00",
-      "from": "huang.qiren@bot.alphamind.cloud",
-      "has_attachment": false,
-      "seen": true,
-      "size": 6514,
-      "subject": "【振幅预警】指数行情监测2026-11-18 14:01",
-      "to": [
-        "qiren.huang@9m-tec.com"
-      ],
-      "uid": 231
     }
   ],
   "order": "desc",
   "page": 1,
   "page_size": 50,
   "sort": "date",
-  "total": 270
+  "total": 289
 }
