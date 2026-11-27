@@ -44,4 +44,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
 # .env 不进镜像（见 .dockerignore）：compose 经 env_file 注入环境变量，
 # Settings（pydantic-settings）直接读进程环境变量；容器内监听恒 0.0.0.0:8800，
 # 优雅停机排空 10s 与 compose stop_grace_period=15s 配套（留 5s 余量）
-ENTRYPOINT ["uvicorn", "app.main:app", "--host=0.0.0.0", "--port=8000", "--workers 4"]
+ENTRYPOINT ["uvicorn", "app.main:app", "--host=0.0.0.0", "--port=8800", "--workers", "4"]

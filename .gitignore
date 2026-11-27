@@ -5,7 +5,6 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 build/
-uv.lock
 
 # 环境与密钥
 .env
