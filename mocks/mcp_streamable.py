@@ -1,4 +1,4 @@
-"""最小 MCP Streamable HTTP 上游（测试专用）：经 uvicorn.Server 真实监听 127.0.0.1:9903。
+"""Mock MCP Streamable HTTP 上游（集成测试 / Inspector 联调共用）：监听 127.0.0.1:9903。
 
 协议形态与官方 MCP Streamable HTTP 服务一致（设计 §8.4 场景）：
 - 单一 /mcp 端点，POST 接 JSON-RPC——initialize 返回 application/json +
@@ -32,6 +32,7 @@ mock 测试值，非真实凭据）。
 """
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 
@@ -202,3 +203,17 @@ def build_mcp_streamable_app() -> FastAPI:
         return Response(status_code=204)
 
     return app
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="mock MCP Streamable 上游（Inspector 联调用）")
+    parser.add_argument("--port", type=int, default=9903,
+                        help="监听端口（默认 9903）")
+    return parser.parse_args()
+
+
+if __name__ == "__main__":
+    args = _parse_args()
+    import uvicorn
+    uvicorn.run(build_mcp_streamable_app(), host="127.0.0.1", port=args.port,
+                log_level="info", access_log=False)

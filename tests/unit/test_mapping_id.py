@@ -1,6 +1,6 @@
 import re
 
-from agent_proxy.mapping_id import LENGTH, MAPPING_ID_RE, new_mapping_id
+from app.mapping_id import LENGTH, MAPPING_ID_RE, new_mapping_id
 
 
 def test_shape():

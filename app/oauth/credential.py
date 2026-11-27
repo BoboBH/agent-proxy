@@ -21,8 +21,6 @@ getdel（生产 Redis 6.2+ 虽支持，本地 3.0 会直接报 unknown command�
 from __future__ import annotations
 
 import asyncio
-import base64
-import hashlib
 import json
 import logging
 import time
@@ -30,14 +28,16 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import httpx
-from cryptography.fernet import Fernet, InvalidToken
 from sqlalchemy import select
 from sqlalchemy.exc import DataError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from agent_proxy import metrics
-from agent_proxy.errors import AppError
-from agent_proxy.models import OAuthCredential
+from app import metrics
+from app.errors import AppError
+from app.models import OAuthCredential
+from app.oauth.client import build_token_request, load_client_row, _row_to_client
+from app.oauth.crypto import decrypt_text, encrypt_text
+from app.oauth.discovery import DiscoveryError, discover_authorization_server, upstream_origin
 
 log = logging.getLogger("agent_proxy")
 
@@ -53,33 +53,6 @@ _WAIT_POLL_INTERVAL = 0.1
 # 审计 logger（刷新事件入审计，§14.6；与 middleware 的 per-request 审计同一 logger，
 # action=oauth_refresh 区分，request_id 复用当前请求以便关联）
 audit_log = logging.getLogger("agent_proxy.audit")
-
-_fernet_cache: dict[str, Fernet] = {}
-
-
-def _fernet(master_key: str) -> Fernet:
-    if not master_key:
-        # fail-closed：无密钥宁可拒绝加密，绝不落明文（§14.6）
-        raise AppError(500, "INTERNAL_ERROR", "MASTER_KEY 未配置，无法加解密 OAuth 凭证")
-    f = _fernet_cache.get(master_key)
-    if f is None:
-        derived = base64.urlsafe_b64encode(
-            hashlib.sha256(master_key.encode("utf-8")).digest())
-        f = Fernet(derived)
-        _fernet_cache[master_key] = f
-    return f
-
-
-def encrypt_text(plaintext: str, master_key: str) -> str:
-    return _fernet(master_key).encrypt(plaintext.encode("utf-8")).decode("ascii")
-
-
-def decrypt_text(ciphertext: str, master_key: str) -> str:
-    try:
-        return _fernet(master_key).decrypt(ciphertext.encode("ascii")).decode("utf-8")
-    except (InvalidToken, UnicodeEncodeError) as exc:
-        raise AppError(500, "INTERNAL_ERROR",
-                       "OAuth 凭证解密失败（MASTER_KEY 变更？需重新授权）") from exc
 
 
 def cred_cache_key(mapping_id: str, user_id: int) -> str:
@@ -417,9 +390,6 @@ async def _do_refresh(session: AsyncSession, r, app_state, mapping_data: dict,
     metrics {action="fail"}；网络/discovery/5xx/响应畸形 → 凭证原状保留
     （不 destroy）+ metrics {action="transient"}（终审遗留 5：与业务拒绝分拆，
     避免混计误导告警阈值）——两态均审计 ok=false → 本请求 401。"""
-    from agent_proxy.oauth.client import build_token_request, load_client_row, _row_to_client
-    from agent_proxy.oauth.discovery import DiscoveryError, discover_authorization_server, upstream_origin
-
     mapping_id = mapping_data["mapping_id"]
     cred = await load_credential(session, r, mapping_id, user_id)
     if cred is None or not cred.get("refresh_token"):

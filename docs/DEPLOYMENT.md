@@ -9,7 +9,7 @@
 
 | 组件 | 镜像 | 说明 |
 |---|---|---|
-| agent-proxy | `agent-proxy:latest`（`python:3.12-slim` 基础，源码构建） | 非 root（`appuser`）运行；`python -m agent_proxy`；`EXPOSE 8800`；HEALTHCHECK 探 `/healthz` |
+| agent-proxy | `agent-proxy:latest`（`python:3.12-slim` 基础，源码构建） | 非 root（`appuser`）运行；ENTRYPOINT `uvicorn app.main:app`（监听 `0.0.0.0:8800`，优雅停机排空 10s）；`EXPOSE 8800`；HEALTHCHECK 探 `/healthz` |
 | mysql | `mysql:8.4` | 库 `agent_proxy`（镜像入口 `MYSQL_DATABASE` 建库，应用首启建表）；utf8mb4；数据卷 `mysql-data` |
 | redis | `redis:7-alpine` | db `1`；`--appendonly yes`（可选，见 compose 注释）；数据卷 `redis-data` |
 | 日志卷 | `logs` → `/app/logs` | `agent-proxy.log` / `audit.log` / `trace.log` 三类滚动文件：按天 + 单文件 50MB 立即滚动、保留 7 天 |
@@ -40,8 +40,10 @@ cp .env.example .env
 |---|---|---|
 | **`MASTER_KEY`** | **必填，无默认** | 敏感字段（upstream_headers / OAuth 凭证 / client_secret）强制 Fernet 加密的密钥，缺失拒绝启动。高熵生成：`python -c "import secrets; print(secrets.token_urlsafe(48))"`（无本机 python 时：`docker run --rm python:3.12-slim python -c "..."`）。见 §8 Q4 的 `.env` 行内注释规则——urlsafe 字符集天然无 `#`，安全 |
 | **`EXTERNAL_BASE`** | 默认 `http://127.0.0.1:8800` | 本机演示保持默认；局域网联调改 `http://<局域网IP>:8800`（proxy_url 拼接、OAuth redirect_uri、front_redirect 白名单都依赖它；改了它，冒烟命令里的地址也要同步） |
-| `AGENT_PROXY_LISTEN` | 默认 `0.0.0.0:8800` | 保持默认：容器内监听地址恒为 `0.0.0.0:8800`（改宿主机端口走 compose ports 左侧映射） |
-| `MYSQL_ROOT_PASSWORD` | 形态 A 默认 `123456` | 仅形态 A（compose 内置 MySQL）使用：root 密码，与 compose 的 mysql 服务及 DSN 同源插值；形态 B 不需要 |
+
+> 监听地址说明：容器内监听恒为 `0.0.0.0:8800`（镜像 ENTRYPOINT 固定，不再是配置项）；
+> 改宿主机端口走 compose `ports` 左侧映射。本地直跑经 uvicorn 命令行 `--host/--port` 指定。
+| `MYSQL_ROOT_PASSWORD` / `REDIS_PASSWORD` | `.env` 必填（compose 部署时） | compose `environment` 插值用：容器经 `host.docker.internal` 连宿主机存储的凭据，与 `.env` 的 `MYSQL_DSN` / `REDIS_URL` 同源；仅本地 venv 直跑不需要 |
 | `MYSQL_DSN` / `REDIS_URL` | `.env.example` 默认值 | **形态 A 下不生效**：compose `environment` 将其覆盖为容器网络服务名（`mysql` / `redis`）；只有形态 B 才需要在 `.env` 改这两个值 |
 | `ENV` | `dev` | `prod` 门禁：stub 校验/登录实现拒绝启动（生产见 §5） |
 | `TOKEN_VERIFY_IMPL` / `LOGIN_IMPL` | `stub` | 当前唯一可用实现；`company_sso` / `third_party` 为 M8+ 债务 |
@@ -55,15 +57,16 @@ cp .env.example .env
 ### 3.2 启动
 
 ```bash
-docker compose up -d --build     # 首次构建约 1–3 分钟（pip 源可用 --build-arg PIP_INDEX_URL 覆盖）
+docker compose up -d --build     # 首次构建约 1–3 分钟（PyPI 源可 --build-arg PIP_INDEX_URL / UV_DEFAULT_INDEX 覆盖）
 docker compose ps                # 三服务均 Up（healthy）
 docker compose logs -f agent-proxy   # stdout 仅 uvicorn 行（见下）
-docker compose exec agent-proxy tail -f /app/logs/agent-proxy.log   # 应用日志走文件（含建表与「agent-proxy 启动: …」行）
+docker compose exec agent-proxy sh -c 'tail -f "$(ls -t /app/logs/agent-proxy.log.* | head -1)"'   # 应用日志走滚动文件（含建表与「agent-proxy 启动: …」行）
 ```
 
 > 日志预期（勿误判）：应用 logger（`agent_proxy`）只挂**文件** handler（滚动日志，propagate=False），
 > 容器 stdout 只有 uvicorn 行——`Application startup complete.` / `Uvicorn running on http://0.0.0.0:8800`；
-> 「agent-proxy 启动: listen=…」等应用日志在 `/app/logs/agent-proxy.log`（经上面的 `tail -f` 查看），
+> 「agent-proxy 启动: …」等应用日志在滚动文件 `/app/logs/agent-proxy.log.<时间戳>`
+> （DailySizeRotatingHandler 每次轮转直接落新文件，**没有**裸 `agent-proxy.log`；经上面的命令查看），
 > stdout 缺它**不是**启动失败。
 
 首启自动建表：应用 lifespan 内 `create_all` 建三张业务表（`proxy_mapping` / `proxy_oauth_credential` / `proxy_oauth_client`），并自检 MySQL（`SELECT 1`）与 Redis（`ping`）连通，任一失败即 fail-fast 退出（见 §8 Q2）。
@@ -141,13 +144,13 @@ docker compose down -v     # 连数据卷一并删除：MySQL 数据 / 会话 / 
 - **首启自动建表**：lifespan `create_all`——全新库直接启动即可，无手工 DDL；
 - **升级迁移**：当前无自动迁移框架，schema 变更以**幂等脚本**为既定先例——`scripts/migrate_uid_headers_encryption.py`（收尾批次：uid 整数化 + upstream_headers 强制加密；精修批追加两步：`proxy_oauth_credential.uid` RENAME COLUMN → `user_id`（索引名 `ix_proxy_oauth_credential_uid`/`uk_mapping_uid` 同步 RENAME INDEX 改名）+ 加密列 TEXT → VARCHAR（access_token 4096 / refresh_token 2000 / client_secret 512，前置既有行超长校验——超限行列出并中止）；重复执行全 skip 幂等；执行前备份、建议停服窗口、结束时清理 Redis `ap:mapping:*` 旧形态缓存）。后续 schema 变更照此先例落 `scripts/` 下幂等脚本；
 - **Alembic**：记债务（M8+），引入前以幂等脚本过渡；
-- **容器栈下执行脚本**：该脚本常量面向宿主机 MySQL（`127.0.0.1:3306`，读 `.env` 的 `MASTER_KEY`/`REDIS_URL`）——形态 A 可临时放开 compose 中 mysql 的 `3306` 端口映射后在宿主机 venv 执行，或 `docker compose exec mysql` 直接执行 SQL。
+- **容器栈下执行脚本**：该脚本经 Settings 读 `.env` 的 `MYSQL_DSN`/`MASTER_KEY`/`REDIS_URL` 直连宿主机库（无硬编码常量）——在宿主机 venv 执行即可；若目标库仅在容器网络内，可 `docker compose exec` 进容器执行等效 SQL。
 
 ## 7. 升级与回滚
 
 - **升级**：`git pull` → （如该版本含迁移脚本，按 §6 先行）→ `docker compose up -d --build`。镜像重建，**数据卷不动**（MySQL/Redis/logs 全保留）；
 - **升级窗口注记（精修批）**：state 载荷 JSON 键 `uid` → `user_id` 改名后，部署新版本前**已发起**的 OAuth 授权（state 存续 600s 内）回跳将被判 `400 OAUTH_STATE_INVALID` 属预期——重走 authorize 即可；迁移脚本与镜像升级建议同一停服窗口执行；
-- **依赖钉版提示**：`pyproject.toml` 依赖为下界约束（`>=`）——镜像重建可能拉入新版本导致构建不可复现；建议后续以 pip-compile / uv lock 生成锁定文件固化依赖（记 M8+ 债务），锁定前升级后建议关注依赖变更；
+- **依赖钉版提示**：**镜像与本地同源**——服务不打包 wheel，镜像 `uv sync --frozen` 按 `uv.lock` 冻结安装依赖后直接运行 COPY 进去的 `app/` 源码；本地用 `uv sync --extra dev` 复现同一锁定版本；升级依赖后提交新的 `uv.lock` 即可保证两端一致；
 - **回滚**：`git checkout <旧版本>` → `docker compose up -d --build`。数据卷同样保留；
 - **注意**：若目标版本包含不可逆 schema 变更，回滚代码前先用备份还原数据库（`mysqldump` 还原）——幂等脚本不承诺反向迁移；损坏密文行设计为原状保留（fail-closed 404/409），不会无声销毁现场。
 
@@ -157,13 +160,13 @@ docker compose down -v     # 连数据卷一并删除：MySQL 数据 / 会话 / 
 `8800`：宿主机被占时改 compose 映射左侧（如 `"9080:8800"`），`EXTERNAL_BASE` 同步带端口；容器内恒 8800。`9901–9910` 是 **pytest 测试端口簿**（echo 上游 9901 / SSE mock 9902 / Streamable mock 9903 / OAuth mock 9904 / 死端口 9909 / 被测代理 9910），部署栈不使用；仅在同一台机器同时跑测试套件时相关（测试需本机 MySQL/Redis），与容器栈的 mysql:3306（默认不映射宿主）不冲突——若放开了 mysql 的 3306 映射且宿主机自装了 MySQL，则会冲突，保持该映射注释关闭即可。
 
 **Q2：agent-proxy 起不来 / 反复重启——MySQL 未就绪？**
-应用 **fail-fast**：lifespan 依次建引擎 → `create_all` → `SELECT 1` → Redis `ping`，任一失败即启动退出（不降级运行）。compose 已用 `depends_on.condition: service_healthy` 等 MySQL/Redis 健康后才起 app；MySQL **首次初始化**（建库）需数十秒，healthcheck 的 `start_period`/`retries` 已兜底；`restart: unless-stopped` 下失败自动重试。排障：`docker compose logs agent-proxy`（配置错误打印「配置错误: …」并以 exit 1 退出，如缺 `MASTER_KEY` / DSN）。
+应用 **fail-fast**：lifespan 依次建引擎 → `create_all` → `SELECT 1` → Redis `ping`，任一失败即启动退出（不降级运行）；配置层面在 Settings 构造期即校验（pydantic ValidationError 字段级清单，缺失/非法如 `MASTER_KEY` / DSN 直接以非零码退出）。compose 已用 `depends_on.condition: service_healthy` 等 MySQL/Redis 健康后才起 app；MySQL **首次初始化**（建库）需数十秒，healthcheck 的 `start_period`/`retries` 已兜底；`restart: unless-stopped` 下失败自动重试。排障：`docker compose logs agent-proxy`（配置错误看栈顶 ValidationError 字段清单）。
 
 **Q3：Redis 老版本兼容？**
 客户端依赖钉死 `redis-py>=4.2,<5`；**服务端 Redis 3.0+ 即可用**——OAuth state 的一次性消费走 `MULTI` 事务（`GETDEL` 3.0 不存在，M6 已实测钉死），`SET NX EX` 刷新锁可用；会话/缓存仅用 GET/SET/DEL/TTL/SCAN。compose 的 `redis:7` 镜像无此顾虑，此兼容只为外部老实例保留。
 
 **Q4：`.env` 行内注释解析规则？**
-自研极简加载器（`config.load_dotenv_file`）：逐行 `KEY=VALUE`；`#` 开头整行为注释；值后**「空格 + #」起的内容按行内注释剥除**——`MASTER_KEY=abc # 注释` 会得到 `abc`，而 `MASTER_KEY=abc#def`（# 前无空格）值完整保留；值两端成对引号会被剥除；不识别 `export` 前缀；**不覆盖已存在的环境变量**（compose `env_file`/`environment` 注入的值优先）。建议 `MASTER_KEY` 用 urlsafe 生成（字符集无 `#`/空格，天然无歧义）。
+`.env` 由 Settings（pydantic-settings，底层 python-dotenv）加载：逐行 `KEY=VALUE`；`#` 开头整行为注释；值后**「空格 + #」起的内容按行内注释剥除**——`MASTER_KEY=abc # 注释` 会得到 `abc`，而 `MASTER_KEY=abc#def`（# 前无空格）值完整保留；值两端成对引号会被剥除；**来源优先级：进程环境变量 > `.env` 文件 > 字段默认值**（compose `env_file`/`environment` 注入的值优先）。该契约有单元测试钉住（`tests/unit/test_config.py::test_env_file_inline_comment_rules`）。建议 `MASTER_KEY` 用 urlsafe 生成（字符集无 `#`/空格，天然无歧义）。
 
 **Q5：`ENCRYPT_AT_REST` 怎么配？**
 **已废止**。收尾批次起 `upstream_headers` 与 OAuth 凭证/client_secret 一律强制 `Fernet(MASTER_KEY)` 密文落库（MySQL 与 Redis 缓存均密文形态），无可选开关；`.env` 中残留该键会被静默忽略（Settings 不读取）。`MASTER_KEY` 必填，缺失拒绝启动。

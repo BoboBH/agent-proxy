@@ -1,4 +1,4 @@
-"""最小 MCP SSE 上游（测试专用）：经 uvicorn.Server 真实监听 127.0.0.1:9902。
+"""Mock MCP SSE 上游（集成测试 / Inspector 联调共用）：监听 127.0.0.1:9902。
 
 协议形态与官方 MCP SSE 服务一致（设计 §8.3 场景）：
 - GET /sse：text/event-stream 长连接——先发 `event: endpoint` 事件（data 为
@@ -42,6 +42,7 @@ last_sse_headers 为最近一次 /sse GET 请求头小写键 dict，供 Connecti
 """
 from __future__ import annotations
 
+import argparse
 import asyncio
 import gzip
 import json
@@ -280,3 +281,17 @@ def build_mcp_sse_app() -> FastAPI:
         return JSONResponse({"sse_open": mock_state["sse_open"]})
 
     return app
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="mock MCP SSE 上游（Inspector 联调用）")
+    parser.add_argument("--port", type=int, default=9902,
+                        help="监听端口（默认 9902）")
+    return parser.parse_args()
+
+
+if __name__ == "__main__":
+    args = _parse_args()
+    import uvicorn
+    uvicorn.run(build_mcp_sse_app(), host="127.0.0.1", port=args.port,
+                log_level="info", access_log=False)

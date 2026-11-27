@@ -6,7 +6,7 @@ forward：upstream_duration/upstream_errors_total/sse_active；oauth：oauth_act
 """
 import re
 
-from agent_proxy import metrics as m
+from app import metrics as m
 
 # §15.2 表逐行（名称与 prometheus_client 输出形态一致）
 FAMILIES = (

@@ -3,7 +3,7 @@ import socket
 
 import pytest
 
-from agent_proxy.ssrf import (
+from app.ssrf import (
     UpstreamNotAllowed,
     async_validate_upstream_url,
     validate_upstream_url,

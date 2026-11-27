@@ -14,7 +14,7 @@ import re
 
 import httpx
 
-from tests.integration.mock_mcp_sse import mock_state
+from mocks.mcp_sse import mock_state
 from tests.utils import make_token, read_first_endpoint_event, read_next_message_data, sse_line_iter
 
 PROXY = "http://127.0.0.1:9910"
@@ -365,7 +365,7 @@ async def test_sse_trace_metadata_lines(tmp_path):
     import json as jsonlib
     import logging
 
-    from agent_proxy.logging_setup import flush_trace
+    from app.logging_setup import flush_trace
 
     created = await _register_mcp()
     mid = created["mapping_id"]
@@ -400,8 +400,8 @@ async def test_sse_trace_body_mode_endpoint_and_message():
     """body 模式（§11.1）：endpoint 改写前 + 改写后 + message 事件记录；心跳不记。"""
     import json as jsonlib
 
-    from agent_proxy import trace as trace_mod
-    from agent_proxy.logging_setup import flush_trace
+    from app import trace as trace_mod
+    from app.logging_setup import flush_trace
 
     created = await _register_mcp()
     mid = created["mapping_id"]
@@ -450,7 +450,7 @@ async def test_sse_same_origin_abort_writes_no_response_trace_row(tmp_path):
     import json as jsonlib
     import logging
 
-    from agent_proxy.logging_setup import flush_trace
+    from app.logging_setup import flush_trace
 
     created = await _register_mcp(upstream_url=f"{UPSTREAM_BASE}/sse-redirect-same")
     mid = created["mapping_id"]

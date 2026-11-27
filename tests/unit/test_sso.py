@@ -5,9 +5,9 @@ import logging
 
 import pytest
 
-from agent_proxy.auth import Identity, TokenInvalidError
-from agent_proxy.sso.login import StubLoginProvider, build_login_provider
-from agent_proxy.sso.session import (SESSION_COOKIE, SESSION_KEY_PREFIX,
+from app.auth import Identity, TokenInvalidError
+from app.sso.login import StubLoginProvider, build_login_provider
+from app.sso.session import (SESSION_COOKIE, SESSION_KEY_PREFIX,
                                      decode_identity, destroy_session,
                                      encode_identity, get_session, new_sid,
                                      session_key)
@@ -51,7 +51,7 @@ def test_build_login_provider_unknown_impl_not_implemented():
 def test_get_login_provider_returns_same_instance():
     """进程级单例（评审补充）：两次调用返回同一实例；首尾重置 _provider 做隔离，
     避免污染其他用例/其他测试文件的 get_settings 缓存面。"""
-    import agent_proxy.sso.login as login_mod
+    import app.sso.login as login_mod
 
     login_mod._provider = None                         # 重置隔离准备
     try:

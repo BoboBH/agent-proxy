@@ -1,17 +1,30 @@
 """集成目录独占夹具：建测试库 + 每测试后清库清缓存（仅作用于 integration，避免污染单元测试）。"""
 import asyncio
+import os
+import shutil
 import threading
+from urllib.parse import unquote, urlparse
 
 import httpx
 import pymysql
 import pytest
 import pytest_asyncio
-import shutil
 import uvicorn
 
-from tests.integration.mock_mcp_sse import build_mcp_sse_app
-from tests.integration.mock_mcp_streamable import build_mcp_streamable_app
-from tests.integration.mock_oauth_as import build_oauth_as_app
+
+def _admin_conn() -> pymysql.connections.Connection:
+    """以 .env 同源凭据直连 MySQL（不指定 database）——建测试库 / drop 表专用。"""
+    parsed = urlparse(os.environ["MYSQL_DSN"])
+    return pymysql.connect(
+        host=parsed.hostname or "127.0.0.1",
+        port=parsed.port or 3306,
+        user=unquote(parsed.username or "root"),
+        password=unquote(parsed.password or ""),
+    )
+
+from mocks.mcp_sse import build_mcp_sse_app
+from mocks.mcp_streamable import build_mcp_streamable_app
+from mocks.oauth_as import build_oauth_as_app
 from tests.integration.mock_upstream import build_echo_app
 
 
@@ -27,7 +40,7 @@ def _recreate_test_db():
     upstream_headers JSON→TEXT 密文列、加密列 VARCHAR 化与 uid→user_id 改名（精修批）；
     测试基建允许 drop——表内均为测试数据，无状态保留语义），随后 app lifespan 的
     create_all 按现行 models 重建。"""
-    conn = pymysql.connect(host="127.0.0.1", user="root", password="123456", port=3306)
+    conn = _admin_conn()
     try:
         with conn.cursor() as cur:
             cur.execute(
@@ -199,12 +212,11 @@ async def real_proxy_app():
     一律经真实 TCP 访问本服务；「客户端断开→上游取消」同样只有真实服务器可测。
     autouse：SSE 测试遍布多个文件，统一随 session 启动（启动成本 ~1s 一次性）。
     """
-    import os
 
-    from agent_proxy.config import Settings
-    from agent_proxy.main import create_app
+    from app.env import Settings
+    from app.main import create_app
 
-    settings = Settings.from_env({**os.environ, "EXTERNAL_BASE": "http://127.0.0.1:9910"})
+    settings = Settings(_env_file=None, external_base="http://127.0.0.1:9910")
     application = create_app(settings)
     config = uvicorn.Config(application, host="127.0.0.1", port=9910,
                             log_level="warning", access_log=False,

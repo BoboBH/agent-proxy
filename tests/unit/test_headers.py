@@ -10,7 +10,7 @@
 
 出站 key 统一小写归一（防同名不同大小写发重复头行）。
 """
-from agent_proxy.headers import build_outbound_headers, filter_response_headers, is_hop_by_hop
+from app.headers import build_outbound_headers, filter_response_headers, is_hop_by_hop
 
 
 def test_stored_wins_caller_passthrough_when_absent():

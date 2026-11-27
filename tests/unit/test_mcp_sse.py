@@ -3,7 +3,7 @@
 其余行字节级透传、跨 chunk 半行缓冲、空行复位事件名）。"""
 import pytest
 
-from agent_proxy.forward.mcp_sse import (MAX_LINE_BYTES, SseEndpointRewriter,
+from app.forward.mcp_sse import (MAX_LINE_BYTES, SseEndpointRewriter,
                                          build_origin_target, registered_endpoint_path)
 
 

@@ -10,9 +10,9 @@ from urllib.parse import urlparse, parse_qs
 
 from sqlalchemy import select
 
-from agent_proxy.models import OAuthClient, OAuthCredential
-from agent_proxy.oauth.credential import (decrypt_text, refresh_lock_key,
-                                          release_refresh_lock)
+from app.models import OAuthClient, OAuthCredential
+from app.oauth.credential import refresh_lock_key, release_refresh_lock
+from app.oauth.crypto import decrypt_text
 from tests.utils import make_token
 
 ADMIN = {"Authorization": f"Bearer {make_token(100, 'admin')}"}

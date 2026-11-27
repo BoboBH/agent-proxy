@@ -11,7 +11,7 @@ import re
 
 import httpx
 
-from tests.integration.mock_mcp_streamable import streamable_state
+from mocks.mcp_streamable import streamable_state
 from tests.utils import make_token, read_next_message_data, sse_line_iter
 
 PROXY = "http://127.0.0.1:9910"
@@ -182,8 +182,8 @@ async def test_streamable_trace_body_mode_records_request_and_response(tmp_path)
     import json as jsonlib
     import logging
 
-    from agent_proxy import trace as trace_mod
-    from agent_proxy.logging_setup import flush_trace
+    from app import trace as trace_mod
+    from app.logging_setup import flush_trace
 
     created = await _register_streamable()
     mid = created["mapping_id"]
@@ -251,8 +251,8 @@ async def test_streamable_push_stream_trace_body_mode_records_message_events():
     import glob
     import json as jsonlib
 
-    from agent_proxy import trace as trace_mod
-    from agent_proxy.logging_setup import flush_trace
+    from app import trace as trace_mod
+    from app.logging_setup import flush_trace
 
     created = await _register_streamable()
     mid = created["mapping_id"]

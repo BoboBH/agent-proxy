@@ -1,6 +1,6 @@
 import pytest
 
-from agent_proxy.placeholder import proxy_call_headers, validate_headers
+from app.placeholder import proxy_call_headers, validate_headers
 
 
 def test_proxy_call_headers_spec():

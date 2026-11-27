@@ -4,7 +4,7 @@ import json
 
 import httpx
 
-from tests.integration.mock_mcp_streamable import streamable_state
+from mocks.mcp_streamable import streamable_state
 
 BASE = "http://127.0.0.1:9903"
 SESSION = {"Mcp-Session-Id": "sess-m4"}

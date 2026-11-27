@@ -7,8 +7,8 @@ Streamable initialize 语义验证随 M4（§8.4）。
 import glob
 import json
 
-from tests.integration.mock_mcp_sse import mock_state
-from tests.integration.mock_mcp_streamable import streamable_state
+from mocks.mcp_sse import mock_state
+from mocks.mcp_streamable import streamable_state
 from tests.utils import make_token
 
 

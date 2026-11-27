@@ -8,9 +8,10 @@ import re
 import httpx
 from sqlalchemy import select
 
-from agent_proxy.models import OAuthCredential, OAuthClient
-from agent_proxy.oauth.credential import decrypt_text, invalidate_credential
-from tests.integration.mock_oauth_as import as_state
+from app.models import OAuthCredential, OAuthClient
+from app.oauth.credential import invalidate_credential
+from app.oauth.crypto import decrypt_text
+from mocks.oauth_as import as_state
 from tests.utils import make_token
 
 PROXY = "http://127.0.0.1:9910"

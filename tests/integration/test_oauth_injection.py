@@ -9,15 +9,15 @@ from sqlalchemy import select
 
 import httpx
 
-from agent_proxy.models import OAuthClient, OAuthCredential
-from agent_proxy.oauth import credential as cred_mod
-from agent_proxy.oauth.credential import (decrypt_text, encrypt_text,
-                                          invalidate_credential,
+from app.models import OAuthClient, OAuthCredential
+from app.oauth import credential as cred_mod
+from app.oauth.credential import (invalidate_credential,
                                           refresh_credential, refresh_lock_key)
-from agent_proxy.services import load_mapping
-from tests.integration.mock_mcp_sse import mock_state
-from tests.integration.mock_mcp_streamable import secure_state, streamable_state
-from tests.integration.mock_oauth_as import as_state
+from app.oauth.crypto import decrypt_text, encrypt_text
+from app.services import load_mapping
+from mocks.mcp_sse import mock_state
+from mocks.mcp_streamable import secure_state, streamable_state
+from mocks.oauth_as import as_state
 from tests.utils import make_token
 
 PROXY = "http://127.0.0.1:9910"

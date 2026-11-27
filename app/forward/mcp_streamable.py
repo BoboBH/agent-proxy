@@ -26,9 +26,9 @@ import time
 
 import httpx
 
-from agent_proxy.forward.http_forward import TEST_PROBE_TIMEOUT
-from agent_proxy.forward.mcp_sse import probe_sse_mapping
-from agent_proxy.headers import build_outbound_headers
+from app.forward.http_forward import TEST_PROBE_TIMEOUT
+from app.forward.mcp_sse import probe_sse_mapping
+from app.headers import build_outbound_headers
 
 log = logging.getLogger("agent_proxy")
 

@@ -1,7 +1,7 @@
 """服务端会话 Redis 存取集成（M7，§15.1）：ap:sess:{sid} 写读删 + TTL 语义
 （真实 Redis db9）。"""
-from agent_proxy.auth import Identity
-from agent_proxy.sso.session import (create_session, destroy_session, get_session,
+from app.auth import Identity
+from app.sso.session import (create_session, destroy_session, get_session,
                                      new_sid, session_key)
 
 

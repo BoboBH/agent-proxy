@@ -3,8 +3,8 @@ import logging
 
 import pytest
 
-from agent_proxy import trace
-from agent_proxy.logging_setup import flush_trace
+from app import trace
+from app.logging_setup import flush_trace
 
 
 def _capture(tmp_path, mode, limit=100):

@@ -6,11 +6,11 @@ import json
 import pytest
 from sqlalchemy import func, select
 
-from agent_proxy.models import OAuthCredential
-from agent_proxy.oauth.credential import (cred_cache_key, delete_credential,
-                                          decrypt_text, encrypt_text,
+from app.models import OAuthCredential
+from app.oauth.credential import (cred_cache_key, delete_credential,
                                           invalidate_credential, load_credential,
                                           mark_credential_invalid, save_credential)
+from app.oauth.crypto import decrypt_text, encrypt_text
 
 MASTER = "test-master-key"
 MID = "m1m2m3m4m5m6"

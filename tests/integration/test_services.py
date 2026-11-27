@@ -1,7 +1,7 @@
 import json
 
-from agent_proxy import mapping_id as mid_module
-from agent_proxy.services import (build_proxy_url, create_mapping, delete_mapping,
+from app import mapping_id as mid_module
+from app.services import (build_proxy_url, create_mapping, delete_mapping,
                                   get_owned, list_mappings, load_mapping,
                                   row_to_dict, update_mapping)
 
@@ -192,10 +192,10 @@ async def test_delete(app):
 
 
 def test_build_proxy_url():
-    from agent_proxy.config import Settings
-    settings = Settings.from_env({"MYSQL_DSN": "mysql+aiomysql://x", "REDIS_URL": "redis://x",
-                                  "EXTERNAL_BASE": "http://testserver",
-                                  "MASTER_KEY": "test-master-key"})
+    from app.env import Settings
+    settings = Settings(_env_file=None, mysql_dsn="mysql+aiomysql://x",
+                        redis_url="redis://x", external_base="http://testserver",
+                        master_key="test-master-key")
     assert build_proxy_url(settings, "aB3xK9mQ2wR4", "http://bobo.com/api/v1", "http") \
         == "http://testserver/p/aB3xK9mQ2wR4"
     assert build_proxy_url(settings, "aB3xK9mQ2wR4", "https://mcp.ex.com/sse", "mcp") \

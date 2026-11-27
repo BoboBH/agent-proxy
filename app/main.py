@@ -6,21 +6,22 @@ from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import FastAPI, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from sqlalchemy import text
 
-from agent_proxy import errors, metrics, trace
-from agent_proxy.cache import build_redis
-from agent_proxy.config import Settings, get_settings
-from agent_proxy.db import Base, build_engine, build_sessionmaker
-from agent_proxy.logging_setup import setup_logging, shutdown_logging
-from agent_proxy.middleware import RequestContextMiddleware
-from agent_proxy import models as _models  # noqa: F401  注册 ORM 元数据供 create_all
-from agent_proxy.api.mgmt import router as mgmt_router
-from agent_proxy.api.proxy import router as proxy_router
-from agent_proxy.api.builtin import router as builtin_router, callback_router as oauth_callback_router
-from agent_proxy.api.admin_pages import router as admin_pages_router
+from app import errors, metrics, trace
+from app.cache import build_redis
+from app.env import Settings, get_settings
+from app.db import Base, build_engine, build_sessionmaker
+from app.logging_setup import setup_logging, shutdown_logging
+from app.middleware import RequestContextMiddleware
+from app import models as _models  # noqa: F401  注册 ORM 元数据供 create_all
+from app.api.mgmt import router as mgmt_router
+from app.api.proxy import router as proxy_router
+from app.api.builtin import router as builtin_router, callback_router as oauth_callback_router
+from app.api.admin_pages import router as admin_pages_router
 
 log = logging.getLogger("agent_proxy")
 
@@ -57,7 +58,7 @@ async def lifespan(app: FastAPI):
     async with engine.connect() as conn:
         await conn.execute(text("SELECT 1"))
     await app.state.redis.ping()
-    log.info("agent-proxy 启动: listen=%s external_base=%s", settings.listen, settings.external_base)
+    log.info("agent-proxy 启动: external_base=%s", settings.external_base)
     yield
     await app.state.http_client.aclose()
     # redis-py 4.x 无 aclose()（5.0 起引入），close() 即异步关闭
@@ -80,7 +81,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # 修复前 lru_cache 全局读 os.environ，第二实例的 EXTERNAL_BASE 覆盖被吞掉。
     app.dependency_overrides[get_settings] = lambda: settings
     if settings.cors_allowed_origins:
-        from fastapi.middleware.cors import CORSMiddleware
         app.add_middleware(CORSMiddleware, allow_origins=list(settings.cors_allowed_origins),
                            allow_methods=["*"],
                            # Authorization：设计 v2 起 /p/ 上是调用方可透传的上游载荷头
@@ -114,3 +114,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
     return app
+
+
+# uvicorn 入口：uvicorn app.main:app（Settings 经 get_settings() 从
+# 环境变量 / .env 读取；测试多实例仍走 create_app(settings) 工厂 + dependency_overrides）
+app = create_app()
+
+
+if __name__ == '__main__':
+    import uvicorn
+
+    uvicorn.run(
+        app='main:app',
+        host='0.0.0.0',
+        port=8800,
+        # workers=4,
+    )
+    pass

@@ -24,6 +24,7 @@ logs-manual-check/
 tests/
 docs/
 scripts/
+mocks/
 README.md
 
 # 部署文件自身与 IDE

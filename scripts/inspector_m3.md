@@ -20,12 +20,11 @@ tools/list 与 tools/call。本页为人工验收清单；协议级自动化验�
 - 仓库根 `.env` 至少包含：
 
 ```
-AGENT_PROXY_LISTEN=127.0.0.1:8800
 EXTERNAL_BASE=http://127.0.0.1:8800
 TOKEN_VERIFY_IMPL=stub
 SSRF_ALLOW_PRIVATE=true          # 本机 mock 上游 127.0.0.1:9902 需放开内网校验
-MYSQL_DSN=mysql+aiomysql://root:123456@127.0.0.1:3306/agent_proxy
-REDIS_URL=redis://127.0.0.1:6379/1
+MYSQL_DSN=mysql+aiomysql://root:<密码>@127.0.0.1:3306/agent_proxy
+REDIS_URL=redis://:<密码>@127.0.0.1:6379/1     # Redis 无 AUTH 时去掉 :<密码>@
 TRACE_MODE=metadata              # 排障时临时改 body
 ```
 
@@ -34,13 +33,13 @@ TRACE_MODE=metadata              # 排障时临时改 body
 终端 1——代理：
 
 ```bash
-.venv/Scripts/python.exe -m agent_proxy     # 监听 127.0.0.1:8800
+.venv/Scripts/python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8800
 ```
 
 终端 2——mock MCP SSE 上游：
 
 ```bash
-.venv/Scripts/python.exe scripts/mock_mcp_sse_server.py    # 监听 127.0.0.1:9902
+.venv/Scripts/python.exe -m mocks.mcp_sse    # 监听 127.0.0.1:9902（仓库根目录执行）
 ```
 
 终端 3——MCP Inspector：
@@ -106,5 +105,5 @@ request_id 下应能看到：
 |---|---|
 | Connect 后 401 | Custom Header 未配置或拼写错误（stub token 不验签、不过期） |
 | 注册 400（内网/SSRF 拒绝） | `.env` 未设 `SSRF_ALLOW_PRIVATE=true` |
-| 9902 被占用 | 结束遗留进程：`netstat -ano \| findstr :9902` 查到 PID，`taskkill //PID <pid> //F`（Git Bash 下双斜杠，避免被路径转换）；或改用 `.venv/Scripts/python.exe scripts/mock_mcp_sse_server.py --port 9903` 启动（注册的 upstream_url 端口同步改） |
+| 9902 被占用 | 结束遗留进程：`netstat -ano \| findstr :9902` 查到 PID，`taskkill //PID <pid> //F`（Git Bash 下双斜杠，避免被路径转换）；或改用 `.venv/Scripts/python.exe -m mocks.mcp_sse --port 9903` 启动（注册的 upstream_url 端口同步改） |
 | Inspector UI 字段对不上 | 以当前版本 UI 为准，关键字段为 Transport Type=SSE、URL、Custom Header |

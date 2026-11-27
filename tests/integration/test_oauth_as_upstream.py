@@ -9,8 +9,8 @@ import base64
 
 import httpx
 
-from tests.integration.mock_mcp_streamable import secure_state
-from tests.integration.mock_oauth_as import as_state
+from mocks.mcp_streamable import secure_state
+from mocks.oauth_as import as_state
 
 BASE = "http://127.0.0.1:9904"
 VERIFIER = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"

@@ -10,7 +10,7 @@ upstream_headers 强制加密 + credential 加密列 VARCHAR 化 + uid→user_id
    显式 `--collapse-non-numeric` 才执行「剥非数字字符归一（'u888'→'888'，剥空落
    '0'）」，之后 MODIFY 列型，索引保留）
 2. proxy_mapping.upstream_headers  JSON → TEXT，并把既有明文 JSON 行逐行
-   Fernet(MASTER_KEY) 加密回写（复用 oauth.credential.encrypt_text，SHA256 派生）；
+   Fernet(MASTER_KEY) 加密回写（复用 oauth.crypto.encrypt_text，SHA256 派生）；
    已是密文（gAAAA 前缀）的行跳过 → 脚本可重复执行（幂等）
 3. 迁移结束 SCAN+DEL `ap:mapping:*`（评审 Important 2）：迁移前 Redis 缓存是旧明文
    dict 形态，迁移后读取路径 fail-closed（plain_headers 非密文串守卫 → 404）且
@@ -31,41 +31,32 @@ upstream_headers 强制加密 + credential 加密列 VARCHAR 化 + uid→user_id
    后重跑）；幂等：已为目标 VARCHAR 则跳过。proxy_mapping.upstream_headers
    保持 TEXT（整个 JSON 变长，唯一保留 TEXT 的列）
 
-用法：.venv/Scripts/python.exe scripts/migrate_uid_headers_encryption.py
-      [--db agent_proxy] [--collapse-non-numeric]
-MASTER_KEY / REDIS_URL 从 .env 读取（与运行时同源）；默认库 agent_proxy。
+用法（仓库根执行；服务不打包安装，`python -m` 直导 app/ 源码）：
+    .venv/Scripts/python.exe -m scripts.migrate_uid_headers_encryption \n        [--db agent_proxy] [--collapse-non-numeric]
+MASTER_KEY / REDIS_URL / MYSQL_DSN 经 Settings 读取（.env + 环境变量，与运行时同源）；
+默认库 agent_proxy。
 """
 from __future__ import annotations
 
 import argparse
 import json
 import re
-import sys
-from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 import pymysql
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-
-# 部署/生产复用前改为参数或环境变量注入（勿硬编码凭据）；复用前改 DSN 解析
-# （终审 Minor 4：DSN 直连仅开发形态，外部 MySQL 部署须解析 MYSQL_DSN 或等效环境变量）
-HOST, PORT, USER, PASSWORD = "127.0.0.1", 3306, "root", "123456"
+from app.env import get_settings
 
 
-def read_env_key(repo_root: Path, key: str) -> str:
-    """与 config.load_dotenv_file 同规则读 .env 的指定键（运行时同源）。"""
-    env_path = repo_root / ".env"
-    if not env_path.exists():
-        raise SystemExit(f"缺少 .env（{key} 必填）")
-    for line in env_path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if line.startswith(f"{key}="):
-            value = line.partition("=")[2].strip()
-            value = re.sub(r"\s+#.*$", "", value).strip('"').strip("'")
-            if value:
-                return value
-    raise SystemExit(f".env 缺少 {key}")
+def _dsn_conn_params(dsn: str) -> dict:
+    """MYSQL_DSN → pymysql.connect 参数（host/port/user/password；凭据不落常量）。"""
+    parsed = urlparse(dsn)
+    return {
+        "host": parsed.hostname or "127.0.0.1",
+        "port": parsed.port or 3306,
+        "user": unquote(parsed.username or "root"),
+        "password": unquote(parsed.password or ""),
+    }
 
 
 def column_type(cur, db: str, table: str, column: str) -> str | None:
@@ -196,7 +187,7 @@ def migrate_uid_column(cur, db: str, table: str, column: str,
 
 def encrypt_headers_rows(cur, db: str, master_key: str) -> None:
     """JSON → TEXT 改型 + 既有明文行 Fernet 加密回写（幂等：gAAAA 前缀跳过）。"""
-    from agent_proxy.oauth.credential import encrypt_text
+    from app.oauth.crypto import encrypt_text
 
     if column_type(cur, db, "proxy_mapping", "upstream_headers") == "json":
         cur.execute("ALTER TABLE proxy_mapping MODIFY upstream_headers TEXT NOT NULL")
@@ -240,17 +231,19 @@ def flush_mapping_cache(redis_url: str) -> None:
 
 
 def main() -> None:
-    repo_root = Path(__file__).resolve().parent.parent
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--db", default="agent_proxy", help="目标库（默认开发库 agent_proxy）")
     parser.add_argument("--collapse-non-numeric", action="store_true",
                         help="显式允许把非数字 uid 折叠归一（仅确认全为测试数据时使用；"
                              "默认中止并列出行明细）")
     args = parser.parse_args()
-    master_key = read_env_key(repo_root, "MASTER_KEY")
-    redis_url = read_env_key(repo_root, "REDIS_URL")
+    # MASTER_KEY / REDIS_URL / MYSQL_DSN 经 Settings 读取（.env + 环境变量，
+    # 与运行时同源，并享全量校验 fail-fast）
+    settings = get_settings()
+    master_key = settings.master_key
+    redis_url = settings.redis_url
 
-    conn = pymysql.connect(host=HOST, user=USER, password=PASSWORD, port=PORT, database=args.db)
+    conn = pymysql.connect(database=args.db, **_dsn_conn_params(settings.mysql_dsn))
     try:
         with conn.cursor() as cur:
             # 精修批：先列改名（后续整数化目标列名随动 user_id）

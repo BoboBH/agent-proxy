@@ -8,19 +8,19 @@ from urllib.parse import unquote, urlparse
 from fastapi import APIRouter, Depends, Query, Request, Response
 from sqlalchemy import select
 
-from agent_proxy import placeholder
-from agent_proxy.models import ProxyMapping
-from agent_proxy.auth import Identity
-from agent_proxy.config import Settings, get_settings
-from agent_proxy.errors import AppError
-from agent_proxy.forward.http_forward import probe_http_mapping
-from agent_proxy.forward.mcp_streamable import probe_mcp_mapping
-from agent_proxy.mapping_id import MAPPING_ID_RE
-from agent_proxy.schemas import (ListItemOut, MappingCreate, MappingDetailOut, MappingTestOut,
+from app import placeholder
+from app.models import ProxyMapping
+from app.auth import Identity
+from app.env import Settings, get_settings
+from app.errors import AppError
+from app.forward.http_forward import probe_http_mapping
+from app.forward.mcp_streamable import probe_mcp_mapping
+from app.mapping_id import MAPPING_ID_RE
+from app.schemas import (ListItemOut, MappingCreate, MappingDetailOut, MappingTestOut,
                                  MappingUpdate, RegisteredOut)
-from agent_proxy.services import (build_proxy_url, create_mapping, delete_mapping, get_owned,
+from app.services import (build_proxy_url, create_mapping, delete_mapping, get_owned,
                                   list_mappings, row_to_dict, update_mapping)
-from agent_proxy.api.deps import get_current_identity, get_db, is_admin
+from app.api.deps import get_current_identity, get_db, is_admin
 
 log = logging.getLogger("agent_proxy")
 router = APIRouter(prefix="/api/v1/mappings", tags=["mgmt"])

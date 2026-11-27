@@ -8,16 +8,15 @@ Agent 平台对外 MCP / HTTP 出站代理：真实地址与凭据只存代理�
 ## 快速开始
 
 ````bash
-D:/Python312/python.exe -m venv .venv
-.venv/Scripts/python.exe -m pip install -e ".[dev]" -i https://pypi.tuna.tsinghua.edu.cn/simple
+uv sync --extra dev   # 依赖按 uv.lock 冻结复现（服务不打包安装，需先装 uv）
 cp .env.example .env   # 按环境修改
-.venv/Scripts/python.exe -m agent_proxy  # 读取 .env 启动
+.venv/Scripts/python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8800  # 仓库根执行，读取 .env 启动
 ````
 
 ## 测试
 
 ````bash
-.venv/Scripts/python.exe -m pytest -v   # 需本地 MySQL(root/123456) 与 Redis(6379)
+.venv/Scripts/python.exe -m pytest -v   # 存储连接受 .env 的 MYSQL_DSN / REDIS_URL（测试自动切 agent_proxy_test 库 / Redis db9）
 ````
 
 ## MCP Inspector 联调（M3）
@@ -29,12 +28,13 @@ tools/list 与 tools/call 的人工验收步骤（协议级自动化覆盖见
 ## MCP Inspector 联调（M4：Streamable HTTP）
 
 见 `scripts/inspector_m4.md`：以 Streamable HTTP 传输经代理连接 mock MCP 上游
-（`scripts/mock_mcp_streamable_server.py`，9903），完成 tools/list 与 tools/call
+（`mocks/mcp_streamable.py`，`.venv/Scripts/python.exe -m mocks.mcp_streamable`，9903），
+完成 tools/list 与 tools/call
 的人工验收步骤（协议级自动化覆盖见 `tests/integration/test_proxy_mcp_streamable.py`）。
 
 ## OAuth 凭证托管（M6）联调
 
-见 `scripts/mock_oauth_as_server.py`（mock OAuth2 AS+RS，9904；preset 手动客户端
+见 `mocks/oauth_as.py`（`.venv/Scripts/python.exe -m mocks.oauth_as`；mock OAuth2 AS+RS，9904；preset 手动客户端
 `manual-cl`/`manual-cs-123456`；`POST /_test/reset` 重置）。浏览器走全流程：
 
 1. 管理员建公共映射：`POST /api/v1/mappings`（`visibility=public`、`auth_mode=oauth`，

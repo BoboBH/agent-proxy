@@ -4,7 +4,7 @@
 非 dict / >64KB 截断）。"""
 import time
 
-from agent_proxy.forward.mcp_streamable import (_first_message_data,
+from app.forward.mcp_streamable import (_first_message_data,
                                                 INITIALIZE_MAX_BYTES,
                                                 _judge_initialize_response)
 

@@ -3,10 +3,10 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import JSON, BigInteger, DateTime, Enum, String, Text, UniqueConstraint, func
+from sqlalchemy import JSON, BigInteger, DateTime, Enum, String, Text, UniqueConstraint, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
-from agent_proxy.db import Base
+from app.db import Base
 
 
 class ProxyMapping(Base):
@@ -30,9 +30,9 @@ class ProxyMapping(Base):
     test_request: Mapped[dict[str, str] | None] = mapped_column(JSON)
     status: Mapped[str] = mapped_column(
         Enum("active", "disabled", name="mapping_status"), default="active")
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=text("CURRENT_TIMESTAMP"))
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, server_default=func.now(), onupdate=func.now())
+        DateTime, server_default=text("CURRENT_TIMESTAMP"), onupdate=func.now())
 
 
 class OAuthClient(Base):
@@ -52,9 +52,9 @@ class OAuthClient(Base):
     token_url: Mapped[str | None] = mapped_column(String(2048))
     scopes: Mapped[str | None] = mapped_column(String(512))
     source: Mapped[str] = mapped_column(Enum("dcr", "manual", name="oauth_client_source"))
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=text("CURRENT_TIMESTAMP"))
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, server_default=func.now(), onupdate=func.now())
+        DateTime, server_default=text("CURRENT_TIMESTAMP"), onupdate=func.now())
 
 
 class OAuthCredential(Base):
@@ -78,6 +78,6 @@ class OAuthCredential(Base):
     scope: Mapped[str | None] = mapped_column(String(512))
     status: Mapped[str] = mapped_column(
         Enum("active", "invalid", name="oauth_cred_status"), default="active")
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=text("CURRENT_TIMESTAMP"))
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, server_default=func.now(), onupdate=func.now())
+        DateTime, server_default=text("CURRENT_TIMESTAMP"), onupdate=func.now())

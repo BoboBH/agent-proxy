@@ -44,18 +44,30 @@ async def test_stored_authorization_replaces_caller(client):
 
 
 async def test_caller_authorization_passthrough_when_mapping_has_none(client):
-    """统一 token 场景：映射未配 Authorization → 调用方的 Authorization 原样直达
-    上游（agent-email「没有个人配置，直接使用 token」）。"""
+    """统一 token 场景（v4.1 语义）：Authorization 既是代理身份通道又可透传上游——
+    携带**有效代理凭证**且映射未配同名头时，凭证原值原样直达上游；
+    X-Proxy-Authorization 默认配置下只是普通头透传。
+    注：仅持有上游 Token、无有效代理凭证 → 凭证出示失败 401 不透传（见下一条用例；
+    「Token 也是凭证出示、失败不回退」已由 unit/test_deps 钉住）。"""
     mid = await _register(client, {})
+    tok = make_token(888)
     resp = await client.get(
         f"/p/{mid}/orders", headers={
-            "Authorization": "Token shared-jwt-abcdef",
+            "Authorization": f"Bearer {tok}",
             "X-Proxy-Authorization": "Bearer whatever"})
     assert resp.status_code == 200, resp.text
     sent = resp.json()["headers"]
-    assert _hdr(sent, "authorization") == "Token shared-jwt-abcdef"  # 直达上游
+    assert _hdr(sent, "authorization") == f"Bearer {tok}"            # 凭证原值直达上游
     assert _hdr(sent, "x-proxy-authorization") == "Bearer whatever"  # 默认配置下普通头透传
-    assert "stub." not in resp.text
+
+
+async def test_upstream_only_token_rejected_as_credential_presentation(client):
+    """v4.1 矛盾面钉住：认证通道上 `Token <上游token>` 属凭证出示——stub 不认
+    即 401 INVALID_TOKEN，绝不静默当作透传载荷放行（无凭证调用方不得入内）。"""
+    mid = await _register(client, {})
+    resp = await client.get(
+        f"/p/{mid}/orders", headers={"Authorization": "Token shared-jwt-abcdef"})
+    assert resp.status_code == 401 and resp.json()["code"] == "INVALID_TOKEN"
 
 
 async def test_cookie_and_host_not_forwarded(client):

@@ -3,7 +3,6 @@
 链路：测试 client（ASGITransport）→ 代理 app → 真实 TCP → echo 上游（uvicorn 9901）。
 上游地址含 SSRF_ALLOW_PRIVATE=true 放行的 127.0.0.1（测试环境既定）。
 """
-import os
 import re
 from contextlib import asynccontextmanager
 
@@ -174,8 +173,8 @@ async def test_proxy_trace_metadata_wired(client, monkeypatch, tmp_path):
     import json as jsonlib
     import logging
 
-    from agent_proxy.logging_setup import flush_trace
-    import agent_proxy.trace as trace_mod
+    from app.logging_setup import flush_trace
+    import app.trace as trace_mod
 
     handler_target = tmp_path / "trace.log"
     logger = logging.getLogger("agent_proxy.trace")
@@ -301,8 +300,8 @@ async def test_stream_broken_is_observable(client, app, tmp_path):
     import json as jsonlib
     import logging
 
-    from agent_proxy import metrics as metrics_mod
-    from agent_proxy.logging_setup import flush_trace
+    from app import metrics as metrics_mod
+    from app.logging_setup import flush_trace
 
     class _BrokenOnceResponse(httpx.Response):
         # M4 aiter_raw 换装：管线消费点已是 aiter_raw（压缩字节透传），中断桩
@@ -451,11 +450,11 @@ async def _dedicated_app_client(**env_overrides):
     """专用 app（独立 Settings 覆盖）+ 其测试 client——超时/池上限类用例专用，用毕即弃。"""
     import os
 
-    from agent_proxy.config import Settings
-    from agent_proxy.main import create_app
+    from app.env import Settings
+    from app.main import create_app
     from httpx import ASGITransport, AsyncClient
 
-    settings = Settings.from_env({**os.environ, **env_overrides})
+    settings = Settings(_env_file=None, **env_overrides)
     application = create_app(settings)
     async with application.router.lifespan_context(application):
         async with AsyncClient(transport=ASGITransport(app=application),
@@ -466,7 +465,7 @@ async def _dedicated_app_client(**env_overrides):
 async def test_upstream_dead_port_maps_502(client):
     """评审核销项：上游连接失败（127.0.0.1:1 死端口）→ 502 UPSTREAM_ERROR，
     metrics ap_upstream_errors_total{code=connect} 打点。"""
-    from agent_proxy import metrics as metrics_mod
+    from app import metrics as metrics_mod
 
     created = await _register(client, upstream_url="http://127.0.0.1:1/api/v1")
     before = metrics_mod.upstream_errors_total.labels(
@@ -481,11 +480,11 @@ async def test_upstream_dead_port_maps_502(client):
 async def test_upstream_read_timeout_maps_504():
     """评审核销项：上游读超时（UPSTREAM_READ_TIMEOUT=1 < slow 3s）→ 504 UPSTREAM_TIMEOUT，
     metrics ap_upstream_errors_total{code=timeout} 打点。"""
-    from agent_proxy import metrics as metrics_mod
+    from app import metrics as metrics_mod
 
     before = metrics_mod.upstream_errors_total.labels(
         type="http", code="timeout")._value.get()
-    async with _dedicated_app_client(UPSTREAM_READ_TIMEOUT="1") as c:
+    async with _dedicated_app_client(upstream_read_timeout=1) as c:
         resp = await c.post("/api/v1/mappings",
                             json={"type": "http",
                                   "upstream_url": "http://127.0.0.1:9901/api/v1",
@@ -508,8 +507,8 @@ async def test_pool_exhausted_returns_503():
     """
     import asyncio
 
-    async with _dedicated_app_client(UPSTREAM_MAX_CONNECTIONS="1",
-                                     UPSTREAM_POOL_TIMEOUT="2") as c:
+    async with _dedicated_app_client(upstream_max_connections=1,
+                                     upstream_pool_timeout=2) as c:
         resp = await c.post("/api/v1/mappings",
                             json={"type": "http",
                                   "upstream_url": "http://127.0.0.1:9901/api/v1",
@@ -533,7 +532,7 @@ async def test_redirect_hops_recorded_in_trace(client, tmp_path):
     import json as jsonlib
     import logging
 
-    from agent_proxy.logging_setup import flush_trace
+    from app.logging_setup import flush_trace
 
     handler_target = tmp_path / "trace.log"
     logger = logging.getLogger("agent_proxy.trace")
@@ -561,7 +560,7 @@ async def test_redirect_hop_send_failure_traced(client, app, tmp_path):
     import json as jsonlib
     import logging
 
-    from agent_proxy.logging_setup import flush_trace
+    from app.logging_setup import flush_trace
 
     class _FailSecondHopClient(_FakeStreamClient):
         async def send(self, request, stream=False):
@@ -604,10 +603,10 @@ async def test_upstream_client_ignores_ambient_proxy_env(monkeypatch):
     monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9909")    # 死端口假代理
     monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9909")
     monkeypatch.setenv("http_proxy", "http://127.0.0.1:9909")
-    from agent_proxy.config import Settings
-    from agent_proxy.main import create_app
+    from app.env import Settings
+    from app.main import create_app
 
-    application = create_app(Settings.from_env(os.environ))
+    application = create_app(Settings(_env_file=None))
     async with application.router.lifespan_context(application):
         resp = await application.state.http_client.get("http://127.0.0.1:9901/api/v1/final")
         assert resp.status_code == 200

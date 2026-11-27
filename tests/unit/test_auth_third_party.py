@@ -7,7 +7,7 @@ locked·deleted 拒收 / user_id 非整数拒收 / 短 TTL 缓存 / build_verifi
 import httpx
 import pytest
 
-from agent_proxy.auth import (ThirdPartyVerifier, TokenInvalidError,
+from app.auth import (ThirdPartyVerifier, TokenInvalidError,
                               TokenServiceError, build_verifier)
 
 BETA_BASE = "https://bapal.9m-tec.com/alphapal/api/ai-service"

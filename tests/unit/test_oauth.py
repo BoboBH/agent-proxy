@@ -8,16 +8,16 @@ import json
 import httpx
 import pytest
 
-from agent_proxy.errors import AppError
-from agent_proxy.oauth.client import (build_authorization_url, build_dcr_payload,
+from app.errors import AppError
+from app.oauth.client import (build_authorization_url, build_dcr_payload,
                                       build_redirect_uri, build_token_request,
                                       code_challenge_s256, decode_state_payload,
                                       encode_state_payload, new_code_verifier,
                                       new_state, normalize_token_auth,
                                       state_key, validate_front_redirect)
-from agent_proxy.oauth.credential import (encrypt_text, decrypt_text,
-                                          expires_at_from, is_expired)
-from agent_proxy.oauth.discovery import (DiscoveryError, discover_authorization_server,
+from app.oauth.credential import expires_at_from, is_expired
+from app.oauth.crypto import decrypt_text, encrypt_text
+from app.oauth.discovery import (DiscoveryError, discover_authorization_server,
                                          parse_as_metadata, parse_protected_resource,
                                          upstream_origin)
 
@@ -108,7 +108,7 @@ def test_state_roundtrip_and_key_prefix():
 
 
 def test_state_payload_missing_fields_rejected():
-    from agent_proxy.errors import AppError
+    from app.errors import AppError
     with pytest.raises(AppError) as ei:
         decode_state_payload('{"user_id": 888}')
     assert ei.value.code == "OAUTH_STATE_INVALID"

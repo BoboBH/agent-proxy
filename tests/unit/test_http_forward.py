@@ -2,8 +2,8 @@
 import httpx
 import pytest
 
-from agent_proxy.errors import AppError
-from agent_proxy.forward.http_forward import (assert_safe_sub_path, build_forward_target,
+from app.errors import AppError
+from app.forward.http_forward import (assert_safe_sub_path, build_forward_target,
                                               _origin, _redirect_method, split_sub_path)
 
 

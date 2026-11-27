@@ -11,9 +11,9 @@ from urllib.parse import quote
 
 from sqlalchemy import func, select
 
-from agent_proxy.models import OAuthClient, OAuthCredential
-from agent_proxy.oauth.credential import (encrypt_text, load_credential,
-                                          save_credential)
+from app.models import OAuthClient, OAuthCredential
+from app.oauth.credential import load_credential, save_credential
+from app.oauth.crypto import encrypt_text
 from tests.utils import make_token
 
 ADMIN = {"Authorization": f"Bearer {make_token(100, 'admin')}"}

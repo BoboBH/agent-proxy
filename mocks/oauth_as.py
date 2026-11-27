@@ -1,4 +1,4 @@
-"""最小 OAuth2 AS+RS（测试专用）：uvicorn.Server 真实监听 127.0.0.1:9904（设计 §14）。
+"""Mock OAuth2 AS+RS（集成测试 / 联调共用）：监听 127.0.0.1:9904（设计 §14）。
 
 Authorization Server 端点：
 - GET /.well-known/oauth-protected-resource   RFC 9728（authorization_servers=[本源]）
@@ -35,12 +35,13 @@ Resource Server 端点（http 形态注入验证面）：
 耦合（旧 rt 可复用性不得被测试依赖，绑定/刷新用例始终直读最新签发值）；
 authorize 不渲染同意页（校验通过即视为"同意"）。
 
-注意：独立入口 scripts/mock_oauth_as_server.py 换端口联调时，本模块 BASE /
+注意：独立入口（python -m mocks.oauth_as）换端口联调时，本模块 BASE /
 _PRESET_REDIRECT_PREFIXES / well-known 元数据 URL 不随动——独立入口仅用于 9904
 标准端口的浏览器联调；端口改配属联调时手工改本文件常量的场景。
 """
 from __future__ import annotations
 
+import argparse
 import asyncio
 import base64
 import hashlib
@@ -50,7 +51,7 @@ from urllib.parse import parse_qsl, urlencode
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
 
-from tests.integration.mock_mcp_streamable import secure_state
+from mocks.mcp_streamable import secure_state
 
 BASE = "http://127.0.0.1:9904"
 PRESET_CLIENT_ID = "manual-cl"
@@ -316,3 +317,17 @@ def build_oauth_as_app() -> FastAPI:
                 "headers": dict(request.headers.items())}
 
     return app
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="mock OAuth2 AS+RS（OAuth 绑定联调用）")
+    parser.add_argument("--port", type=int, default=9904,
+                        help="监听端口（默认 9904）")
+    return parser.parse_args()
+
+
+if __name__ == "__main__":
+    args = _parse_args()
+    import uvicorn
+    uvicorn.run(build_oauth_as_app(), host="127.0.0.1", port=args.port,
+                log_level="info", access_log=False)

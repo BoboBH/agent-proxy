@@ -9,9 +9,9 @@ import pytest
 def _logging_hygiene():
     """每个测试结束后复位全局日志状态，避免 _registry / logger handlers 跨测试污染。"""
     yield
-    import agent_proxy.logging_setup as ls
+    import app.logging_setup as ls
 
-    from agent_proxy.logging_setup import shutdown_logging
+    from app.logging_setup import shutdown_logging
 
     shutdown_logging()
     for name in ("agent_proxy", "agent_proxy.audit", "agent_proxy.trace"):
@@ -23,7 +23,7 @@ def _logging_hygiene():
 
 
 def test_rotate_on_size(tmp_path):
-    from agent_proxy.logging_setup import DailySizeRotatingHandler
+    from app.logging_setup import DailySizeRotatingHandler
 
     base = str(tmp_path / "t.log")
     handler = DailySizeRotatingHandler(base, max_bytes=100, keep_days=7)
@@ -40,7 +40,7 @@ def test_rotate_on_size(tmp_path):
 
 
 def test_cleanup_expired_by_mtime(tmp_path):
-    from agent_proxy.logging_setup import DailySizeRotatingHandler
+    from app.logging_setup import DailySizeRotatingHandler
 
     base = str(tmp_path / "t.log")
     handler = DailySizeRotatingHandler(base, max_bytes=10 * 1024 * 1024, keep_days=7)
@@ -54,10 +54,10 @@ def test_cleanup_expired_by_mtime(tmp_path):
 
 
 def test_setup_logging_creates_three_files(tmp_path):
-    from agent_proxy.logging_setup import setup_logging
+    from app.logging_setup import setup_logging
 
     setup_logging(str(tmp_path), "INFO")
-    import agent_proxy.logging_setup as ls
+    import app.logging_setup as ls
 
     assert any("agent-proxy.log" in p for p in ls._registry)
     assert any("audit.log" in p for p in ls._registry)
@@ -67,7 +67,7 @@ def test_setup_logging_creates_three_files(tmp_path):
 
 
 def test_trace_queue_end_to_end(tmp_path):
-    from agent_proxy.logging_setup import flush_trace, setup_logging
+    from app.logging_setup import flush_trace, setup_logging
 
     setup_logging(str(tmp_path), "INFO")
     logging.getLogger("agent_proxy.trace").info('{"k":1}')
@@ -79,9 +79,9 @@ def test_trace_queue_end_to_end(tmp_path):
 
 
 def test_setup_logging_idempotent(tmp_path):
-    import agent_proxy.logging_setup as ls
+    import app.logging_setup as ls
 
-    from agent_proxy.logging_setup import DailySizeRotatingHandler, setup_logging
+    from app.logging_setup import DailySizeRotatingHandler, setup_logging
 
     def own(logger):
         # pytest>=9 会给 propagate=False 的 logger 挂自己的捕获 handler，只统计本模块的
@@ -100,9 +100,9 @@ def test_setup_logging_idempotent(tmp_path):
 
 
 def test_shutdown_then_setup_recovers(tmp_path):
-    import agent_proxy.logging_setup as ls
+    import app.logging_setup as ls
 
-    from agent_proxy.logging_setup import flush_trace, setup_logging, shutdown_logging
+    from app.logging_setup import flush_trace, setup_logging, shutdown_logging
 
     setup_logging(str(tmp_path), "INFO")
     shutdown_logging()
@@ -125,8 +125,8 @@ def test_flush_trace_second_drain_catches_in_window_enqueue(tmp_path, monkeypatc
     """
     import json as jsonlib
 
-    from agent_proxy import logging_setup as ls
-    from agent_proxy.logging_setup import setup_logging
+    from app import logging_setup as ls
+    from app.logging_setup import setup_logging
 
     setup_logging(str(tmp_path), "INFO")
     produced = {"done": False}

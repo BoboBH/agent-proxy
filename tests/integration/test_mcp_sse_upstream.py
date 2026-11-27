@@ -2,7 +2,7 @@
 endpoint 根相对路径、POST 202 + message 推回、notifications 不回、心跳。"""
 import httpx
 
-from tests.integration.mock_mcp_sse import mock_state
+from mocks.mcp_sse import mock_state
 from tests.utils import read_first_endpoint_event, read_next_message_data, sse_line_iter
 
 BASE = "http://127.0.0.1:9902"

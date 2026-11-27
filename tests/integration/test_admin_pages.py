@@ -4,8 +4,8 @@
 import json
 from urllib.parse import quote
 
-from agent_proxy.auth import Identity
-from agent_proxy.sso.session import SESSION_COOKIE, create_session, session_key
+from app.auth import Identity
+from app.sso.session import SESSION_COOKIE, create_session, session_key
 from tests.utils import make_token
 
 ADMIN = "/admin"
@@ -102,7 +102,7 @@ async def test_callback_return_to_open_redirect_neutralized(client):
 def test_safe_return_to_backslash_and_crlf_normalization():
     """_safe_return_to 单元钉（评审修复）：反斜杠归一后再判（WHATWG 相对态 \\ 视同
     /，仅拒 // 挡不住 /\\evil.com）；CR/LF 拒收；归一后仍站内的路径放行。"""
-    from agent_proxy.api.admin_pages import _safe_return_to
+    from app.api.admin_pages import _safe_return_to
 
     assert _safe_return_to("/admin?p=1") == "/admin?p=1"      # 正常站内路径
     assert _safe_return_to("/a\\b") == "/a/b"                 # 归一后仍站内 → 放行

@@ -21,8 +21,8 @@ initialize / tools/list / tools/call。协议级自动化等价覆盖见
 
 ```bash
 EXTERNAL_BASE=http://127.0.0.1:8800
-MYSQL_DSN=mysql+aiomysql://root:123456@127.0.0.1:3306/agent_proxy
-REDIS_URL=redis://127.0.0.1:6379/1
+MYSQL_DSN=mysql+aiomysql://root:<密码>@127.0.0.1:3306/agent_proxy
+REDIS_URL=redis://:<密码>@127.0.0.1:6379/1     # Redis 无 AUTH 时去掉 :<密码>@
 SSRF_ALLOW_PRIVATE=true
 TRACE_MODE=metadata              # 排障时临时改 body
 ```
@@ -30,7 +30,7 @@ TRACE_MODE=metadata              # 排障时临时改 body
 首次运行需建库（MySQL 已有实例，仅建库不动表结构，表由应用 lifespan create_all）：
 
 ```bash
-mysql -h127.0.0.1 -uroot -p123456 -e "CREATE DATABASE IF NOT EXISTS agent_proxy DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+mysql -h127.0.0.1 -uroot -p -e "CREATE DATABASE IF NOT EXISTS agent_proxy DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
 ```
 
 ## 1. 启动三个进程
@@ -38,13 +38,13 @@ mysql -h127.0.0.1 -uroot -p123456 -e "CREATE DATABASE IF NOT EXISTS agent_proxy 
 终端 1——代理：
 
 ```bash
-.venv/Scripts/python.exe -m agent_proxy     # 默认 0.0.0.0:8800（可用 AGENT_PROXY_LISTEN 收敛）
+.venv/Scripts/python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8800
 ```
 
 终端 2——mock MCP Streamable 上游：
 
 ```bash
-.venv/Scripts/python.exe scripts/mock_mcp_streamable_server.py    # 监听 127.0.0.1:9903
+.venv/Scripts/python.exe -m mocks.mcp_streamable    # 监听 127.0.0.1:9903（仓库根目录执行）
 ```
 
 终端 3——MCP Inspector：
@@ -103,7 +103,7 @@ application/json + `Mcp-Session-Id: sess-m4`，代理把会话头透传回 Inspe
 - [ ] **（可选）Disconnect**：断开后代理无异常堆积，`logs/agent-proxy.log` 可见
       相关连接关闭记录（Inspector 会话结束 DELETE /mcp 的 204 经代理透传；
       mock 独立入口关闭 access log，如需观察上游访问可临时改
-      `scripts/mock_mcp_streamable_server.py` 的 `access_log=True`）
+      `mocks/mcp_streamable.py` 的 `access_log=True`）
 
 ## 6. trace 观察（可选，排障向）
 

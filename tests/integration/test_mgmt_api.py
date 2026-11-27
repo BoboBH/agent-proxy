@@ -111,7 +111,7 @@ async def _corrupt_row_headers(app, mapping_id: str) -> None:
     """直写 DB 行 headers 为不可解密文（模拟 MASTER_KEY 变更/行损坏）；PUT 路径
     直读 DB 行不经缓存，无需清缓存。"""
     from sqlalchemy import update
-    from agent_proxy.models import ProxyMapping
+    from app.models import ProxyMapping
     async with app.state.sessionmaker() as session:
         await session.execute(update(ProxyMapping)
                               .where(ProxyMapping.mapping_id == mapping_id)
@@ -134,7 +134,7 @@ async def test_put_corrupt_headers_untouched_succeeds_and_disables(client, app):
     assert data["headers"] == {"Authorization": "{{RUNTIME_TOKEN}}"}
     async with app.state.sessionmaker() as session:
         from sqlalchemy import select
-        from agent_proxy.models import ProxyMapping
+        from app.models import ProxyMapping
         row = (await session.execute(
             select(ProxyMapping).where(ProxyMapping.mapping_id == mid))).scalar_one()
         assert row.status == "disabled"
@@ -158,7 +158,7 @@ async def test_put_corrupt_headers_touched_409_not_500(client, app):
     assert "DELETE" in resp.json()["message"]
     async with app.state.sessionmaker() as session:
         from sqlalchemy import select
-        from agent_proxy.models import ProxyMapping
+        from app.models import ProxyMapping
         row = (await session.execute(
             select(ProxyMapping).where(ProxyMapping.mapping_id == mid))).scalar_one()
         assert row.upstream_headers == "gAAAAbroken-not-fernet"   # 更新未执行（原子失败）
