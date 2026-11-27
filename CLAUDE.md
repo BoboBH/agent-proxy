@@ -12,4 +12,4 @@
 
 - 测试/开发环境：stub 认证——认证头名由 `PROXY_AUTH_HEADER` 配置（默认 `Authorization`，可切 `X-Proxy-Authorization`）；`Bearer <纯数字>` 的数字即 user_id；`TOKEN_VERIFY_IMPL=third_party` 已实现验签对接（`VERIFY_API_BASE` 默认 beta，契约见 docs/auth_verify_token_integration.md），投产切换。
 - 测试运行：`.venv/Scripts/python.exe -m pytest`；真实 TCP 用端口 9901-9910，勿与其他进程并发跑测试。
-- **临时测试数据（用户指令 2026-11-25）**：临时测试跑的数据统一放项目 `temp/` 目录下，目录不存在时可直接创建；该目录**不要加入 .gitignore**。
+- **临时测试数据（用户指令 2026-11-27，反转 11-25 规则）**：临时测试跑的数据统一放项目 `temp/` 目录下，目录不存在时可直接创建；**`temp/` 已从 git 排除（.gitignore），不入库**——脚本/报告类可复用产物视需要单独确认后再提交。
