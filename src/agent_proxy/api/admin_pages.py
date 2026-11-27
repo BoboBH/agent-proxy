@@ -29,10 +29,10 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from ..auth import Identity, TokenInvalidError
-from ..config import Settings, get_settings
-from ..sso.login import get_login_provider
-from ..sso.session import SESSION_COOKIE, create_session, destroy_session, get_session
+from agent_proxy.auth import Identity, TokenInvalidError
+from agent_proxy.config import Settings, get_settings
+from agent_proxy.sso.login import get_login_provider
+from agent_proxy.sso.session import SESSION_COOKIE, create_session, destroy_session, get_session
 
 router = APIRouter(tags=["admin"])
 # 模板随包分发：src/agent_proxy/admin/（无运行时配置项，Path(__file__) 定位）

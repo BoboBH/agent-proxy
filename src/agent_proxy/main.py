@@ -10,17 +10,17 @@ from fastapi.responses import JSONResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from sqlalchemy import text
 
-from . import errors, metrics, trace
-from .cache import build_redis
-from .config import Settings, get_settings
-from .db import Base, build_engine, build_sessionmaker
-from .logging_setup import setup_logging, shutdown_logging
-from .middleware import RequestContextMiddleware
-from . import models as _models  # noqa: F401  注册 ORM 元数据供 create_all
-from .api.mgmt import router as mgmt_router
-from .api.proxy import router as proxy_router
-from .api.builtin import router as builtin_router, callback_router as oauth_callback_router
-from .api.admin_pages import router as admin_pages_router
+from agent_proxy import errors, metrics, trace
+from agent_proxy.cache import build_redis
+from agent_proxy.config import Settings, get_settings
+from agent_proxy.db import Base, build_engine, build_sessionmaker
+from agent_proxy.logging_setup import setup_logging, shutdown_logging
+from agent_proxy.middleware import RequestContextMiddleware
+from agent_proxy import models as _models  # noqa: F401  注册 ORM 元数据供 create_all
+from agent_proxy.api.mgmt import router as mgmt_router
+from agent_proxy.api.proxy import router as proxy_router
+from agent_proxy.api.builtin import router as builtin_router, callback_router as oauth_callback_router
+from agent_proxy.api.admin_pages import router as admin_pages_router
 
 log = logging.getLogger("agent_proxy")
 

@@ -35,9 +35,9 @@ from sqlalchemy import select
 from sqlalchemy.exc import DataError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .. import metrics
-from ..errors import AppError
-from ..models import OAuthCredential
+from agent_proxy import metrics
+from agent_proxy.errors import AppError
+from agent_proxy.models import OAuthCredential
 
 log = logging.getLogger("agent_proxy")
 
@@ -417,8 +417,8 @@ async def _do_refresh(session: AsyncSession, r, app_state, mapping_data: dict,
     metrics {action="fail"}；网络/discovery/5xx/响应畸形 → 凭证原状保留
     （不 destroy）+ metrics {action="transient"}（终审遗留 5：与业务拒绝分拆，
     避免混计误导告警阈值）——两态均审计 ok=false → 本请求 401。"""
-    from .client import build_token_request, load_client_row, _row_to_client
-    from .discovery import DiscoveryError, discover_authorization_server, upstream_origin
+    from agent_proxy.oauth.client import build_token_request, load_client_row, _row_to_client
+    from agent_proxy.oauth.discovery import DiscoveryError, discover_authorization_server, upstream_origin
 
     mapping_id = mapping_data["mapping_id"]
     cred = await load_credential(session, r, mapping_id, user_id)

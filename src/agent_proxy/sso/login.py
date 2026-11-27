@@ -12,8 +12,8 @@ from __future__ import annotations
 from typing import Protocol
 from urllib.parse import quote
 
-from ..auth import Identity, build_verifier
-from ..config import get_settings
+from agent_proxy.auth import Identity, build_verifier
+from agent_proxy.config import get_settings
 
 
 class LoginProvider(Protocol):

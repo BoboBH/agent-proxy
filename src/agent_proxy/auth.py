@@ -9,7 +9,7 @@ from typing import Protocol
 
 import httpx
 
-from .errors import AppError
+from agent_proxy.errors import AppError
 
 
 class TokenInvalidError(AppError):
@@ -102,7 +102,7 @@ class ThirdPartyVerifier:
 
     def __init__(self, api_base: str | None = None,
                  transport: httpx.AsyncBaseTransport | None = None) -> None:
-        from .config import get_settings   # 延迟导入避免 config↔auth 循环
+        from agent_proxy.config import get_settings   # 延迟导入避免 config↔auth 循环
         self.api_base = ((api_base or get_settings().verify_api_base)
                          .rstrip("/"))
         self._transport = transport

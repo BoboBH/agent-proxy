@@ -12,16 +12,16 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request, Response
 
-from ..auth import Identity
-from ..config import Settings, get_settings
-from ..errors import AppError
-from ..forward.http_forward import (assert_safe_sub_path, split_sub_path,
-                                    stream_http_forward)
-from ..forward.mcp_sse import (build_origin_target, registered_endpoint_path,
-                               stream_sse_forward)
-from ..oauth import credential as oauth_credential
-from ..services import load_mapping
-from .deps import get_current_identity
+from agent_proxy.auth import Identity
+from agent_proxy.config import Settings, get_settings
+from agent_proxy.errors import AppError
+from agent_proxy.forward.http_forward import (assert_safe_sub_path, split_sub_path,
+                                              stream_http_forward)
+from agent_proxy.forward.mcp_sse import (build_origin_target, registered_endpoint_path,
+                                         stream_sse_forward)
+from agent_proxy.oauth import credential as oauth_credential
+from agent_proxy.services import load_mapping
+from agent_proxy.api.deps import get_current_identity
 
 router = APIRouter(tags=["proxy"])
 

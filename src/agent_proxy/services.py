@@ -16,12 +16,12 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from . import cache, mapping_id as mid_module, placeholder
-from .config import Settings
-from .errors import AppError
-from .models import OAuthClient, OAuthCredential, ProxyMapping
-from .oauth.credential import decrypt_text, encrypt_text, invalidate_credential
-from .ssrf import async_validate_upstream_url
+from agent_proxy import cache, mapping_id as mid_module, placeholder
+from agent_proxy.config import Settings
+from agent_proxy.errors import AppError
+from agent_proxy.models import OAuthClient, OAuthCredential, ProxyMapping
+from agent_proxy.oauth.credential import decrypt_text, encrypt_text, invalidate_credential
+from agent_proxy.ssrf import async_validate_upstream_url
 
 log = logging.getLogger("agent_proxy")
 

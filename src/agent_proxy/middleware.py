@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from . import metrics
+from agent_proxy import metrics
 
 audit = logging.getLogger("agent_proxy.audit")
 

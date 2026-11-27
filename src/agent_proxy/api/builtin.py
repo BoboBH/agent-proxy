@@ -25,27 +25,27 @@ from sqlalchemy import select
 from sqlalchemy.exc import DataError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .. import metrics, placeholder
-from ..auth import Identity
-from ..config import Settings, get_settings
-from ..errors import AppError
-from ..forward.http_forward import probe_http_mapping
-from ..forward.mcp_streamable import probe_mcp_mapping
-from ..models import OAuthClient, ProxyMapping
-from ..oauth.client import (build_authorization_url, build_redirect_uri,
-                            build_token_request, consume_state, encode_state_payload,
-                            ensure_client, load_client_row, new_code_verifier,
-                            new_state, save_oauth_client_row, state_key,
-                            validate_front_redirect)
-from ..oauth.credential import (decrypt_text, delete_credential, drop_authz_index,
-                                encrypt_text, expires_at_from, get_binding_status,
-                                get_callable_credential, load_credential,
-                                save_credential, set_authz_index)
-from ..schemas import (AuthorizeIn, AuthorizeOut, BindingOut, BuiltinItemOut,
-                       MappingTestOut, OAuthClientOut, OAuthClientSet)
-from ..services import build_proxy_url, load_mapping, plain_headers
-from ..ssrf import async_validate_upstream_url
-from .deps import get_current_identity, get_db, is_admin
+from agent_proxy import metrics, placeholder
+from agent_proxy.auth import Identity
+from agent_proxy.config import Settings, get_settings
+from agent_proxy.errors import AppError
+from agent_proxy.forward.http_forward import probe_http_mapping
+from agent_proxy.forward.mcp_streamable import probe_mcp_mapping
+from agent_proxy.models import OAuthClient, ProxyMapping
+from agent_proxy.oauth.client import (build_authorization_url, build_redirect_uri,
+                                      build_token_request, consume_state, encode_state_payload,
+                                      ensure_client, load_client_row, new_code_verifier,
+                                      new_state, save_oauth_client_row, state_key,
+                                      validate_front_redirect)
+from agent_proxy.oauth.credential import (decrypt_text, delete_credential, drop_authz_index,
+                                          encrypt_text, expires_at_from, get_binding_status,
+                                          get_callable_credential, load_credential,
+                                          save_credential, set_authz_index)
+from agent_proxy.schemas import (AuthorizeIn, AuthorizeOut, BindingOut, BuiltinItemOut,
+                                 MappingTestOut, OAuthClientOut, OAuthClientSet)
+from agent_proxy.services import build_proxy_url, load_mapping, plain_headers
+from agent_proxy.ssrf import async_validate_upstream_url
+from agent_proxy.api.deps import get_current_identity, get_db, is_admin
 
 log = logging.getLogger("agent_proxy")
 

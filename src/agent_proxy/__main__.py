@@ -6,8 +6,8 @@ import sys
 
 import uvicorn
 
-from .config import ConfigError, Settings, load_dotenv_file
-from .main import create_app
+from agent_proxy.config import ConfigError, Settings, load_dotenv_file
+from agent_proxy.main import create_app
 
 
 def _parse_listen(listen: str) -> tuple[str, int]:

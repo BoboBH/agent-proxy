@@ -15,9 +15,9 @@ import httpx
 from fastapi import Request, Response
 from fastapi.responses import StreamingResponse
 
-from .. import metrics, trace
-from ..errors import AppError
-from ..headers import build_outbound_headers, filter_response_headers
+from agent_proxy import metrics, trace
+from agent_proxy.errors import AppError
+from agent_proxy.headers import build_outbound_headers, filter_response_headers
 
 log = logging.getLogger("agent_proxy")
 
