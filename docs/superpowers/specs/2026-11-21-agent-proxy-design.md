@@ -169,7 +169,7 @@ HTTP 201
 {
   "mapping_id": "aB3xK9mQ2wR4",
   "proxy_url": "https://agent-prox.com/p/aB3xK9mQ2wR4/sse",
-  "headers": { "X-Proxy-Authorization": "{{RUNTIME_TOKEN}}" }
+  "headers": { "Authorization": "{{RUNTIME_TOKEN}}" }   <- 头名跟随 PROXY_AUTH_HEADER（默认 Authorization）
 }
 ```
 
@@ -341,8 +341,9 @@ proxy_url = {EXTERNAL_BASE}/p/{mapping_id} [ + upstream_path ]    # mcp 类型�
 > 代理消费——skill 教传的上游凭据头与此配置互不冲突。真实 header 值仅在
 > resolve/详情（`view_credentials`）出现。
 
-- 配置结构：`{"X-Proxy-Authorization": "{{RUNTIME_TOKEN}}"}`（`RUNTIME_TOKEN` 为
-  平台替换层占位约定，代理原样返回不做替换）；
+- 配置结构：`{"<认证头名>": "{{RUNTIME_TOKEN}}"}`（`RUNTIME_TOKEN` 为平台替换层
+  占位约定，代理原样返回不做替换；认证头名跟随 `PROXY_AUTH_HEADER`——v3 定稿时
+  为 `X-Proxy-Authorization`，v4 起默认回归 `Authorization`，见 §8.1 v4）；
 - resolve（6.4）新增 `?name=<映射名>` 寻址：按名称取**本人**映射（重名取最新），
   与 `proxy_url` 二选一，返回原始配置（name、真实 url、真实 header）。
 - Agent 即使把占位 header 原样发回，代理也一律丢弃（见 8.1），不构成泄露或伪造通道。
@@ -415,9 +416,12 @@ HTTP 200
 
 ## 7. 鉴权设计（系统 JWT，第三方校验 + 抽象对接）
 
-**原则**：JWT 的**校验与解码由第三方接口提供**，代理本地不做验签与密钥管理；代理通过 `TokenVerifier` 抽象接口对接，具体实现后续接入。业务代码（管理接口、代理端点）只依赖 `Identity`，不感知校验细节。
+> **v4.1（2026-11-26）**：`third_party` 实现已落地（本节由「后续接入」改为实现回写）。
+> 契约文档：`docs/auth_verify_token_integration.md`。
 
-### 7.1 身份模型与抽象接口
+**原则**：token 的**校验与解码由第三方验签接口提供**，代理本地不做签名验证与密钥管理；代理通过 `TokenVerifier` 抽象接口对接。业务代码（管理接口、代理端点）只依赖 `Identity`，不感知校验细节。
+
+### 7.1 身份模型与抽象接口（v4.1 实现回写）
 
 ```python
 @dataclass(frozen=True)
@@ -427,23 +431,25 @@ class Identity:
     role: str | None        # 角色；== ADMIN_ROLE（默认 "admin"）时为管理员（见 14.2）
 
 class TokenVerifier(Protocol):
-    async def verify(self, token: str) -> Identity:
-        """校验并解码 token；明确无效（无效/过期/格式错）抛 TokenInvalidError → 401；
-        依赖的第三方服务不可用（超时/连接失败）抛 TokenServiceError → 503"""
+    async def verify(self, token: str) -> Identity: ...
+    async def verify_credential(self, credential: str) -> Identity:
+        """deps 契约（v4.1）：认证头完整值（含 scheme）作为凭证出示；
+        失败 → TokenInvalidError（401，不回退 Cookie）"""
 ```
 
-- `auth.get_current_identity`：FastAPI 依赖，仅依赖 `TokenVerifier`；
-- 实现一 `stub`（默认，开发/测试）：本地解码不验签，便于联调与集成测试；**仅限开发/测试，`ENV=prod` 时拒绝以 stub 启动**；
-- 实现二 `third_party`（后续实现）：对接第三方校验接口（接口协议、地址等参数在实现时确定，注册为独立 verifier 类，不影响任何业务代码）。
+- `get_current_identity`（FastAPI 依赖）：认证头值带 `Bearer `/`Token ` 前缀 → **凭证出示**，调 `verify_credential`（失败 401 不回退 Cookie）；其他 scheme（如 Basic）不构成凭证出示 → Cookie 会话回退（管理页面场景）；
+- 实现一 `stub`（默认，开发/测试）：本地 base64 信封解码不验签；纯数字 token 短路为 user_id；**仅限开发/测试，`ENV=prod` 时拒绝以 stub 启动**；
+- 实现二 `third_party`（**v4.1 已实现**）：对接 ai-service 验签——`GET {VERIFY_API_BASE}/auth/verify_token`，凭据 `Authorization` 头**原样透传**（接口支持 `Bearer`/`Token` 两种 scheme）；`200 + valid===true` → `Identity`（**身份以响应 user_id 为准，跨环境一致**；`user_type` 映射 role，`admin` 命中管理员判定）；非 200 / `valid:false` / `locked|deleted` 账号 → 401；5xx / 网络错误 → 503 `AUTH_SERVICE_UNAVAILABLE`；短 TTL 缓存（60s/凭据）避免每请求出网；出站客户端 `trust_env=False`（与上游直连一致）。
 
 | 项 | 设计 |
 |---|---|
-| 携带方式 | `Authorization: Bearer <token>` |
-| 代理侧用途 | ① 管理接口：user_id 归属校验；② 代理端点：user_id = `owner_uid` 才放行（public 映射任意有效身份可调） |
-| token 生命周期 | 校验、刷新、下发均在第三方侧，代理不参与 |
-| **不透传** | **调用者的 token 绝不转发给上游**（见 8.1） |
+| 携带方式 | 头名由 `PROXY_AUTH_HEADER` 配置（**默认 `Authorization`**，可切 `X-Proxy-Authorization` 分离模式，见 §8.1 v4）；值形态 `Bearer`/`Token` + token |
+| 代理侧用途 | ① 管理接口：user_id 归属校验；② 代理端点：private 要求 user_id = `owner_uid`（public 映射任意有效身份可调） |
+| 默认头的双重职责 | 默认 `Authorization` 下该头**身兼两职**：代理鉴权 +（映射未配同名头时）原样透传上游——统一 token 场景（§8.1 v4）；非默认名则纯代理私有、绝不透传 |
+| token 生命周期 | 校验、刷新、下发均在第三方侧，代理不参与；验签结果短 TTL 缓存（60s/凭据） |
+| 环境绑定 | token 与验签环境绑定（beta token 须 beta 基址、prod 须 prod 基址，实测确认）；`VERIFY_API_BASE` 按部署环境配置 |
 
-错误：token 缺失 / 无效 / 过期 → `401`；user_id ≠ owner_uid → `403`；第三方校验服务不可用 → `503 AUTH_SERVICE_UNAVAILABLE`。
+错误：token 缺失 / 无效 / 过期 / 环境不匹配 → `401`；private 映射 user_id ≠ owner_uid → `403`；验签服务不可用 / 5xx → `503 AUTH_SERVICE_UNAVAILABLE`。
 
 ---
 
@@ -452,7 +458,9 @@ class TokenVerifier(Protocol):
 ### 8.1 通用规则
 
 > **v2 修订（2026-11-25，认证头换名 + 透传模型）**：本节第 1 条的白名单透传模型已被
-> 以下透传模型取代，其余各条不变。
+> 以下透传模型取代，其余各条不变。**注意：v2 的「认证头换名为 X-Proxy-Authorization」
+> 已被 v4 取代（默认回归 `Authorization`，经 `PROXY_AUTH_HEADER` 可配置）；v2 的
+> 「调用方覆盖存储」已被 v4 反转为「存储优先」。以下保留历史原文：**
 >
 > - **认证头换名**：代理身份通道改为 **`X-Proxy-Authorization: Bearer <token>`**（全局，
 >   管理接口与 `/p/` 同名同语义）；`Authorization` **不再被代理消费**，成为调用方可
@@ -729,55 +737,37 @@ sequenceDiagram
 | 上游调用 | httpx（异步、流式） |
 | ORM / 驱动 | SQLAlchemy 2（async）+ aiomysql |
 | 缓存 | redis-py（async） |
-| JWT | PyJWT |
-| 落库加密 | cryptography（Fernet，可选） |
+| 身份鉴权 | `TokenVerifier` 抽象：stub（base64 信封本地解码）/ third_party（httpx 调 ai-service verify_token；依赖保留 PyJWT 备用） |
+| 落库加密 | cryptography（Fernet，**强制**：upstream_headers / OAuth 凭证 / client_secret） |
 | 指标 | prometheus-client（`/metrics`） |
-| 部署 | Docker Compose（自包含栈：app + 可选 MySQL/Redis；外部已有实例通过 MYSQL_DSN / REDIS_URL 指向即可） |
+| 部署 | Docker Compose **单容器**（MySQL/Redis 复用宿主机实例，禁止自建）+ **uv/uv.lock** 冻结依赖 + `uvicorn --workers 4` 直跑 `app/` 源码 |
 | 管理页面 | FastAPI + Jinja2 模板 + 原生 JS（fetch），无前端构建链 |
 | 测试 | pytest + pytest-asyncio |
 
-分层：`api`（接口层）→ `services`（应用服务：映射 CRUD / cache-aside 加载 / 归属校验，管理、回显、转发共用）→ `forward` / `oauth`（转发与领域能力）→ `db` / `cache` / `auth`（基础设施与横切）。
+分层（v4 重构后，`app/` 布局 + 绝对导入）：`routers`（接口层：mgmt / builtin / proxy / admin + deps 身份依赖）→ `services`（应用服务与领域能力：mapping_service / auth / headers / trace / metrics / forward / oauth / sso）→ `core`（基础设施：db / cache / models / schemas / middleware）。配置唯一入口 `app/env.py`（pydantic-settings `BaseSettings`：进程环境 > `.env` > 默认值，启动 fail-fast）。
 
 ```
-agent-proxy/
-├── docs/superpowers/specs/          # 设计文档
-├── src/agent_proxy/
-│   ├── main.py                      # FastAPI 组装、生命周期（AsyncClient、优雅停机）
-│   ├── config.py                    # 环境配置
-│   ├── auth.py                      # Identity / TokenVerifier 抽象 + stub 实现（第三方实现后续接入）
-│   ├── services.py                  # 应用服务层：映射 CRUD、cache-aside 加载、归属/管理员校验
-│   ├── db.py                        # MySQL engine / session
-│   ├── cache.py                     # Redis cache-aside
-│   ├── models.py                    # ORM: ProxyMapping / OAuthClient / OAuthCredential
-│   ├── schemas.py                   # Pydantic 请求/响应模型
-│   ├── placeholder.py               # 占位符化 / 还原
-│   ├── mapping_id.py                # 随机 ID 生成
-│   ├── ssrf.py                      # 上游地址校验
-│   ├── headers.py                   # 出站 header 重建 / hop-by-hop 过滤
-│   ├── logging_setup.py             # 滚动日志（全局规范）
-│   ├── trace.py                     # 追踪日志：三档粒度、header 指纹脱敏、body 截断、SSE 事件记录
-│   ├── metrics.py                   # Prometheus 指标定义与中间件埋点
-│   ├── api/
-│   │   ├── mgmt.py                  # /api/v1/mappings 管理接口
-│   │   ├── builtin.py               # 内置 MCP（公共映射）接口 + OAuth 回调（M6）
-│   │   ├── proxy.py                 # /p/{mapping_id}/{path} 转发入口
-│   │   └── admin_pages.py           # 管理页面路由 + SSO 回调 + 会话（M7）
-│   ├── oauth/
-│   │   ├── client.py                # DCR / 手动客户端注册（M6）
-│   │   └── credential.py            # 凭证存取、刷新锁、注入（M6）
-│   ├── sso/
-│   │   └── login.py                 # LoginProvider 抽象 + stub（公司统一登录后续接入，M7）
-│   └── forward/
-│       ├── http_forward.py          # HTTP 前缀流式转发
-│       ├── mcp_sse.py               # SSE 长连接 + endpoint 改写
-│       └── mcp_streamable.py        # Streamable HTTP 透传
-├── src/agent_proxy/admin/           # 管理页面模板与静态资源（Jinja2 + JS，M7）
-├── tests/
-│   ├── unit/                        # 单元测试
-│   └── integration/                 # mock 上游全链路
-├── pyproject.toml
-├── .env.example
-└── README.md
+agent-proxy/                        # v4 重构后：app/ 布局 + 绝对导入 + uv 依赖管理
+├── docs/                           # 设计文档 / DEPLOYMENT.md / auth_verify_token_integration.md
+├── app/
+│   ├── main.py                     # FastAPI 组装、生命周期（AsyncClient、优雅停机）
+│   ├── env.py                      # 唯一配置入口：pydantic-settings BaseSettings（fail-fast）
+│   ├── core/                       # 基础设施：db / cache / middleware / models / schemas
+│   ├── routers/                    # 接口层：mgmt / builtin / proxy / admin + deps
+│   ├── services/                   # 应用服务与领域能力
+│   │   ├── mapping_service.py      #   映射 CRUD、cache-aside 加载、归属/管理员校验
+│   │   ├── auth.py                 #   Identity / TokenVerifier（stub + third_party 验签）
+│   │   ├── headers.py / placeholder.py / ssrf.py / mapping_id.py
+│   │   ├── trace.py / metrics.py / logging_service.py / errors.py
+│   │   ├── forward/                #   http_forward / mcp_sse / mcp_streamable
+│   │   ├── oauth/                  #   client / credential / discovery / crypto
+│   │   └── sso/                    #   login / session
+│   └── admin/                      # 管理页面模板（index / login）
+├── tests/                          # unit / integration（mock 上游全链路；真实 TCP）
+├── temp/                           # 临时测试数据（不入 .gitignore，按项目规则入库）
+├── pyproject.toml + uv.lock        # 依赖声明与冻结锁（uv sync --frozen）
+├── Dockerfile / docker-compose.yml # 单容器部署（宿主机 MySQL/Redis）
+└── .env（不入库）/.env.example
 ```
 
 **配置项（环境变量）**
@@ -786,7 +776,9 @@ agent-proxy/
 |---|---|---|
 | `AGENT_PROXY_LISTEN` | 监听地址 | `0.0.0.0:8800` |
 | `EXTERNAL_BASE` | 对外域名，用于拼 proxy_url | 必填 |
-| `TOKEN_VERIFY_IMPL` | token 校验实现：`stub`（开发/测试，本地解码不验签）/ `third_party`（第三方接口，参数实现时定） | `stub` |
+| `TOKEN_VERIFY_IMPL` | token 校验实现：`stub`（开发/测试，本地解码不验签）/ `third_party`（**v4.1 已实现**：对接 ai-service verify_token，见 docs/auth_verify_token_integration.md） | `stub` |
+| `PROXY_AUTH_HEADER` | 代理身份通道头名（v4）：默认 `Authorization`（统一 token：鉴权+可透传上游）；配置为其他名字时该头纯代理私有（v2 分离模式） | `Authorization` |
+| `VERIFY_API_BASE` | third_party 验签接口基址（v4.1）：`{base}/auth/verify_token`；按部署环境选 beta / 生产 | beta 基址 |
 | `ENV` | 运行环境；`prod` 下禁止 stub 校验实现启动 | `dev` |
 | `MYSQL_DSN` | MySQL 连接串 | 必填 |
 | `REDIS_URL` | Redis 连接串 | 必填 |
@@ -807,14 +799,15 @@ agent-proxy/
 | `TRACE_MODE` | 追踪日志粒度：`off` / `metadata`（默认）/ `body` | `metadata` |
 | `TRACE_BODY_MAX_SIZE` | body 记录截断上限 | `64KB` |
 
-### 12.1 部署形态（Docker Compose）
+### 12.1 部署形态（Docker Compose，v4 修订回写）
 
-**标准交付物**：`Dockerfile` + `docker-compose.yml`（`app` + 可选 `mysql:8.4` / `redis:7` 自包含栈）。
+**标准交付物**：`Dockerfile` + `docker-compose.yml`——**单容器 agent-proxy**；MySQL / Redis 复用宿主机实例（用户指令 2026-11-24：禁止 compose 自建存储，见项目 CLAUDE.md）。
 
-- **开发 / 演示（Windows 本机 Docker Desktop）**：`docker compose up -d`；`EXTERNAL_BASE=http://<本机局域网IP>:8800`；注意 Windows 防火墙放行端口、主机睡眠即服务下线——仅适合开发联调，不适合长期驻留；
-- **生产（Linux 服务器 / vm01）**：同一份 compose 直接迁移；vm01 无外网时在本机构建镜像后 `docker save` → 拷贝 → `docker load`（或走内网镜像源）；
-- **复用已有实例**：compose 中不启 mysql/redis 服务块，`MYSQL_DSN` / `REDIS_URL` 指向外部地址即可；
-- **依赖声明**：`depends_on` + 应用启动时自检 MySQL / Redis 连通（配合 `/readyz`）。
+- **构建**：`uv.lock` 入库（构建必需，勿 gitignore），镜像内 `uv sync --frozen` 冻结复现依赖；源码直跑 `app/` 包（不装 wheel）；非 root `appuser`；HEALTHCHECK 探活 `/healthz`；
+- **运行**：`uvicorn app.main:app --host=0.0.0.0 --port=8800 --workers 4`；compose `env_file: .env` + `environment` 覆盖 `MYSQL_DSN` / `REDIS_URL` 指向 `host.docker.internal`（凭据经插值变量 `MYSQL_ROOT_PASSWORD` 等放在 `.env`）；`extra_hosts: host-gateway`；`stop_grace_period: 15s`；
+- **配置注意**：容器内 `127.0.0.1` 不可达宿主机——上游/存储一律用 `host.docker.internal`（`SSRF_ALLOW_PRIVATE=true` 放行该形态）；
+- **开发 / 演示（Windows 本机 Docker Desktop）**：`docker compose up -d --build`；注意 Docker Desktop 端口转发有吞吐上限（性能基准见 temp/perf_report.md），Linux 部署无此开销；
+- **生产（Linux 服务器）**：同一份 compose 直接迁移；`ENV=prod` 强制非 stub 校验/登录；`VERIFY_API_BASE` 切生产验签基址。
 
 ---
 
@@ -1013,16 +1006,16 @@ sequenceDiagram
 | 决策点 | 结论 |
 |---|---|
 | 路由方案 | 路径携带映射 ID：`/p/{mapping_id}/...`（单域名，无泛 DNS 要求） |
-| 占位符语义 | 用户填写 header 的**所有 value** 都替换占位符，纯脱敏；调用时全部从存储还原 |
-| 转发 header 构成 | 仅还原存储的原始 header；调用者 JWT 只做代理侧鉴权，不透传上游 |
-| 系统令牌 | JWT 校验与解码由**第三方接口**提供，代理通过 `TokenVerifier` 抽象对接（Identity：user_id / user_name / role）；本地不验签，一期提供 stub 实现（仅开发/测试），第三方实现后续接入 |
+| 回显语义（v3/v4） | 注册响应 headers = 代理调用配置 `{"<认证头名>": "{{RUNTIME_TOKEN}}"}`（头名跟随 PROXY_AUTH_HEADER，默认 Authorization）；真实值仅 resolve / 详情可见（resolve 支持 ?name= 按名称寻址） |
+| 转发 header 构成（v4） | oauth 托管 forced > content-*（真实载荷）> 存储 headers > 调用方透传；默认认证头 Authorization 兼任鉴权与（缺配置时）透传——统一 token；cookie / host 恒不透传 |
+| 系统令牌（v4.1 已实现） | third_party：对接 ai-service `verify_token`（凭据 Bearer/Token scheme 原样透传，身份以响应 user_id 为准，locked/deleted 拒收，60s TTL 缓存）；stub 限开发/测试；VERIFY_API_BASE 分环境（默认 beta / 生产 app.9m-tec.com） |
 | HTTP 映射粒度 | 前缀映射（注册一次覆盖同前缀全部接口） |
 | MCP 传输 | SSE + Streamable HTTP |
 | 调用权限 | private 仅注册者本人；public 任意有效用户（`auth_mode=oauth` 时需先完成绑定，见 14.2） |
 | 存储 | MySQL 持久化 + Redis 缓存（cache-aside，TTL 300s，写时删缓存） |
 | 技术栈 | Python 3.12 + FastAPI + httpx + uvicorn |
 | 注册接口鉴权 | 系统 JWT |
-| 配置回显 | 提供 `GET /api/v1/mappings/resolve`：按代理地址（或 mapping_id）回查真实地址与真实 header，仅注册者可查，访问记审计日志 |
+| 配置回显 | `GET /api/v1/mappings/resolve`：按代理地址（mapping_id / 完整地址 / v3 起支持 `?name=` 映射名）回查真实地址与真实 header，仅注册者可查，访问记审计日志 |
 | 重定向策略 | 同源重定向代理内部跟随（≤3 跳），`Location` 不回传 Agent；跨源重定向原样透传 |
 | 重复注册 | 同一用户可对相同 upstream_url 注册多条映射（不同 header 场景），不做 upsert |
 | 已知限制 | HTTP 响应体不解析不改写（上游 body 内绝对链接会到达 Agent，凭据不受影响）；DNS rebinding 一期不防护；SSE 半开连接依赖 TCP keepalive |
@@ -1035,3 +1028,5 @@ sequenceDiagram
 | 管理页面 | 本服务托管（Jinja2 + 原生 JS，无前端构建链），**无注册 / 登录页面**；认证复用公司统一登录（`LoginProvider` 抽象 + stub 先行，协议实现时对接）；服务端会话（Redis + HttpOnly Cookie）；`get_current_identity` 双通道：Bearer 优先、Cookie 回退，既有 API 零破坏 |
 | 可观测性 | Prometheus `/metrics` 一期接入（M1 基础埋点、M7 完善）；标签仅低基数维度（**不含 user_id / mapping_id**），按映射 / 用户维度排查走审计日志 + request_id 关联 |
 | 追踪日志 | trace.log 独立于审计日志：`TRACE_MODE` = off / metadata（默认）/ body；header 一律指纹打码（前4****后4 + 长度），body 截断 64KB；SSE 记事件级（含 endpoint 改写前后）；异步落盘不阻塞事件循环 |
+| 认证头名（v4） | `PROXY_AUTH_HEADER` 可配置：默认 `Authorization`（统一 token 双职责：代理鉴权 + 映射未配同名头时透传上游）；其他名字纯代理私有（v2 分离模式经配置恢复） |
+| 部署形态（v4） | 单容器 + 宿主机 MySQL/Redis（禁止 compose 自建存储）；`uv.lock` 入库冻结依赖；`uvicorn --workers 4` 直跑 app/ 源码 |
