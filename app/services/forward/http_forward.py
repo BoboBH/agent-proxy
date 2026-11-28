@@ -15,6 +15,8 @@ import httpx
 from fastapi import Request, Response
 from fastapi.responses import StreamingResponse
 
+from ..concurrency import Guard
+
 from app.services import metrics, trace
 from app.services.errors import AppError
 from app.services.headers import build_outbound_headers, filter_response_headers
@@ -78,7 +80,8 @@ async def stream_http_forward(app_state, mapping_data: dict, request: Request,
                               target_override: str | None = None,
                               metrics_type: str = "http",
                               forced_headers: dict[str, str] | None = None,
-                              auth_header: str = "authorization") -> Response:
+                              auth_header: str = "authorization",
+                              guard: Guard | None = None) -> Response:
     """HTTP 前缀流式转发主管线（设计 §8.1 / §8.2）：同源重定向内部跟随、跨源透传。
 
     target_override（M3）：mcp 类型「上游 origin 根还原」的转发目标由调用方
@@ -265,6 +268,8 @@ async def stream_http_forward(app_state, mapping_data: dict, request: Request,
         finally:
             # 流结束/客户端断开都释放上游连接（设计 §8.1 第 4 条）
             await upstream_resp.aclose()
+            if guard:
+                guard.release()   # 按映射并发额度随上游连接关闭释放（设计 v4.2）
             if stream_broken:
                 return  # 中断：不写误导性的 status=200 response 行（log.exception 已留痕）
             if capture_limit:

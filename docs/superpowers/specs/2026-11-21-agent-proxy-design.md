@@ -289,6 +289,7 @@ CREATE TABLE proxy_oauth_credential (
 | GET | `/api/v1/mappings` | 当前用户的映射列表（分页） |
 | GET | `/api/v1/mappings/{mapping_id}` | 映射详情，**真实值仅注册者可见**（响应体同 6.4） |
 | GET | `/api/v1/mappings/resolve` | **回显接口**：按代理地址**或名称**（v3：`?name=`）回查真实地址与真实 header，见 6.4；静态路由须先于 `{mapping_id}` 动态路由注册 |
+| GET | `/api/v1/mappings/load` | **实时负载**（v4.3，仅 admin）：最近 5 分钟按映射请求数 + 当前在途并发，见 15.3；静态路由须先于 `{mapping_id}` 动态路由注册 |
 | PUT | `/api/v1/mappings/{mapping_id}` | 更新 upstream_url / headers / status，成功后删缓存 |
 | DELETE | `/api/v1/mappings/{mapping_id}` | 删除映射，成功后删缓存 |
 
@@ -501,6 +502,14 @@ class TokenVerifier(Protocol):
 >   `getproxies()` 读 Windows 注册表代理——桌面代理场景下死端口被代答 502、探测
 >   误判可达、SSRF 的 IP 校验被旁路）。需经企业代理出站的部署属显式架构决策，
 >   届时单独设计，不走环境隐式。
+>
+> **v4.2（2026-11-28）：按映射并发上限（慢上游隔离）**：新增
+> `MAPPING_MAX_CONCURRENCY`（默认 20，0=关闭）——每个映射的同时在途上游请求数
+> 上限。映射内并发达上限后，**该映射自己的**超额请求等待（上限 `POOL_TIMEOUT`
+> 窗口）超时 → 503 PROXY_BUSY；其他映射不受影响（解决单一慢上游经全局连接池
+> 拖慢全平台的「邻居噪声」问题）。闸门生命周期与上游连接严格对齐（响应流
+> 结束/客户端断开/错误路径均释放；SSE 长连接在流式期间持续占用额度）。
+> 实测：慢映射 260 并发冲击下超额请求按映射 503，其他映射不受池拖累。
 
 1. **出站 header 重建**（安全核心；**v2 已由上方修订取代**）：出站请求 header = **存储的 upstream_headers 全量** + 协议必要 header（`Accept`、`Accept-Encoding`（M4：调用方响应编码协商透明——协商结果原样传达上游，代理按 aiter_raw 压缩字节透传、不改协商结果）、`Content-Type`、`Content-Length`、`Content-Encoding`（gzip 等请求体透传必需），MCP 的 `Mcp-Session-Id` / `Last-Event-ID` / `MCP-Protocol-Version` 白名单透传）。调用方请求中的其余 header（含其 JWT、占位 header）**一律不透传**；hop-by-hop header（`Connection`、`Keep-Alive`、`Transfer-Encoding`、`TE`、`Trailer`、`Proxy-*`、`Upgrade`）排除。
 2. **流式**：请求 body 与响应 body 均以异步流转发（httpx stream），不落盘、不整体驻留内存；响应不限大小，请求体默认上限 10MB（可配），流式读取按字节计数、超限立即断开并返回 413。**响应体不解析、不改写**（已知限制见 9.10）。
@@ -519,7 +528,9 @@ class TokenVerifier(Protocol):
 8. **路径安全**：`/p/{id}` 子路径拒绝 `.` / `..` 段及 URL 编码变体（`%2e` 等）→ 400，防止拼接后逃逸注册前缀；其余子路径按原文拼接，不做规范化。
 9. **缓冲与网关**：SSE / 流式响应使用 `StreamingResponse` 并发送 `X-Accel-Buffering: no`；前置 nginx 等网关需 `proxy_buffering off`，且网关读超时必须大于上游心跳间隔，否则长连接会被网关切断。
 10. **上游 TLS**：证书默认强校验，不提供跳过校验的开关。
-11. **连接池与并发保护**：全局共享单个 httpx `AsyncClient`（连接复用，lifespan 内创建 / 关闭）；连接池上限 `UPSTREAM_MAX_CONNECTIONS`（默认 200），超限立即返回 503 `PROXY_BUSY`——一期不限流，但必须有资源上限，防止异常上游拖垮进程。
+11. **连接池与并发保护（v4.2 增强——重要特性）**：两层防护，防止单一慢上游拖垮整个代理（公共服务的关键隔离语义，实测见 §8.1 v4.2 注记）：
+    - **按映射并发上限**：每个映射的同时在途上游请求数受 `MAPPING_MAX_CONCURRENCY`（默认 20，0=关闭）独立限制——映射内并发达上限后，**该映射自己的**超额请求等待超时（`POOL_TIMEOUT`，默认 5s）→ 503 `PROXY_BUSY`（message 标明按映射）；其他映射保底可用 `UPSTREAM_MAX_CONNECTIONS − 上限` 个通道，完全不受慢邻居影响。闸门生命周期与上游连接严格对齐（响应流结束 / 客户端断开 / 错误路径均释放；SSE 长连接在流式期间持续占用额度）；
+    - **全局连接池兜底**：全局共享单个 httpx `AsyncClient`（连接复用，lifespan 内创建 / 关闭）；连接池上限 `UPSTREAM_MAX_CONNECTIONS`（默认 200），池等待超限（5s）返回 503 `PROXY_BUSY`——作为按映射隔离之上的最后防线。
 12. **优雅停机**：SIGTERM 后停止接收新请求，在途请求与 SSE 流排空（`SHUTDOWN_DRAIN_SECONDS` 默认 10s，超时强断）；SSE 客户端按协议自动重连（携带 `Last-Event-ID`，已在白名单透传）。
 
 ### 8.2 HTTP 前缀映射
@@ -633,6 +644,28 @@ sequenceDiagram
 **MCP 载荷透明性**：代理不解析、不校验、不改动任何 JSON-RPC 载荷。`initialize`、`tools/list`、`tools/call`、`resources/*`、`prompts/*`、`notifications/*`、`ping` 等全部协议操作，以及响应流（SSE `message` 事件、Streamable 的 JSON / SSE 响应）均原样透传——MCP 功能完整性不受代理影响。代理唯一的介入点是 SSE 握手的 `endpoint` 事件地址改写（见 8.3），目的是让后续消息回到代理。
 
 ---
+
+### 8.6 按映射并发控制（v4.2，重要特性——慢上游隔离）
+
+**动机**：全部映射共享转发进程与上游连接池，单一慢上游（如每个请求 1s 的服务）在并发冲击下会占满全局连接池，拖慢平台上**所有其他**代理服务（「邻居噪声」）。公共服务必须具备隔离语义：**慢映射自我限流，不拖垮平台**。
+
+**机制**：每个 mapping_id 一把独立并发闸门（进程内信号量，懒创建）——同时在途的上游请求数受 `MAPPING_MAX_CONCURRENCY`（默认 20，0=关闭）限制：
+
+- 映射内并发达上限后，**该映射自己的**超额请求等待（窗口 = `POOL_TIMEOUT`，默认 5s）超时 → 503 `PROXY_BUSY`（message 标明按映射）；**其他映射保底可用 `UPSTREAM_MAX_CONNECTIONS − 上限` 个通道**（默认 200−20=180），完全不受影响；
+- **闸门生命周期与上游连接严格对齐**：取得额度 → 发起上游调用 → 响应流结束 / 客户端断开 / 错误路径均释放（幂等）——SSE 长连接在流式期间持续占用该映射额度；
+- 全局池（`UPSTREAM_MAX_CONNECTIONS`，默认 200）保留为**第二层兜底**：多映射合计冲击时排队（5s）超限 → 503；
+- 两层与每映射上限共同构成容量数学：最多 `⌈200/20⌉ = 10` 个映射同时打满即触及全局池；更多慢映射时按映射 503 先行（隔离语义优先于全局吞吐）。
+
+**语义细节**：
+
+| 项 | 语义 |
+|---|---|
+| 503 归属 | 超额请求属于**该映射自己**（message：`该映射并发已达上限（N）`）——不是全局池耗尽 |
+| 等待窗口 | 超额请求先排队 5s（短突发自然吸收，不 503）；持续超限才拒绝 |
+| SSE 占额 | SSE/长连接在流式期间持续占用映射额度（断开即释放） |
+| 配置 | `MAPPING_MAX_CONCURRENCY`（默认 20，0=关闭）；映射级差异化上限为二期项 |
+
+**实测**（本机 Docker，慢映射 260 并发冲击、冲击期间其他映射持续压测）：超额慢请求按映射 503；**其他映射全部 200 零失败**——隔离生效（详见 DEPLOYMENT.md §9 容量基线）。
 
 ## 9. 安全设计
 
@@ -779,6 +812,7 @@ agent-proxy/                        # v4 重构后：app/ 布局 + 绝对导入 
 | `TOKEN_VERIFY_IMPL` | token 校验实现：`stub`（开发/测试，本地解码不验签）/ `third_party`（**v4.1 已实现**：对接 ai-service verify_token，见 docs/auth_verify_token_integration.md） | `stub` |
 | `PROXY_AUTH_HEADER` | 代理身份通道头名（v4）：默认 `Authorization`（统一 token：鉴权+可透传上游）；配置为其他名字时该头纯代理私有（v2 分离模式） | `Authorization` |
 | `VERIFY_API_BASE` | third_party 验签接口基址（v4.1）：`{base}/auth/verify_token`；按部署环境选 beta / 生产 | beta 基址 |
+| `MAPPING_MAX_CONCURRENCY` | 按映射并发上限（v4.2，慢上游隔离；0=关闭） | `20` |
 | `ENV` | 运行环境；`prod` 下禁止 stub 校验实现启动 | `dev` |
 | `MYSQL_DSN` | MySQL 连接串 | 必填 |
 | `REDIS_URL` | Redis 连接串 | 必填 |
@@ -962,9 +996,12 @@ sequenceDiagram
 | 我的映射 | 列表 / 注册表单（含占位符预览）/ resolve 回显编辑 / test / 删除 |
 | 内置 MCP | 列表（auth_mode、绑定状态）/ 授权绑定跳转 / test |
 | 公共映射管理（仅 admin） | visibility=public 映射 CRUD + test + OAuth client（手动模式）配置 |
+| 实时负载（仅 admin，v4.3） | 最近 5 分钟按映射访问数 + 当前在途并发（5s 自动刷新），见 15.3 |
 | 会话 | 退出登录（删除本地会话） |
 
 > **代理实现注记（M7）**：会话 Cookie 名 `ap_sess`，属性 `HttpOnly + SameSite=Lax + Path=/`；`Secure` 由 `SESSION_COOKIE_SECURE` 配置（默认 false）——本地开发与集成测试为纯 http，Secure Cookie 在 http 下浏览器与 httpx 均不回传、无法联调与自动化验证；`EXTERNAL_BASE` 为 https 的部署必须置 true。`return_to` 仅接受站内相对路径（`/` 开头且非 `//`，防开放重定向；Location 组装前 quote 防 CRLF 头注入）；stub 登录页在浏览器侧按 StubVerifier 同格式（`stub.<base64url(JSON)>.sig`）构造票据提交 `/admin/auth/callback`，与公司 SSO「回跳携带票据」时序同构，`company_sso` Provider 接入后登录页自然旁路（`login_url` 指向外部地址）。会话 TTL 创建时定（`ADMIN_SESSION_TTL`，默认 28800s），不做滑动续期；退出登录删除 Redis 键。页面身份上下文（user_name / is_admin）由模板服务端注入；权限边界仍在 `/api/v1` 既有矩阵（页面不做越权捷径：入口隐藏 + API 403/404 兜底）。
+
+> **v4.3 注记（2026-11-28）**：登录页新增「**Token 登录**」（仅 third_party 验签模式）——粘贴 ai-service 签发凭据（`Token eyJ...` / `Bearer eyJ...`），服务端调 verify_token 校验后按返回 Identity（含 org_id / user_type）建立会话；失败 401/503 JSON 由页面显示。与公司 SSO 回跳流互为替代（凭据在 body 而非 URL）。管理能力受 §8.1 v4.3 双匹配（user_type + org_id）约束——**页面登录身份的 role/org_id 来自验签响应**，因此「谁能登录」与「谁能管理」由同一验签数据源决定。
 
 ### 15.2 Prometheus 指标
 
@@ -985,6 +1022,38 @@ sequenceDiagram
 
 ---
 
+### 15.3 实时负载视图（v4.3，管理页「实时负载」）
+
+**用途**：管理员实时掌握「最近 5 分钟哪些代理被访问、量多大、谁正在占用并发」——容量评估与 503 处置（DEPLOYMENT.md §9）的第一入口。
+
+**接口**：`GET /api/v1/mappings/load`（仅 admin；静态路由先于 `{mapping_id}` 注册）：
+
+```json
+{
+  "window_seconds": 300,
+  "mappings": [
+    { "mapping_id": "aB3xK9mQ2wR4", "name": "agent-email", "type": "http",
+      "count_5m": 42, "inflight": 3 }
+  ]
+}
+```
+
+**数据来源（两路）**：
+
+| 指标 | 来源 | 语义 |
+|---|---|---|
+| `count_5m` | Redis `INCR ap:load:{mapping_id}` + `EXPIRE 300`（每次命中刷新） | 最近一次命中后的 5 分钟窗口请求数；**跨实例共享**（多容器部署天然聚合）；含被按映射上限 503 的请求（热点可见） |
+| `inflight` | 进程内计数（并发闸门模块：取得额度 +1 / 释放 −1） | **当前实例视图**（多实例部署时为各实例独立值，前端按实例聚合） |
+
+**语义与边界**：
+
+- 计数在**验签通过、闸门判定之前**记录——被按映射上限 503 的请求同样计入（热点映射对运维可见）；
+- 管理域写入失败不阻断转发（负载视图降级为空态）；
+- 键随窗口自动过期（无流量 300s 后消失）——不违反 §15.2 低基数原则（独立于 `/metrics` 的管理面数据，不进 Prometheus）；
+- 仅 admin 可查（403）；页面 5s 自动刷新（可关闭）。
+
+**页面呈现**：管理页「实时负载」标签——表格列 mapping_id / 名称 / 类型 / 最近 5 分钟请求数 / 当前并发（在途），5s 自动刷新开关；空态显示「最近 5 分钟无代理访问」。
+
 ## 16. 里程碑
 
 | 阶段 | 内容 | 验收 |
@@ -996,6 +1065,7 @@ sequenceDiagram
 | M5 | 集成测试补全 + README + 联调 | 全部测试通过 |
 | M6 | 公共映射（内置 MCP）+ OAuth 凭证托管 | mock AS 全流程：DCR/手动客户端 → 授权绑定 → 回调落库加密 → 按用户注入调用；未绑定 401、过期自动刷新、非 admin 越权 403 |
 | M7 | Web 管理页面（LoginProvider 抽象 + SSO 回调 + 服务端会话 + 三类视图）+ Prometheus 指标完善 | 浏览器经 stub 登录完成全部页面操作；Bearer / Cookie 双通道身份；admin 视图权限隔离；/metrics 指标完整且基数受控 |
+| v4.x 增强（2026-11-25~28） | 统一 token 验签（third_party 落地）+ 认证头可配置（PROXY_AUTH_HEADER）+ 按映射并发隔离（§8.6）+ 实时负载视图（§15.3）+ 登录页 token 登录 + 回显/resolve 演进（§6.3 v3） | 生产 token 全链路实测通过；慢映射 260 并发冲击下其他映射零影响（隔离实测）；管理页实时负载视图上线（5s 刷新） |
 
 **二期演进**：限流与配额（Redis 计数）、多实例缓存失效广播、可配置的用户信息注入 header、DNS rebinding 强防护、MCP 客户端自带 OAuth 直连代理的透传模式。
 
@@ -1030,3 +1100,6 @@ sequenceDiagram
 | 追踪日志 | trace.log 独立于审计日志：`TRACE_MODE` = off / metadata（默认）/ body；header 一律指纹打码（前4****后4 + 长度），body 截断 64KB；SSE 记事件级（含 endpoint 改写前后）；异步落盘不阻塞事件循环 |
 | 认证头名（v4） | `PROXY_AUTH_HEADER` 可配置：默认 `Authorization`（统一 token 双职责：代理鉴权 + 映射未配同名头时透传上游）；其他名字纯代理私有（v2 分离模式经配置恢复） |
 | 部署形态（v4） | 单容器 + 宿主机 MySQL/Redis（禁止 compose 自建存储）；`uv.lock` 入库冻结依赖；`uvicorn --workers 4` 直跑 app/ 源码 |
+| 按映射并发上限（v4.2，重要） | 公共服务必须隔离慢邻居：每映射独立并发闸门（`MAPPING_MAX_CONCURRENCY`，默认 20），超额请求 503 PROXY_BUSY 而非挤占全局池；闸门与上游连接生命周期对齐（含 SSE 流式期间）；实测慢映射 260 并发冲击下其他映射零影响 |
+| 实时负载视图（v4.3） | `count_5m` = Redis 滑动窗口计数（`ap:load:{id}`，跨实例共享）；`inflight` = 进程内在途计数（多实例为实例视图）；仅 admin 可查；管理页 5s 自动刷新。独立于 /metrics（不进 Prometheus，键自动过期不违反低基数原则） |
+| 按映射并发上限（v4.2，重要） | 公共服务必须隔离慢邻居：每映射独立并发闸门（`MAPPING_MAX_CONCURRENCY`，默认 20），超额请求 503 PROXY_BUSY 而非挤占全局池；闸门与上游连接生命周期对齐（含 SSE 流式期间）；实测慢映射 260 并发冲击下其他映射零影响 |

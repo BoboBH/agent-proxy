@@ -46,14 +46,17 @@ def new_sid() -> str:
 def encode_identity(identity: Identity) -> str:
     return json.dumps({"user_id": identity.user_id,
                        "user_name": identity.user_name,
-                       "role": identity.role}, ensure_ascii=False)
+                       "role": identity.role,
+                       "org_id": identity.org_id}, ensure_ascii=False)
 
 
 def decode_identity(raw: str | bytes) -> Identity | None:
     """载荷非法（坏 JSON / 非对象 / 缺或非 int 的 user_id / user_name-role 类型不符）
     → None（按未登录处理，不抛——会话数据损坏不该变成 500）。
     user_id 必须 int（收尾批次整数化；bool 不是 int 身份）。旧 str 形态载荷
-    （升级前写入的会话）同样拒收 → 按未登录处理，重新登录即得新形态。"""
+    （升级前写入的会话）同样拒收 → 按未登录处理，重新登录即得新形态。
+    org_id（v4.3）：可缺（旧会话）——缺省 None（is_admin 的组织匹配对 None 放行，
+    stub/开发语义一致）；存在则必须 int 或 None。"""
     try:
         payload = json.loads(raw)
     except (TypeError, ValueError):
@@ -63,13 +66,16 @@ def decode_identity(raw: str | bytes) -> Identity | None:
     user_id = payload.get("user_id")
     user_name = payload.get("user_name")
     role = payload.get("role")
+    org_id = payload.get("org_id")
     if not isinstance(user_id, int) or isinstance(user_id, bool):
         return None                                   # 缺 / 非 int（含 str 残留）一律拒收
     if user_name is not None and not isinstance(user_name, str):
         return None
     if role is not None and not isinstance(role, str):
         return None
-    return Identity(user_id=user_id, user_name=user_name, role=role)
+    if org_id is not None and (isinstance(org_id, bool) or not isinstance(org_id, int)):
+        return None
+    return Identity(user_id=user_id, user_name=user_name, role=role, org_id=org_id)
 
 
 async def create_session(r, identity: Identity, ttl: int) -> str:

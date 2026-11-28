@@ -6,7 +6,7 @@ from app.services.sso.session import (create_session, destroy_session, get_sessi
 
 
 async def test_create_then_get_roundtrip_with_ttl(app):
-    identity = Identity(user_id=888, user_name="张三", role="admin")
+    identity = Identity(user_id=888, user_name="张三", role="org_member")
     sid = await create_session(app.state.redis, identity, 600)
     assert await get_session(app.state.redis, sid) == identity
     ttl = await app.state.redis.ttl(session_key(sid))

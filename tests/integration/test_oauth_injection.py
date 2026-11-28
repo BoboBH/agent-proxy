@@ -24,7 +24,7 @@ PROXY = "http://127.0.0.1:9910"
 AS = "http://127.0.0.1:9904"
 FRONT = "http://127.0.0.1:9910/console"
 MASTER = "test-master-key"
-ADMIN = {"Authorization": f"Bearer {make_token(100, 'admin')}"}
+ADMIN = {"Authorization": f"Bearer {make_token(100, 'org_member')}"}
 U888 = {"Authorization": f"Bearer {make_token(888)}"}
 U999 = {"Authorization": f"Bearer {make_token(999)}"}
 TCP_TIMEOUT = httpx.Timeout(connect=5, read=10, write=10, pool=5)

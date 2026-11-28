@@ -20,6 +20,8 @@ import httpx
 from fastapi import Request, Response
 from fastapi.responses import StreamingResponse
 
+from ..concurrency import Guard
+
 from app.services import metrics, trace
 from app.services.errors import AppError
 from app.services.forward.http_forward import (TEST_PROBE_TIMEOUT, _origin,  # 同包私有 origin 判定 helper 共享（评审准许）
@@ -159,7 +161,8 @@ class SseEndpointRewriter:
 
 async def stream_sse_forward(app_state, mapping_data: dict, request: Request,
                              forced_headers: dict[str, str] | None = None,
-                             auth_header: str = "authorization") -> Response:
+                             auth_header: str = "authorization",
+                             guard: Guard | None = None) -> Response:
     """MCP SSE 初始连接转发（设计 §8.3）：GET/HEAD 注册端点 → upstream_url 真流式
     长连接，endpoint 事件增量改写，其余行字节级透传，每行产出即 yield。
 
@@ -285,6 +288,8 @@ async def stream_sse_forward(app_state, mapping_data: dict, request: Request,
                 raise
             finally:
                 await upstream_resp.aclose()
+                if guard:
+                    guard.release()   # 按映射并发额度随上游连接关闭释放（设计 v4.2）
         return StreamingResponse(_plain_stream(), status_code=status, headers=resp_headers)
 
     # SSE 握手成立：response 行 = 连接建立记录（time-to-headers；原在分支前统一写，
@@ -320,6 +325,8 @@ async def stream_sse_forward(app_state, mapping_data: dict, request: Request,
         finally:
             metrics.sse_active.dec()
             await upstream_resp.aclose()                  # 客户端断开→取消上游（§8.1 第 4 条）
+            if guard:
+                guard.release()   # 按映射并发额度随上游连接关闭释放（设计 v4.2）
             log.info("SSE 连接关闭: request_id=%s mapping_id=%s 总时长=%dms",
                      request_id, mapping_id, int((time.monotonic() - start) * 1000))
 

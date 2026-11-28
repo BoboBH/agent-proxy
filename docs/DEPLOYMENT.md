@@ -93,7 +93,7 @@ BASE=http://127.0.0.1:8800
 curl -s -X POST $BASE/api/v1/mappings -H "Authorization: Bearer $TOKEN" \
      -H "Content-Type: application/json" \
      -d '{"type":"http","upstream_url":"https://example.com/","name":"smoke","headers":{"Authorization":"Bearer sk-real-key"}}'
-# → 201 {"mapping_id":"...","proxy_url":"http://127.0.0.1:8800/p/...","headers":{"X-Proxy-Authorization":"{{RUNTIME_TOKEN}}"},...}
+# → 201 {"mapping_id":"...","proxy_url":"http://127.0.0.1:8800/p/...","headers":{"Authorization":"{{RUNTIME_TOKEN}}"},...}（头名跟随 PROXY_AUTH_HEADER）
 
 # 2) 详情（真实 header 仅详情/resolve 对 owner/admin 可见）
 curl -s $BASE/api/v1/mappings/<mapping_id> -H "Authorization: Bearer $TOKEN"
@@ -176,3 +176,32 @@ docker compose down -v     # 连数据卷一并删除：MySQL 数据 / 会话 / 
 
 **Q7：Windows 本机（Docker Desktop）局域网访问不通 / 服务时好时坏？**
 Windows 防火墙需放行 8800 入站；`EXTERNAL_BASE` 用局域网 IP 而非 127.0.0.1；主机睡眠/休眠即容器栈停摆——本形态仅开发联调（设计 §12.1），长期驻留用 Linux 服务器（§2 形态 B）。
+
+## 9. 运维手册：503 PROXY_BUSY 的诊断与处理（重要）
+
+`503 PROXY_BUSY` 有**两种来源**，按错误 message 区分，处理路径完全不同：
+
+| message | 来源 | 含义 |
+|---|---|---|
+| `该映射并发已达上限（N）` | 按映射并发闸门（`MAPPING_MAX_CONCURRENCY`，默认 20，见 §5） | 该映射自身的并发超过其上限——**按设计隔离**，其他映射不受影响 |
+| `上游连接池已满，请稍后重试` | 全局连接池（`UPSTREAM_MAX_CONNECTIONS` × workers，默认 200×4=800） | 多个映射合计占满全局池——慢上游"邻居噪声"全局化，需要扩容处置 |
+
+**诊断三步**：
+
+1. 从错误体/响应头拿 `request_id` → 在 `logs/audit.log` 定位 mapping_id 与时间窗；
+2. 看错误 message 属于上表哪一类；
+3. 看指标 `/metrics`：`ap_inflight_requests`（在途量）、`ap_upstream_errors_total{code="pool_exhausted"}`（全局池耗尽计数）、`ap_request_duration_seconds` 分位。
+
+**处理方案（按优先级）**：
+
+1. **新增 Docker 容器（水平扩容，推荐）**——服务无会话状态（设计 §3：SSE 会话由上游自持），天然可多实例。形态：前置 nginx 按 mapping_id 均匀分发到多个容器实例。注意事项：
+   - 所有实例共享同一 Redis/MySQL：缓存 cache-aside 天然一致；**配置变更后其他实例的缓存最长 300s（CACHE_TTL）才收敛**——需立即生效时重启其他实例或调小 CACHE_TTL；
+   - OAuth 刷新锁 / 一次性 state 本就基于 Redis，跨实例安全（零改造）；
+   - `/metrics` 按实例分别抓取（Prometheus 以 instance 区分）；
+   - LB 配置须支持 SSE 长连接：`proxy_buffering off`、读超时 > 上游心跳间隔（§8.1 第 9 条）；
+   - 按映射并发闸门是**进程内**的：多实例后单映射总并发 = 上限 × 实例数（隔离语义不变，总量按实例数放大）。
+2. **垂直调参（全局池耗尽时）**：`.env` 调大 `UPSTREAM_MAX_CONNECTIONS`（默认 200×4workers=800 连接，可到 1000+）+ compose `ulimits.nofile` 同步放大（≥ 4×池+余量，现配 65536 已充足）→ `docker compose up -d --force-recreate`。
+3. **定位并处置慢上游**：audit/trace 找到占池的 mapping_id → 联系该服务提供方优化；或临时停用（`PUT /api/v1/mappings/{id}` `status=disabled`，恢复改回 `active`）。
+4. **按映射 503 频发时**：确认该映射调用方并发是否合理（上游慢导致请求堆积）——要么上游提速，要么接受 503（隔离语义：宁可该映射快速失败，不拖垮平台其他服务）。
+
+**容量基线参考**（本机 Docker Desktop 实测，生产 Linux 更高）：池 200×4workers、按映射上限 20 下，慢映射 260 并发冲击时其他映射仍全 200 零失败。

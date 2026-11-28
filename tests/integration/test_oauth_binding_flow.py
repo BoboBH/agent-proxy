@@ -12,7 +12,7 @@ from app.services.oauth.crypto import decrypt_text
 from mocks.oauth_as import as_state
 from tests.utils import make_token
 
-ADMIN = {"Authorization": f"Bearer {make_token(100, 'admin')}"}
+ADMIN = {"Authorization": f"Bearer {make_token(100, 'org_member')}"}
 U888 = {"Authorization": f"Bearer {make_token(888)}"}
 U999 = {"Authorization": f"Bearer {make_token(999)}"}
 FRONT = "http://testserver/console"

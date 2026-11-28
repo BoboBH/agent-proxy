@@ -42,7 +42,10 @@ class Settings(BaseSettings):
     env: str = "dev"
     token_verify_impl: Literal["stub", "third_party"] = "stub"
     login_impl: Literal["stub"] = "stub"
-    admin_role: str = "admin"
+    admin_user_type: str = "admin"   # 管理员 user_type（v4.3：验签响应 user_type 与之相等 且 org_id==admin_org_id 才是管理员）；部署 .env 覆盖为 org_member
+    # 管理员组织 ID（v4.3）：third_party 验签响应 org_id 与之相等 且 user_type==admin_user_type
+    # 才是管理员（双匹配）；stub 身份 org_id=None 放行（开发模式不受组织约束）
+    admin_org_id: int = 7
     # 代理身份通道头名（设计 v4，可配置）：默认 Authorization——统一 token 场景下
     # 该头既作代理鉴权又可透传上游；配置为其他名字（如 X-Proxy-Authorization）时
     # 该头纯代理私有、绝不透传（v2 分离模式经配置恢复）
@@ -60,6 +63,9 @@ class Settings(BaseSettings):
     upstream_max_connections: int = 200
     max_body_size: int = 10 * 1024 * 1024
     ssrf_allow_private: bool = False
+    # 按映射并发上限（设计 v4.2，慢上游隔离）：单个映射的同时在途上游请求数上限，
+    # 超限该映射自己的请求 503 PROXY_BUSY——其他映射不受影响；0 = 关闭隔离
+    mapping_max_concurrency: int = 20
     # NoDecode：pydantic-settings 默认对复杂类型按 JSON 解析环境变量——本项目
     # 契约是逗号分隔（CORS_ALLOWED_ORIGINS=a,b），以 NoDecode 跳过 JSON 解码，
     # 由 _split_origins before-validator 处理

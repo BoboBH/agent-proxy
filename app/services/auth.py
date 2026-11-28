@@ -26,10 +26,13 @@ class TokenServiceError(AppError):
 @dataclass(frozen=True)
 class Identity:
     """user_id 为 int（收尾批次：内部系统 user_id 整数化——proxy_mapping.owner_uid /
-    proxy_oauth_credential.user_id 均为 BIGINT，整条传递链保持 int，杜绝 str/int 混比）。"""
+    proxy_oauth_credential.user_id 均为 BIGINT，整条传递链保持 int，杜绝 str/int 混比）。
+    org_id：验签响应的组织 ID（v4.3）；stub/开发身份为 None——is_admin 的组织匹配
+    对 None 放行（开发模式不受组织约束，third_party 身份恒有值、恒受约束）。"""
     user_id: int
     user_name: str | None = None
     role: str | None = None
+    org_id: int | None = None
 
 
 class TokenVerifier(Protocol):
@@ -158,11 +161,15 @@ class ThirdPartyVerifier:
             raise TokenInvalidError("verify_token 响应 user_id 非整数")
         if body.get("status") in ("locked", "deleted"):
             raise TokenInvalidError(f"账号状态不可用: {body.get('status')}")
+        org_id = body.get("org_id")
+        if isinstance(org_id, bool) or not isinstance(org_id, int):
+            org_id = 0            # 缺失/畸形 → 0（个人用户语义；≠ ADMIN_ORG_ID → 非管理员）
         identity = Identity(
             user_id=user_id,
             user_name=(body.get("username") or body.get("real_name")
                        or body.get("email") or None),
-            role=body.get("user_type"))
+            role=body.get("user_type"),
+            org_id=org_id)
         if len(self._cache) >= self._CACHE_MAX:
             self._cache.clear()      # 简单防膨胀：满即清（TTL 60s，代价可忽略）
         self._cache[credential] = (time.monotonic() + self._CACHE_TTL, identity)

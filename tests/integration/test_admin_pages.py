@@ -70,7 +70,7 @@ async def test_admin_renders_with_session_and_identity_context(client, app):
 
 async def test_admin_context_admin_role_shows_public_view(client, app):
     sid = await create_session(app.state.redis,
-                               Identity(user_id=100, user_name="管理员", role="admin"), 600)
+                               Identity(user_id=100, user_name="管理员", role="org_member"), 600)
     r = await client.get(ADMIN, headers={"Cookie": f"{SESSION_COOKIE}={sid}"})
     assert r.status_code == 200
     assert "公共映射管理" in r.text and 'data-view="public"' in r.text

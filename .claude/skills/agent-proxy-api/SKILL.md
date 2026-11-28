@@ -37,6 +37,7 @@ agent-proxy 是 Agent 平台的出站代理：**真实上游地址与凭据只�
 | `/api/v1/mappings` | GET | 我的映射列表（无真实 headers） | 登录 |
 | `/api/v1/mappings/resolve?proxy_url=<12位id或完整代理地址>` 或 `?name=<映射名>` | GET | 按 id/代理地址/**名称**取回**原始配置**（真实 upstream_url/headers，重名取最新，限本人） | owner/admin |
 | `/api/v1/mappings/{id}` | GET/PUT/DELETE | 详情 / 局部更新 / 删除(204) | owner/admin |
+| `/api/v1/mappings/load` | GET | **实时负载**（admin）：最近 5 分钟按映射请求数 + 当前在途并发 | admin |
 | `/api/v1/mappings/{id}/test` | POST | 配置有效性探测 → `{ok,status_code,latency_ms,detail}` | owner/admin |
 | `/api/v1/builtin-mappings` | GET | public 映射列表 + 我的 OAuth 绑定状态 | 登录 |
 | `/api/v1/builtin-mappings/{id}/authorize` | POST | 发起 OAuth 授权（浏览器流程起跳） | 登录 |

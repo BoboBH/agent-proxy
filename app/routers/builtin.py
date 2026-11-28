@@ -114,7 +114,7 @@ async def set_oauth_client(request: Request, mapping_id: str, body: OAuthClientS
                            settings: Settings = Depends(get_settings)):
     """手动模式 OAuth 客户端配置（§14.3 降级路径，仅 admin）。client_secret 加密落库；
     重复 PUT 为 upsert（亦可将 dcr 配置覆盖为 manual，管理员兜底手段）。"""
-    if not is_admin(identity, settings.admin_role):
+    if not is_admin(identity, settings.admin_user_type, settings.admin_org_id):
         raise AppError(403, "FORBIDDEN", "仅管理员可配置 OAuth 客户端")
     data = await load_public_mapping(session, request.app.state.redis, mapping_id,
                                      settings.cache_ttl, settings.master_key)
@@ -154,7 +154,7 @@ async def get_oauth_client(request: Request, mapping_id: str,
                            session=Depends(get_db),
                            settings: Settings = Depends(get_settings)):
     """查看客户端配置（仅 admin）；secret 只回是否已配置，永不回显值（§14.6）。"""
-    if not is_admin(identity, settings.admin_role):
+    if not is_admin(identity, settings.admin_user_type, settings.admin_org_id):
         raise AppError(403, "FORBIDDEN", "仅管理员可查看 OAuth 客户端配置")
     await load_public_mapping(session, request.app.state.redis, mapping_id,
                               settings.cache_ttl, settings.master_key)
@@ -307,7 +307,7 @@ async def test_builtin_mapping(request: Request, mapping_id: str,
     request.state.audit_action = "test_mapping"
     request.state.mapping_id = mapping_id
     injected = False
-    if is_admin(identity, settings.admin_role):
+    if is_admin(identity, settings.admin_user_type, settings.admin_org_id):
         probe_data = data                                 # admin：静态配置实测（不注入）
     else:
         # M6 终审 Important 1：非 admin + static 公共映射无本人凭证可注入——原走

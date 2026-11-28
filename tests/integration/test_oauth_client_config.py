@@ -16,8 +16,8 @@ from app.services.oauth.credential import load_credential, save_credential
 from app.services.oauth.crypto import encrypt_text
 from tests.utils import make_token
 
-ADMIN = {"Authorization": f"Bearer {make_token(100, 'admin')}"}
-ADMIN2 = {"Authorization": f"Bearer {make_token(101, 'admin')}"}
+ADMIN = {"Authorization": f"Bearer {make_token(100, 'org_member')}"}
+ADMIN2 = {"Authorization": f"Bearer {make_token(101, 'org_member')}"}
 USER = {"Authorization": f"Bearer {make_token(888)}"}
 MASTER = "test-master-key"
 

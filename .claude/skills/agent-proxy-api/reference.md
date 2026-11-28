@@ -47,6 +47,13 @@ headers: {"Authorization":"{{RUNTIME_TOKEN}}"}, status}`——headers 即**代�
 RegisteredOut 全字段 + `upstream_url` + **真实 headers 明文** + `test_request` + 时间戳。
 （审计动作 `view_credentials`；非 owner → 404 MAPPING_NOT_FOUND 隐藏存在性。）
 
+### GET /api/v1/mappings/load → 实时负载（仅 admin，v4.3）
+
+`{window_seconds: 300, mappings: [{mapping_id, name, type, count_5m, inflight}]}`——
+- `count_5m`：最近 5 分钟按映射请求数（Redis 滑动计数，跨实例共享；含被按映射上限 503 的请求）；
+- `inflight`：当前在途并发（**当前实例视图**，多实例部署时按实例聚合）；
+- 用途：管理页「实时负载」视图 / agent 巡检代理热点。
+
 ### GET/PUT/DELETE /api/v1/mappings/{id}
 
 - GET 详情：同 resolve 返回。
@@ -186,7 +193,7 @@ curl -X DELETE <BASE>/p/<id>/mcp -H "Authorization: Bearer 888" -H "mcp-session-
 | 项 | dev（本机） | 生产 |
 |---|---|---|
 | 认证 | stub（`TOKEN_VERIFY_IMPL=stub`）：`Authorization: Bearer 纯数字`=user_id；信封 token 自带 role | `TOKEN_VERIFY_IMPL=third_party`：调 `{VERIFY_API_BASE}/auth/verify_token` 验签（默认 beta 基址，生产切 `https://app.9m-tec.com/ai-service`）；身份以响应 `user_id` 为准，`user_type=admin` 命中 admin 判定；5xx → 503 AUTH_SERVICE_UNAVAILABLE |
-| 认证头名 | 本机部署设 `PROXY_AUTH_HEADER=X-Proxy-Authorization`（v2 分离模式，skill 流程兼容） | 默认 `Authorization`（统一 token：既鉴权又透传上游） |
+| 认证头名 | **默认 `Authorization`（统一 token：既鉴权又透传上游）**；本机部署即此形态 | 分离模式可配 `PROXY_AUTH_HEADER=X-Proxy-Authorization`（该头纯代理私有） |
 | 私网上游 | `SSRF_ALLOW_PRIVATE=true` 放行（host.docker.internal 可用） | 默认 false——私网 upstream_url 注册即 400 |
 | EXTERNAL_BASE | `http://127.0.0.1:8800` | 真实域名（proxy_url/重写都基于它） |
 | admin | 信封 token `{"user_id":1,"role":"admin"}`（不验签） | 统一登录角色（`user_type`） |

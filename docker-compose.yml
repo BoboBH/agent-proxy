@@ -27,6 +27,17 @@ services:
       REDIS_URL: redis://host.docker.internal:6379/1   # 本机 Redis 3.0.504 无密码
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # fd 上限（UPSTREAM_MAX_CONNECTIONS=1000 × 4 workers + 入站连接，防 Too many open files）
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    # 资源限制（用户指令 2026-11-28）：2 核 / 4G
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 4G
     volumes:
       - logs:/app/logs                    # 运行/审计/追踪三类滚动日志（保留 7 天）
     # 优雅停机排空 10s（镜像 ENTRYPOINT uvicorn --timeout-graceful-shutdown 10）；

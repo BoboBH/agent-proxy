@@ -26,13 +26,16 @@ from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel, Field
 
-from app.services.auth import Identity, TokenInvalidError
+from app.services.auth import (Identity, ThirdPartyVerifier, TokenInvalidError,
+                               TokenServiceError)
 from app.env import Settings, get_settings
 from app.services.sso.login import get_login_provider
 from app.services.sso.session import SESSION_COOKIE, create_session, destroy_session, get_session
+from app.routers.deps import get_current_identity, is_admin
 
 router = APIRouter(tags=["admin"])
 # 模板随源码目录就位（app/admin/，无运行时配置项，Path(__file__) 定位）
@@ -80,15 +83,63 @@ async def admin_index(request: Request, settings: Settings = Depends(get_setting
     return templates.TemplateResponse(request, "index.html", {
         "user_name": identity.user_name or str(identity.user_id),
         # is_admin 仅决定入口显隐；越权请求仍由 /api/v1 既有权限矩阵兜底（403/404）
-        "is_admin": identity.role == settings.admin_role,
+        "is_admin": is_admin(identity, settings.admin_user_type, settings.admin_org_id),
     })
 
 
 @router.get("/admin/login")
 async def admin_login(request: Request, return_to: str = "/admin", error: str = ""):
     request.state.audit_action = "view_login_page"
+    settings = get_settings()
     return templates.TemplateResponse(request, "login.html", {
-        "return_to": _safe_return_to(return_to), "error": error})
+        "return_to": _safe_return_to(return_to), "error": error,
+        # token 登录仅 third_party 验签模式提供（凭据交 ai-service verify_token 校验）
+        "token_login_enabled": settings.token_verify_impl == "third_party"})
+
+
+class TokenLoginIn(BaseModel):
+    """POST /admin/auth/token-login 请求体：粘贴第三方验签体系签发的凭据
+    （形如 `Token eyJ...` / `Bearer eyJ...`，scheme 原样透传给验签接口）。"""
+    token: str = Field(min_length=1, max_length=4096)
+
+
+def _build_login_verifier(settings: Settings) -> ThirdPartyVerifier:
+    """token 登录的验签器工厂（测试经 monkeypatch 注入 MockTransport）。"""
+    return ThirdPartyVerifier(settings.verify_api_base)
+
+
+@router.post("/admin/auth/token-login")
+async def token_login(request: Request, body: TokenLoginIn,
+                      settings: Settings = Depends(get_settings)):
+    """token 登录（v4.3，仅 third_party 验签模式）：粘贴 ai-service 签发的凭据 →
+    verify_token 校验 → Identity → 服务端会话 → Set-Cookie → 200 JSON。
+
+    与公司 SSO 回跳互斥点：SSO 是浏览器重定向流（票据在 URL），token 登录是
+    本地粘贴流（凭据在 body）——两者只产生会话，页面权限矩阵完全一致。
+    失败统一 401 JSON（浏览器表单 fetch 显示 message）；验签服务不可用 → 503。
+    """
+    if settings.token_verify_impl != "third_party":
+        return JSONResponse(status_code=400,
+                            content={"code": "INVALID_PARAM",
+                                     "message": "token 登录仅 third_party 验签模式可用"})
+    try:
+        identity = await _build_login_verifier(settings).verify_credential(body.token.strip())
+    except TokenInvalidError as exc:
+        request.state.audit_action = "login_token_failed"
+        return JSONResponse(status_code=401,
+                            content={"code": exc.code, "message": exc.message})
+    except TokenServiceError as exc:
+        request.state.audit_action = "login_token_failed"
+        return JSONResponse(status_code=exc.status,
+                            content={"code": exc.code, "message": exc.message})
+    sid = await create_session(request.app.state.redis, identity,
+                               settings.admin_session_ttl)
+    resp = JSONResponse(content={"ok": True, "user_id": identity.user_id,
+                                 "role": identity.role})
+    resp.set_cookie(SESSION_COOKIE, sid, max_age=settings.admin_session_ttl,
+                    httponly=True, samesite="lax",
+                    secure=settings.session_cookie_secure, path="/")
+    return resp
 
 
 @router.get("/admin/auth/callback")

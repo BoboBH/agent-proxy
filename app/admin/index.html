@@ -44,6 +44,7 @@
   <button class="tab active" data-view="mine" type="button">我的映射</button>
   <button class="tab" data-view="builtin" type="button">内置 MCP</button>
   {% if is_admin %}<button class="tab" data-view="public" type="button">公共映射管理</button>{% endif %}
+  {% if is_admin %}<button class="tab" data-view="load" type="button">实时负载</button>{% endif %}
 </nav>
 <main>
   <!-- ============ 我的映射（§15.1：列表 / 注册表单含占位符预览 / resolve 回显编辑 / test / 删除） ============ -->
@@ -137,6 +138,19 @@
       <p><button class="primary" type="submit">保存 client</button></p>
     </form>
     <div id="client-info" class="card" hidden></div>
+  </section>
+
+  <!-- ============ 实时负载（仅 admin，v4.3：最近 5 分钟按映射访问数 + 在途并发） ============ -->
+  <section id="view-load" hidden>
+    <h2>实时负载（最近 5 分钟）</h2>
+    <div id="load-status" class="status"></div>
+    <p><button class="act" type="button" onclick="loadStats()">刷新</button>
+       <label><input type="checkbox" id="load-auto" checked> 每 5 秒自动刷新</label></p>
+    <table id="load-table">
+      <thead><tr><th>mapping_id</th><th>名称</th><th>类型</th><th>最近 5 分钟请求数</th><th>当前并发（在途）</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <p class="status">说明：计数窗口 = 最近一次命中后的 5 分钟（Redis 滑动，跨实例共享）；「当前并发」为当前实例在途视图（多实例部署时按实例聚合前端可见）。503 处理见 DEPLOYMENT.md §9。</p>
   </section>
   {% endif %}
 </main>
@@ -489,6 +503,30 @@ document.getElementById("mine-cancel-edit").addEventListener("click", function (
 document.getElementById("public-form").addEventListener("submit", submitPublic);
 document.getElementById("public-cancel-edit").addEventListener("click", function () { resetPublicForm(); });
 document.getElementById("client-form").addEventListener("submit", submitClient);
+
+/* ---------- 实时负载（仅 admin，v4.3） ---------- */
+async function loadStats() {
+  setStatus("load-status", "加载中…");
+  var r = await api("GET", "/api/v1/mappings/load");
+  if (!r.ok) { setStatus("load-status", "加载失败: " + ((r.data && r.data.message) || r.status)); return; }
+  setStatus("load-status", "");
+  var rows = (r.data.mappings || []).map(function (m) {
+    return '<tr><td><code>' + esc(m.mapping_id) + '</code></td><td>' + esc(m.name) + '</td><td>' +
+      esc(m.type) + '</td><td><b>' + m.count_5m + '</b></td><td><b>' + m.inflight + '</b></td></tr>';
+  }).join("");
+  document.querySelector("#load-table tbody").innerHTML =
+    rows || '<tr><td colspan="5">最近 5 分钟无代理访问</td></tr>';
+}
+var loadTimer = null;
+function setLoadAuto() {
+  var on = document.getElementById("load-auto").checked;
+  if (loadTimer) { clearInterval(loadTimer); loadTimer = null; }
+  if (on) loadTimer = setInterval(function () {
+    if (!document.getElementById("view-load").hidden) loadStats();
+  }, 5000);
+}
+document.getElementById("load-auto").addEventListener("change", setLoadAuto);
+loaders.load = loadStats;
 {% endif %}
 loadMine();
 </script>

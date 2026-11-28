@@ -30,10 +30,41 @@
   <label for="role">角色</label>
   <select id="role">
     <option value="">普通用户</option>
-    <option value="admin">admin（管理员）</option>
+    <option value="org_member">org_member（管理员，匹配 ADMIN_USER_TYPE）</option>
+    <option value="admin">admin</option>
   </select>
   <button type="submit">登录</button>
 </form>
+
+{% if token_login_enabled %}
+<hr>
+<h2>Token 登录（third_party 验签）</h2>
+<p class="hint">粘贴 ai-service 签发的凭据（含 scheme，如 `Token eyJ...` / `Bearer eyJ...`），
+代理向验签服务校验后按返回身份建立会话。</p>
+<div id="token-error" class="error"></div>
+<form id="token-login-form">
+  <label for="login-token">凭据（含 scheme）</label>
+  <input id="login-token" required placeholder="Token eyJ... 或 Bearer eyJ...">
+  <button type="submit">Token 登录</button>
+</form>
+<script>
+document.getElementById("token-login-form").addEventListener("submit", async function (ev) {
+  ev.preventDefault();
+  var err = document.getElementById("token-error");
+  err.textContent = "";
+  var token = document.getElementById("login-token").value.trim();
+  if (!token) { err.textContent = "请粘贴凭据"; return; }
+  var resp = await fetch("/admin/auth/token-login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token: token }),
+  });
+  if (resp.ok) { location.href = "/admin"; return; }
+  var data = await resp.json().catch(function () { return {}; });
+  err.textContent = (data && data.message) || ("登录失败（HTTP " + resp.status + "）");
+});
+</script>
+{% endif %}
 <script>
 "use strict";
 // stub 票据两条路径（与 StubVerifier 语义一致），提交 /admin/auth/callback 由

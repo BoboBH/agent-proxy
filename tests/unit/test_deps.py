@@ -165,12 +165,20 @@ async def test_authorization_scheme_semantics_with_cookie():
 
 
 def test_is_admin_matches_role():
-    assert is_admin(Identity(user_id=1, role="admin"), "admin")
+    assert is_admin(Identity(user_id=1, role="admin"), "admin", 7)
 
 
 def test_is_admin_false_when_role_mismatch_or_none():
-    assert not is_admin(Identity(user_id=1, role="viewer"), "admin")
-    assert not is_admin(Identity(user_id=1), "admin")
+    assert not is_admin(Identity(user_id=1, role="viewer"), "admin", 7)
+    assert not is_admin(Identity(user_id=1), "admin", 7)
+
+
+def test_is_admin_org_id_double_match():
+    """v4.3：管理员 = role 匹配 且 org_id 匹配（双匹配）。"""
+    assert is_admin(Identity(user_id=1, role="admin", org_id=7), "admin", 7)
+    assert is_admin(Identity(user_id=1, role="admin", org_id=None), "admin", 7)  # stub/开发放行
+    assert not is_admin(Identity(user_id=1, role="admin", org_id=5), "admin", 7)   # 组织不符
+    assert not is_admin(Identity(user_id=1, role="viewer", org_id=7), "admin", 7)  # 角色不符
 
 
 async def test_stub_verify_credential_contract(monkeypatch):

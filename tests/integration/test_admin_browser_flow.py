@@ -38,7 +38,7 @@ async def _browser_login(c: AsyncClient, user_id: int, role: str | None = None) 
 
 async def test_full_browser_flow_admin_as_admin(app):
     async with _client(app) as c:
-        await _browser_login(c, 100, role="admin")
+        await _browser_login(c, 100, role="org_member")
         assert (await c.get("/admin")).status_code == 200
 
         # 我的映射：注册（占位符响应）→ resolve 回显 → test（echo 9901 连通判定）→ 删除
@@ -82,7 +82,7 @@ async def test_non_admin_view_isolated_and_api_privilege_enforced(app):
     页面入口隐藏（模板不含 public 视图）+ 直接打 API 仍被既有矩阵拦（403）。"""
     async with _client(app) as c:
         r = await c.post("/api/v1/mappings", json={**HTTP_BODY, "visibility": "public"},
-                         headers={"Authorization": f"Bearer {make_token(100, role='admin')}"})
+                         headers={"Authorization": f"Bearer {make_token(100, role='org_member')}"})
         assert r.status_code == 201
         pub = r.json()["mapping_id"]
         await _browser_login(c, 888)

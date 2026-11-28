@@ -15,7 +15,7 @@ from app.services.oauth.credential import refresh_lock_key, release_refresh_lock
 from app.services.oauth.crypto import decrypt_text
 from tests.utils import make_token
 
-ADMIN = {"Authorization": f"Bearer {make_token(100, 'admin')}"}
+ADMIN = {"Authorization": f"Bearer {make_token(100, 'org_member')}"}
 U888 = {"Authorization": f"Bearer {make_token(888)}"}
 FRONT = "http://testserver/console"
 MASTER = "test-master-key"

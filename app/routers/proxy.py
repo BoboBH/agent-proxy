@@ -21,6 +21,8 @@ from app.services.forward.mcp_sse import (build_origin_target, registered_endpoi
                                   stream_sse_forward)
 from app.services.oauth import credential as oauth_credential
 from app.services.mapping_service import load_mapping
+from app.services.concurrency import acquire_guard
+from app.services.load_stats import record_hit
 from app.routers.deps import get_current_identity
 
 router = APIRouter(tags=["proxy"])
@@ -60,34 +62,56 @@ async def _handle_proxy(request: Request, mapping_id: str, identity: Identity,
             forced = {"authorization": f"Bearer {token}"}
         else:
             forced = None
-    if data["type"] == "mcp":
-        # 路径分发（§8.3 表，M4 起同时服务 Streamable）：仅 GET/HEAD 且命中注册
-        # 端点路径 → SSE 解析管线（stream_sse_forward 不转发请求体，故非 GET/HEAD
-        # 不走此分支）；其余方法/路径按上游 origin 根还原后复用 http 流式管线。
-        # M4 分发语义定稿（不新增 transport 字段）：Streamable 上游的 POST/DELETE
-        # （JSON-RPC 调用 / 会话结束）本就走 origin 根还原的 http 管线；GET /mcp
-        # （服务端推送流）进 SSE 解析管线——rewriter 仅改写 `event: endpoint` 的
-        # data 行，Streamable 流只有 message 事件 → 字节级无操作透传，read=None /
-        # Connection: close / sse_active 计数对推送流语义同样成立。一条分发表即可
-        # 同时正确服务两种传输；设计 §5.1 无 transport 列，不为零行为差异引入
-        # schema/DB/缓存连带变更（评审定稿记录，设计 §8.4 注记同步）。
-        # 评审 Issue 2（M3）：裸 origin 注册（端点路径为 /）时根路径 /p/{id} 与
-        # /p/{id}/ 同为注册端点——空 sub_path 归一为 / 参与匹配
-        sub_path = split_sub_path(request.scope["path"], mapping_id)
-        assert_safe_sub_path(sub_path)
-        if request.method in ("GET", "HEAD") and \
-                (sub_path or "/") == registered_endpoint_path(data["upstream_url"]):
-            return await stream_sse_forward(request.app.state, data, request,
-                                            forced_headers=forced,
-                                            auth_header=settings.proxy_auth_header)
-        target = build_origin_target(data["upstream_url"], sub_path, request.url.query)
+    # 按映射并发上限（设计 v4.2，慢上游隔离）：映射内并发达上限时，**该映射自己的**
+    # 超额请求等待 MAPPING_MAX_CONCURRENCY 窗口后 503 PROXY_BUSY——全局连接池不被
+    # 单一慢映射占满，其他映射不受影响。闸门生命周期与上游连接对齐：管线在响应流
+    # 结束 / 客户端断开的 finally 释放；此处 except 兜底覆盖流开始前的错误路径。
+    guard = None
+    if settings.mapping_max_concurrency > 0:
+        guard = await acquire_guard(mapping_id, settings.mapping_max_concurrency,
+                                    timeout=settings.upstream_pool_timeout)
+    # 实时负载计数（管理页「实时负载」）：按映射的最近 5 分钟请求数（Redis 滑动
+    # 窗口）；写入失败不阻断转发（load_stats 内部兜底）。503 被拒的请求也计入
+    # （record 在闸门之前——热点映射对运维可见）
+    await record_hit(request.app.state.redis, mapping_id)
+    try:
+        if data["type"] == "mcp":
+            # 路径分发（§8.3 表，M4 起同时服务 Streamable）：仅 GET/HEAD 且命中注册
+            # 端点路径 → SSE 解析管线（stream_sse_forward 不转发请求体，故非 GET/HEAD
+            # 不走此分支）；其余方法/路径按上游 origin 根还原后复用 http 流式管线。
+            # M4 分发语义定稿（不新增 transport 字段）：Streamable 上游的 POST/DELETE
+            # （JSON-RPC 调用 / 会话结束）本就走 origin 根还原的 http 管线；GET /mcp
+            # （服务端推送流）进 SSE 解析管线——rewriter 仅改写 `event: endpoint` 的
+            # data 行，Streamable 流只有 message 事件 → 字节级无操作透传，read=None /
+            # Connection: close / sse_active 计数对推送流语义同样成立。一条分发表即可
+            # 同时正确服务两种传输；设计 §5.1 无 transport 列，不为零行为差异引入
+            # schema/DB/缓存连带变更（评审定稿记录，设计 §8.4 注记同步）。
+            # 评审 Issue 2（M3）：裸 origin 注册（端点路径为 /）时根路径 /p/{id} 与
+            # /p/{id}/ 同为注册端点——空 sub_path 归一为 / 参与匹配
+            sub_path = split_sub_path(request.scope["path"], mapping_id)
+            assert_safe_sub_path(sub_path)
+            if request.method in ("GET", "HEAD") and \
+                    (sub_path or "/") == registered_endpoint_path(data["upstream_url"]):
+                return await stream_sse_forward(request.app.state, data, request,
+                                                forced_headers=forced,
+                                                auth_header=settings.proxy_auth_header,
+                                                guard=guard)
+            target = build_origin_target(data["upstream_url"], sub_path, request.url.query)
+            return await stream_http_forward(request.app.state, data, request,
+                                             target_override=target, metrics_type="mcp",
+                                             forced_headers=forced,
+                                             auth_header=settings.proxy_auth_header,
+                                             guard=guard)
         return await stream_http_forward(request.app.state, data, request,
-                                         target_override=target, metrics_type="mcp",
                                          forced_headers=forced,
-                                         auth_header=settings.proxy_auth_header)
-    return await stream_http_forward(request.app.state, data, request,
-                                     forced_headers=forced,
-                                     auth_header=settings.proxy_auth_header)
+                                         auth_header=settings.proxy_auth_header,
+                                         guard=guard)
+    except BaseException:
+        # 流开始前的任何错误路径（上游连接失败/超时/重定向中止等）释放闸门；
+        # 流式阶段的释放由管线响应流的 finally 负责（Guard 幂等，双保险不冲突）
+        if guard:
+            guard.release()
+        raise
 
 
 @router.api_route("/p/{mapping_id}/{path:path}", methods=_PROXY_METHODS)

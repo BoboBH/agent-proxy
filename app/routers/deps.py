@@ -62,5 +62,10 @@ async def _session_identity(request: Request) -> Identity | None:
     return await get_session(request.app.state.redis, sid)
 
 
-def is_admin(identity: Identity, admin_role: str) -> bool:
-    return identity.role == admin_role
+def is_admin(identity: Identity, admin_user_type: str, admin_org_id: int) -> bool:
+    """管理员双匹配（v4.3）：user_type == admin_user_type 且 org_id == admin_org_id。
+
+    org_id 为 None（stub/开发身份）放行——开发模式不受组织约束（既有测试与
+    本地 stub 登录兼容）；third_party 验签身份恒带 org_id，恒受双匹配约束。"""
+    return (identity.role == admin_user_type
+            and (identity.org_id is None or identity.org_id == admin_org_id))

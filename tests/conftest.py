@@ -33,6 +33,8 @@ os.environ.update({
     "ENV": "dev",
     "TOKEN_VERIFY_IMPL": "stub",
     "LOGIN_IMPL": "stub",
+    "ADMIN_USER_TYPE": "org_member",
+    "ADMIN_ORG_ID": "7",
     "EXTERNAL_BASE": "http://testserver",
     "MYSQL_DSN": MYSQL_DSN or "mysql+aiomysql://root@127.0.0.1:3306/agent_proxy_test",
     "REDIS_URL": REDIS_URL or "redis://127.0.0.1:6379/9",

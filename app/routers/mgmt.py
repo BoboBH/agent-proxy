@@ -15,8 +15,10 @@ from app.services.errors import AppError
 from app.services.forward.http_forward  import probe_http_mapping
 from app.services.forward.mcp_streamable import probe_mcp_mapping
 from app.services.mapping_id import MAPPING_ID_RE
-from app.core.schemas import (ListItemOut, MappingCreate, MappingDetailOut, MappingTestOut,
-                              MappingUpdate, RegisteredOut)
+from app.core.schemas import (ListItemOut, LoadItemOut, LoadOverviewOut, MappingCreate,
+                              MappingDetailOut, MappingTestOut, MappingUpdate, RegisteredOut)
+from app.services import load_stats
+from app.services import concurrency
 from app.services.mapping_service import (build_proxy_url, create_mapping, delete_mapping, get_owned,
                           list_mappings, row_to_dict, update_mapping, placeholder)
 from app.routers.deps import get_current_identity, get_db, is_admin
@@ -69,6 +71,39 @@ def _detail_out(settings: Settings, data: dict) -> MappingDetailOut:
     return MappingDetailOut(**base)
 
 
+# 注意：静态路由 /load 与 /resolve 同先例——必须先于动态路由 /{mapping_id} 注册。
+@router.get("/load", response_model=LoadOverviewOut)
+async def load_overview(request: Request,
+                        identity: Identity = Depends(get_current_identity),
+                        session=Depends(get_db), settings: Settings = Depends(get_settings)):
+    """实时负载（管理页「实时负载」视图，仅 admin，设计 §15 v4.3 扩展）：
+
+    - count_5m：最近 5 分钟按映射请求数（Redis 滑动计数 `ap:load:{id}`，跨实例
+      共享；含被按映射上限 503 的请求——热点映射对运维可见）；
+    - inflight：当前在途并发（进程内计数——多实例部署时为**本实例视图**）；
+    - 名称/类型经 DB 批量补齐（仅对窗口内有流量的映射，集合小）。
+    """
+    if not is_admin(identity, settings.admin_user_type, settings.admin_org_id):
+        raise AppError(403, "FORBIDDEN", "仅管理员可查看实时负载")
+    counts = await load_stats.snapshot_counts(request.app.state.redis)
+    inflight = concurrency.inflight_all()
+    mids = sorted(set(counts) | set(inflight))
+    names: dict[str, tuple] = {}
+    if mids:
+        rows = (await session.execute(
+            select(ProxyMapping).where(ProxyMapping.mapping_id.in_(mids)))).scalars()
+        names = {r.mapping_id: (r.name, r.type) for r in rows}
+    items = [
+        LoadItemOut(mapping_id=mid,
+                    name=names.get(mid, ("<未知>", "http"))[0],
+                    type=names.get(mid, ("<未知>", "http"))[1],
+                    count_5m=counts.get(mid, 0),
+                    inflight=inflight.get(mid, 0))
+        for mid in sorted(mids, key=lambda m: -counts.get(m, 0))
+    ]
+    return LoadOverviewOut(window_seconds=load_stats.WINDOW_SECONDS, mappings=items)
+
+
 # 注意：静态路由 /resolve 必须先于动态路由 /{mapping_id} 注册（FastAPI 按注册顺序匹配）。
 @router.get("/resolve", response_model=MappingDetailOut)
 async def resolve_mapping(request: Request, proxy_url: str = Query(None),
@@ -96,7 +131,7 @@ async def resolve_mapping(request: Request, proxy_url: str = Query(None),
         mapping_id = parse_proxy_url(proxy_url, settings.external_base)
     data = await get_owned(session, request.app.state.redis, mapping_id,
                            identity.user_id, settings.cache_ttl, settings.master_key,
-                           admin_override=is_admin(identity, settings.admin_role))
+                           admin_override=is_admin(identity, settings.admin_user_type, settings.admin_org_id))
     if data is None:
         raise AppError(404, "MAPPING_NOT_FOUND", "映射不存在")
     request.state.audit_action = "view_credentials"
@@ -109,7 +144,7 @@ async def create_mapping_route(request: Request, body: MappingCreate,
                                identity: Identity = Depends(get_current_identity),
                                session=Depends(get_db),
                                settings: Settings = Depends(get_settings)):
-    if body.visibility == "public" and not is_admin(identity, settings.admin_role):
+    if body.visibility == "public" and not is_admin(identity, settings.admin_user_type, settings.admin_org_id):
         raise AppError(403, "FORBIDDEN", "仅管理员可创建 public 映射")
     try:
         row = await create_mapping(
@@ -145,7 +180,7 @@ async def get_detail(request: Request, mapping_id: str,
                      session=Depends(get_db), settings: Settings = Depends(get_settings)):
     data = await get_owned(session, request.app.state.redis, mapping_id,
                            identity.user_id, settings.cache_ttl, settings.master_key,
-                           admin_override=is_admin(identity, settings.admin_role))
+                           admin_override=is_admin(identity, settings.admin_user_type, settings.admin_org_id))
     if data is None:
         raise AppError(404, "MAPPING_NOT_FOUND", "映射不存在")
     request.state.audit_action = "view_credentials"
@@ -158,13 +193,13 @@ async def update_mapping_route(request: Request, mapping_id: str, body: MappingU
                                identity: Identity = Depends(get_current_identity),
                                session=Depends(get_db),
                                settings: Settings = Depends(get_settings)):
-    if body.visibility == "public" and not is_admin(identity, settings.admin_role):
+    if body.visibility == "public" and not is_admin(identity, settings.admin_user_type, settings.admin_org_id):
         raise AppError(403, "FORBIDDEN", "仅管理员可设置 public 可见性")
     patch = body.model_dump(exclude_unset=True)
     try:
         data = await update_mapping(session, request.app.state.redis, settings,
                                     mapping_id, identity.user_id,
-                                    admin_override=is_admin(identity, settings.admin_role),
+                                    admin_override=is_admin(identity, settings.admin_user_type, settings.admin_org_id),
                                     **patch)
     except ValueError as exc:  # 含 UpstreamNotAllowed（其子类，header 校验/SSRF 均归 400）
         raise AppError(400, "INVALID_PARAM", str(exc))
@@ -181,7 +216,7 @@ async def delete_mapping_route(request: Request, mapping_id: str,
                                settings: Settings = Depends(get_settings)):
     ok = await delete_mapping(session, request.app.state.redis, mapping_id,
                               identity.user_id,
-                              admin_override=is_admin(identity, settings.admin_role))
+                              admin_override=is_admin(identity, settings.admin_user_type, settings.admin_org_id))
     if not ok:
         raise AppError(404, "MAPPING_NOT_FOUND", "映射不存在")
     request.state.mapping_id = mapping_id
@@ -196,7 +231,7 @@ async def test_mapping_route(request: Request, mapping_id: str,
     """配置有效性测试（设计 §6.6）：仅注册者、仅已注册映射（防探测滥用）。"""
     data = await get_owned(session, request.app.state.redis, mapping_id,
                            identity.user_id, settings.cache_ttl, settings.master_key,
-                           admin_override=is_admin(identity, settings.admin_role))
+                           admin_override=is_admin(identity, settings.admin_user_type, settings.admin_org_id))
     if data is None:
         raise AppError(404, "MAPPING_NOT_FOUND", "映射不存在")
     request.state.audit_action = "test_mapping"

@@ -166,3 +166,19 @@ class BuiltinItemOut(BaseModel):
     auth_mode: str
     binding: str | None = None
     status: str
+
+
+class LoadItemOut(BaseModel):
+    """GET /api/v1/mappings/load 列表项（v4.3 管理页「实时负载」）：单映射的
+    最近 5 分钟请求数 + 当前在途并发。inflight 为当前实例视图（多实例部署时
+    各实例独立）；count_5m 来自 Redis（跨实例共享）。"""
+    mapping_id: str
+    name: str | None = None
+    type: str
+    count_5m: int
+    inflight: int
+
+
+class LoadOverviewOut(BaseModel):
+    window_seconds: int
+    mappings: list[LoadItemOut]
