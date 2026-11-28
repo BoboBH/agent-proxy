@@ -1549,7 +1549,7 @@ initialize / tools/list / tools/call。协议级自动化等价覆盖见
 
 ```bash
 EXTERNAL_BASE=http://127.0.0.1:8800
-MYSQL_DSN=mysql+aiomysql://root:123456@127.0.0.1:3306/agent_proxy
+MYSQL_DSN=mysql+aiomysql://root:<密码>@127.0.0.1:3306/agent_proxy
 REDIS_URL=redis://127.0.0.1:6379/1
 SSRF_ALLOW_PRIVATE=true
 TRACE_MODE=metadata              # 排障时临时改 body
@@ -1558,7 +1558,7 @@ TRACE_MODE=metadata              # 排障时临时改 body
 首次运行需建库（MySQL 已有实例，仅建库不动表结构，表由应用 lifespan create_all）：
 
 ```bash
-mysql -h127.0.0.1 -uroot -p123456 -e "CREATE DATABASE IF NOT EXISTS agent_proxy DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+mysql -h127.0.0.1 -uroot -p<密码> -e "CREATE DATABASE IF NOT EXISTS agent_proxy DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
 ```
 
 ## 1. 启动三个进程

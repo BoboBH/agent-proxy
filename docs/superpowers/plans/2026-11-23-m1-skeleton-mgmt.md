@@ -117,7 +117,7 @@ import pytest
 from agent_proxy.config import ConfigError, Settings
 
 BASE = {
-    "MYSQL_DSN": "mysql+aiomysql://root:123456@127.0.0.1:3306/agent_proxy",
+    "MYSQL_DSN": "mysql+aiomysql://root:<密码>@127.0.0.1:3306/agent_proxy",
     "REDIS_URL": "redis://127.0.0.1:6379/1",
 }
 
@@ -1024,7 +1024,7 @@ os.environ.update({
     "TOKEN_VERIFY_IMPL": "stub",
     "LOGIN_IMPL": "stub",
     "EXTERNAL_BASE": "http://testserver",
-    "MYSQL_DSN": "mysql+aiomysql://root:123456@127.0.0.1:3306/agent_proxy_test",
+    "MYSQL_DSN": "mysql+aiomysql://root:<密码>@127.0.0.1:3306/agent_proxy_test",
     "REDIS_URL": "redis://127.0.0.1:6379/9",
     "SSRF_ALLOW_PRIVATE": "true",
     "ENCRYPT_AT_REST": "false",
@@ -1040,7 +1040,7 @@ from agent_proxy.main import create_app  # noqa: E402
 
 @pytest.fixture(scope="session", autouse=True)
 def _recreate_test_db():
-    conn = pymysql.connect(host="127.0.0.1", user="root", password="123456", port=3306)
+    conn = pymysql.connect(host="127.0.0.1", user="root", password="<密码>", port=3306)
     try:
         with conn.cursor() as cur:
             cur.execute(

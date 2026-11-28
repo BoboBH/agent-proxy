@@ -4,7 +4,7 @@ from pydantic import ValidationError
 from app.env import Settings
 
 BASE = {
-    "mysql_dsn": "mysql+aiomysql://root:123456@127.0.0.1:3306/agent_proxy",
+    "mysql_dsn": "mysql+aiomysql://root:<密码>@127.0.0.1:3306/agent_proxy",
     "redis_url": "redis://127.0.0.1:6379/1",
     "master_key": "test-master-key",
 }
